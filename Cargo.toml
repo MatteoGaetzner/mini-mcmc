@@ -7,3 +7,7 @@ edition = "2021"
 plotters = "0.3"
 rand = "0.8"
 rand_distr = "0.4"
+nalgebra = "0.33"
+
+[profile.dev]
+debug = true
