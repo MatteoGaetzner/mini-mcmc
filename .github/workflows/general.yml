@@ -15,6 +15,8 @@ jobs:
     steps:
       - name: Check out repository code
         uses: actions/checkout@v3
+      - name: Install Fontconfig dependency
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Install the Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Rust Cache Action
@@ -27,6 +29,9 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+      - name: Install Fontconfig dependency
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+
       - name: Download rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,6 +44,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
+      - name: Install Fontconfig dependency
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Download rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -56,6 +63,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v2
+      - name: Install Fontconfig dependency
+        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
       - name: Generate code coverage
         run: |
           cargo +nightly tarpaulin --verbose \
