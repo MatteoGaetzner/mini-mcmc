@@ -64,7 +64,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v2
       - name: Install Fontconfig dependency
-        run: sudo apt-get update && sudo apt-get install -y libfontconfig1-dev
+        run: apt-get update && apt-get install -y libfontconfig1-dev
       - name: Generate code coverage
         run: |
           cargo +nightly tarpaulin --verbose \
