@@ -1,0 +1,21 @@
+name: Security audit
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    paths:
+      - '**/Cargo.toml'
+      - '**/Cargo.lock'
+jobs:
+  security_audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Rust and Cargo
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - uses: actions/checkout@v3
+      - uses: taiki-e/install-action@cargo-deny
+      - name: Scan for vulnerabilities
+        run: cargo deny check advisories

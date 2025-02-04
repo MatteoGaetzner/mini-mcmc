@@ -1,0 +1,66 @@
+# The name of your workflow. GitHub displays the names of your workflows on your repository's "Actions" tab
+---
+name: Rust
+
+# Trigger the workflow on push or pull request events for any branch
+on: [push, pull_request]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+      - name: Rust Cache Action
+        uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Download rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - name: Enforce formatting
+        run: cargo fmt --check
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Download rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Download rust cache
+        uses: Swatinem/rust-cache@v2
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+      - name: Generate code coverage
+        run: |
+          cargo +nightly tarpaulin --verbose \
+          --all-features --workspace --timeout 120 --out xml
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v2
+        with:
+          fail_ci_if_error: true
