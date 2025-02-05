@@ -34,7 +34,7 @@ pub struct TestResult {
     pub level: f64,
 }
 
-/// Computes the Kolmogorov–Smirnov p-value for the two-sample case using a correction term.
+/// Computes the Kolmogorov–Smirnov p-value for the two-sample case.
 /// If below `level`, the null hypothesis can be rejected.
 fn ks_p_value(statistic: f64, n1: usize, n2: usize) -> Result<f64, String> {
     assert!(n1 > 7 && n2 > 7, "Requires sample sizes > 7 for accuracy.");
@@ -77,12 +77,8 @@ fn compute_ks_statistic(sample_1: &mut [f64], sample_2: &mut [f64]) -> Result<f6
 
         max_diff = max_diff.max((fj - fi).abs());
 
-        let ip = (i + 1)
-            .to_usize()
-            .ok_or_else(|| format!("Bad i+1 {}", i + 1))?;
-        let jp = (j + 1)
-            .to_usize()
-            .ok_or_else(|| format!("Bad j+1 {}", j + 1))?;
+        let ip = (i + 1).to_usize().unwrap();
+        let jp = (j + 1).to_usize().unwrap();
         if ip < n && jp < m {
             cur_x = sample_1[ip].min(sample_2[jp]);
         } else if ip < n {
@@ -141,7 +137,7 @@ fn qks(z: f64) -> Result<f64, String> {
     Ok(2. * (x - x.powf(4.) + x.powf(9.)))
 }
 
-/// Comparison function for sorting f64 slices, treating NaN as greater than all real values.
+/// Comparison function for sorting f64 slices, treating NAN as greater than all real values.
 fn cmp_f64(a: &f64, b: &f64) -> Ordering {
     if a.is_nan() {
         return Ordering::Greater;
@@ -225,4 +221,133 @@ fn test_ks_rep_similar() {
     let result = two_sample_ks_test(&mut s1, &mut s2, 0.05).unwrap();
     assert!((result.statistic - 0.125).abs() < 1e-9, "D mismatch");
     assert!((result.p_value - 0.1641).abs() < 1e-4, "p-value mismatch");
+}
+
+#[test]
+fn test_ks_empty_1() {
+    let mut s1 = [];
+    let mut s2 = [1.0, 2.0, 3.0, 4.0];
+    let res = compute_ks_statistic(&mut s1, &mut s2);
+    assert!(res.is_err(), "Expected compute_ks_statistic(...) to return an error since the first list is empty, got {:?}.", res);
+}
+
+#[test]
+fn test_ks_empty_2() {
+    let mut s1 = [1.0, 2.0, 3.0, 4.0];
+    let mut s2 = [];
+    let res = compute_ks_statistic(&mut s1, &mut s2);
+    assert!(res.is_err(), "Expected compute_ks_statistic(...) to return an error since the second list is empty, got {:?}.", res);
+}
+
+#[test]
+fn test_bad_z_for_pks() {
+    let res = pks(-1.0);
+    assert!(
+        res.is_err(),
+        "Expected pks(-1.0) to return an error, got {:?}.",
+        res
+    );
+}
+
+#[test]
+fn test_pks_zero() {
+    match pks(0.0) {
+        Err(msg) => panic!("Expected pks(0.0) == 0, got error message {:?}.", msg),
+        Ok(val) => assert!(val == 0.0, "Expected pks(0.0) == 0, got {:?}.", val),
+    }
+}
+
+#[test]
+fn test_pks_large_1() {
+    match pks(1.23) {
+        Err(msg) => panic!(
+            "Expected pks(1.23), to not error out, got error message {:?}.",
+            msg
+        ),
+        Ok(val) => assert!(
+            (val - 0.9029731024047791).abs() < 1e-8,
+            "Expected pks(1.23) ~= 0.9029731024047791, got {:?}.",
+            val
+        ),
+    }
+}
+
+#[test]
+fn test_pks_large_2() {
+    match pks(2.34) {
+        Err(msg) => panic!(
+            "Expected pks(2.34), to not error out, got error message {:?}.",
+            msg
+        ),
+        Ok(val) => assert!(
+            (val - 0.9999649260833611).abs() < 1e-8,
+            "Expected pks(2.34) ~= 0.9999649260833611, got {:?}.",
+            val
+        ),
+    }
+}
+
+#[test]
+fn test_pks_large_3() {
+    match pks(3.45) {
+        Err(msg) => panic!(
+            "Expected pks(3.45), to not error out, got error message {:?}.",
+            msg
+        ),
+        Ok(val) => assert!(
+            (val - 1.0).abs() < 1e-8,
+            "Expected pks(3.45) ~= 1.0, got {:?}.",
+            val
+        ),
+    }
+}
+
+#[test]
+fn test_qks_zero() {
+    match qks(0.0) {
+        Err(msg) => panic!(
+            "Expected qks(0.0), to not error out, got error message {:?}.",
+            msg
+        ),
+        Ok(val) => assert!(val == 1.0, "Expected qks(0.0) = 0.0, got {:?}.", val),
+    }
+}
+
+#[test]
+fn test_cmp_f64_middle_nan() {
+    let mut s = [1.0, f64::NAN, 3.0];
+    s.sort_by(cmp_f64);
+    assert!(
+        s[0] == 1.0 && s[1] == 3.0 && s[2].is_nan(),
+        "Expected sorting [1.0, NAN, 3.0] to give [1.0, 3.0, NAN], got {s:?}."
+    );
+}
+#[test]
+fn test_cmp_f64_beginning_nan() {
+    let mut s = [f64::NAN, 2.0, 3.0];
+    s.sort_by(cmp_f64);
+    assert!(
+        s[0] == 2.0 && s[1] == 3.0 && s[2].is_nan(),
+        "Expected sorting [NAN, 2.0, 3.0] to give [2.0, 3.0, NAN], got {s:?}."
+    );
+}
+
+#[test]
+fn test_cmp_f64_end_nan() {
+    let mut s = [1.0, 2.0, f64::NAN];
+    s.sort_by(cmp_f64);
+    assert!(
+        s[0] == 1.0 && s[1] == 2.0 && s[2].is_nan(),
+        "Expected sorting [NAN, 2.0, 3.0] to give [2.0, 3.0, NAN], got {s:?}."
+    );
+}
+
+#[test]
+fn test_cmp_f64_double_nana() {
+    let mut s = [f64::NAN, 2.0, f64::NAN];
+    s.sort_by(cmp_f64);
+    assert!(
+        s[0] == 2.0 && s[1].is_nan() && s[2].is_nan(),
+        "Expected sorting [NAN, 2.0, NAN] to give [2.0, NAN, NAN], got {s:?}."
+    );
 }

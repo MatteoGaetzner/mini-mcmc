@@ -2,6 +2,8 @@
 //! along with traits for sampling and evaluating log-probabilities.
 
 use nalgebra::{Matrix2, Vector2};
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
 use rand_distr::num_traits::ToPrimitive;
 use rand_distr::{Distribution, Normal};
 use std::f64::consts::PI;
@@ -28,6 +30,7 @@ pub trait Normalized {
 }
 
 /// A 2D Gaussian distribution parameterized by mean and a 2×2 covariance matrix.
+#[derive(Clone)]
 pub struct Gaussian2D {
     pub mean: Vector2<f64>,
     pub cov: Matrix2<f64>,
@@ -72,16 +75,17 @@ impl TargetDistribution for Gaussian2D {
     }
 }
 
+#[derive(Clone)]
 pub struct IsotropicGaussian {
     pub std: f64,
-    rng: rand::rngs::ThreadRng,
+    rng: SmallRng,
 }
 
 impl IsotropicGaussian {
     pub fn new(std: f64) -> Self {
         Self {
             std,
-            rng: rand::thread_rng(),
+            rng: SmallRng::from_entropy(),
         }
     }
 }
@@ -111,6 +115,57 @@ impl ProposalDistribution for IsotropicGaussian {
 
 impl TargetDistribution for IsotropicGaussian {
     fn unnorm_log_prob(&self, theta: &[f64]) -> f64 {
-        theta.iter().fold(0., |sum, x| sum - 0.5 * (x.powf(2.)))
+        -0.5 * theta.iter().map(|x| x * x).sum::<f64>() / (self.std * self.std)
     }
+}
+
+fn _normalize_isogauss(x: f64, d: usize, std: f64) -> f64 {
+    let log_normalizer = -((d as f64) / 2.0) * ((2.0_f64).ln() + PI.ln() + 2.0 * std.ln());
+    (x + log_normalizer).exp()
+}
+
+// impl TargetDistribution for IsotropicGaussian {
+//     fn unnorm_log_prob(&self, theta: &[f64]) -> f64 {
+//         -0.5 * theta.iter().fold(0., |sum, x| sum + (x * x)) / (self.std * self.std)
+//     }
+// }
+//
+// fn _normalize_isogauss(x: f64, d: usize, std: f64) -> f64 {
+//     (1.0 / ((2.0 * PI).sqrt() * std).powi(d as i32)) * x.exp()
+// }
+
+#[test]
+fn iso_gauss_unnorm_log_prob_test_1() {
+    let distr = IsotropicGaussian::new(1.0);
+    let p = _normalize_isogauss(distr.unnorm_log_prob(&[1.0]), 1, distr.std);
+    let true_p = 0.24197072451914337;
+    let diff = (p - true_p).abs();
+    assert!(
+        diff < 1e-7,
+        "Expected diff < 1e-7, got {diff} with p={p} (expected ~{true_p})."
+    );
+}
+
+#[test]
+fn iso_gauss_unnorm_log_prob_test_2() {
+    let distr = IsotropicGaussian::new(2.0);
+    let p = _normalize_isogauss(distr.unnorm_log_prob(&[0.42, 9.6]), 2, distr.std);
+    let true_p = 3.864661987252467e-7;
+    let diff = (p - true_p).abs();
+    assert!(
+        diff < 1e-15,
+        "Expected diff < 1e-15, got {diff} with p={p} (expected ~{true_p})"
+    );
+}
+
+#[test]
+fn iso_gauss_unnorm_log_prob_test_3() {
+    let distr = IsotropicGaussian::new(3.0);
+    let p = _normalize_isogauss(distr.unnorm_log_prob(&[1.0, 2.0, 3.0]), 3, distr.std);
+    let true_p = 0.001080393185560214;
+    let diff = (p - true_p).abs();
+    assert!(
+        diff < 1e-8,
+        "Expected diff < 1e-8, got {diff} with p={p} (expected ~{true_p})"
+    );
 }

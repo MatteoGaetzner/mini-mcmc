@@ -10,11 +10,17 @@ use mini_mcmc::metrohast::MetropolisHastings;
 
 use plotters::prelude::*;
 use plotters::style::RGBAColor;
+use rand::rngs::SmallRng;
+use rand::seq::SliceRandom;
+use rand::SeedableRng;
 use std::error::Error;
 
 /// Main entry point: sets up a 2D Gaussian target, runs Metropolis-Hastings,
 /// computes summary statistics, and generates a scatter plot of the samples.
 fn main() -> Result<(), Box<dyn Error>> {
+    const ITERATIONS: usize = 10000;
+    const BURNIN: usize = 2000;
+
     let target = Gaussian2D {
         mean: [0.0, 0.0].into(),
         cov: [[2.0, 1.0], [1.0, 2.0]].into(),
@@ -22,42 +28,33 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proposal = IsotropicGaussian::new(1.0);
     let initial_state = vec![10.0, 12.0];
 
-    let mut mh = MetropolisHastings::new(target, proposal, initial_state);
-
-    const ITERATIONS: usize = 10000;
-    const BURNIN: usize = 2000;
-    let mut samples = Vec::with_capacity(ITERATIONS);
+    let mut mh = MetropolisHastings::new(target, proposal, initial_state, 1);
 
     // Generate samples
-    for _ in 0..(BURNIN + ITERATIONS) {
-        let new_state = mh.step();
-        samples.push(new_state);
-    }
+    let mut samples = mh.run(BURNIN + ITERATIONS, BURNIN).concat();
+    samples.shuffle(&mut SmallRng::from_entropy());
     println!("Generated {} samples", samples.len());
 
     // Basic statistics
-    let post_burnin_samples = &samples[BURNIN..];
-    let mean_x =
-        post_burnin_samples.iter().map(|p| p[0]).sum::<f64>() / post_burnin_samples.len() as f64;
-    let mean_y =
-        post_burnin_samples.iter().map(|p| p[1]).sum::<f64>() / post_burnin_samples.len() as f64;
+    let mean_x = samples.iter().map(|p| p[0]).sum::<f64>() / samples.len() as f64;
+    let mean_y = samples.iter().map(|p| p[1]).sum::<f64>() / samples.len() as f64;
     println!("Mean after burn-in: ({:.2}, {:.2})", mean_x, mean_y);
 
     // Compute quantiles for plotting ranges
-    let mut x_coords: Vec<f64> = post_burnin_samples.iter().map(|p| p[0]).collect();
-    let mut y_coords: Vec<f64> = post_burnin_samples.iter().map(|p| p[1]).collect();
+    let mut x_coords: Vec<f64> = samples.iter().map(|p| p[0]).collect();
+    let mut y_coords: Vec<f64> = samples.iter().map(|p| p[1]).collect();
     x_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     y_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let lower_idx = (0.005 * post_burnin_samples.len() as f64) as usize;
-    let upper_idx = (0.995 * post_burnin_samples.len() as f64) as usize;
+    let lower_idx = (0.005 * samples.len() as f64) as usize;
+    let upper_idx = (0.995 * samples.len() as f64) as usize;
     let x_range = x_coords[lower_idx]..x_coords[upper_idx];
     let y_range = y_coords[lower_idx]..y_coords[upper_idx];
     println!("x_range: {:?}", x_range);
     println!("y_range: {:?}", y_range);
 
     // Filter samples within the plotting range
-    let filtered_samples: Vec<_> = post_burnin_samples
+    let filtered_samples: Vec<_> = samples
         .iter()
         .filter(|&point| x_range.contains(&point[0]) && y_range.contains(&point[1]))
         .collect();
@@ -108,4 +105,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Saved scatter plot to samples.png");
     Ok(())
+}
+
+#[test]
+fn test_main() {
+    main().expect("Expected main to not return an error.");
+    assert!(
+        std::path::Path::new("samples.png").exists(),
+        "Expected samples.png to exist."
+    );
 }

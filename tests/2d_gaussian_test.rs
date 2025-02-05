@@ -19,6 +19,7 @@ use rayon::prelude::*;
 mod tests {
     use super::*;
     use mini_mcmc::ks_test::two_sample_ks_test;
+    use rand::{rngs::SmallRng, SeedableRng};
 
     /// Randomly pick `n` rows from a `DMatrix<f64>` of shape (rows × 2).
     ///
@@ -64,10 +65,10 @@ mod tests {
         };
         let initial_state = vec![10.0, 12.0];
         let proposal = IsotropicGaussian::new(1.0);
-        let mut mh = MetropolisHastings::new(target, proposal, initial_state);
+        let mut mh = MetropolisHastings::new(target, proposal, initial_state, 1);
 
         // Generate "true" samples from the target using Cholesky
-        let chol = na::Cholesky::new(mh.target.cov).expect("Cov not positive definite");
+        let chol = na::Cholesky::new(mh.chains[0].target.cov).expect("Cov not positive definite");
         let z_vec: Vec<f64> = (0..(2 * SUBSAMPLE_SIZE) as i32)
             .into_par_iter()
             .map_init(rand::thread_rng, |rng, _| rng.sample(StandardNormal))
@@ -77,12 +78,10 @@ mod tests {
             na::DMatrix::from_row_slice(SUBSAMPLE_SIZE, 2, (chol.l() * z).as_slice());
 
         // Run MCMC, discard burn-in
-        let mut samples = Vec::with_capacity(SAMPLE_SIZE + BURNIN);
-        for _ in 0..(SAMPLE_SIZE + BURNIN) {
-            samples.push(mh.step());
-        }
+        let mut samples = mh.run(SAMPLE_SIZE + BURNIN, BURNIN).concat();
+        samples.shuffle(&mut SmallRng::from_entropy());
 
-        let flattened: Vec<f64> = samples[BURNIN..].iter().flatten().copied().collect();
+        let flattened: Vec<f64> = samples.into_iter().flatten().collect();
         let samples_post_burnin = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, &flattened);
 
         // Randomly pick rows for KS test
@@ -157,7 +156,7 @@ mod tests {
         // Init MCMC with the wrong covariance
         let initial_state = vec![10.0, 12.0];
         let proposal = IsotropicGaussian::new(1.0);
-        let mut mh = MetropolisHastings::new(false_target, proposal, initial_state);
+        let mut mh = MetropolisHastings::new(false_target, proposal, initial_state, 1);
 
         // Generate "true" samples from the correct covariance
         let chol = na::Cholesky::new(target.cov).expect("Cov not positive definite");
@@ -170,12 +169,13 @@ mod tests {
             na::DMatrix::from_row_slice(SUBSAMPLE_SIZE, 2, (chol.l() * z).as_slice());
 
         // Run MCMC
-        let mut samples = Vec::with_capacity(SAMPLE_SIZE + BURNIN);
-        for _ in 0..(SAMPLE_SIZE + BURNIN) {
-            samples.push(mh.step());
-        }
-        let flattened: Vec<f64> = samples[BURNIN..].iter().flatten().copied().collect();
-        let samples_post_burnin = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, &flattened);
+        let flattened = mh
+            .run(SAMPLE_SIZE + BURNIN, BURNIN)
+            .concat()
+            .into_iter()
+            .flatten()
+            .collect();
+        let samples_post_burnin = na::DMatrix::from_vec(SAMPLE_SIZE, 2, flattened);
         let samples_keep = pick_random_rows(&samples_post_burnin, SUBSAMPLE_SIZE);
 
         // Compute log probabilities and run KS test

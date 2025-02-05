@@ -11,7 +11,7 @@ This library provides:
 
 ## Roadmap
 
-- **Parallel Chains**: Run multiple Metropolis-Hastings Markov chains in parallel.
+- **Parallel Chains**: Run multiple Metropolis-Hastings Markov chains in parallel. ✅
 - **Gibbs Sampling**: A component-wise MCMC approach for higher-dimensional problems.
 - **Hamiltonian Monte Carlo (HMC)**: A gradient-based method for efficient exploration.
 - **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
