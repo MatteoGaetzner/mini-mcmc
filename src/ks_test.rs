@@ -314,6 +314,16 @@ fn test_qks_zero() {
 }
 
 #[test]
+fn test_bad_z_for_qks() {
+    let res = qks(-1.0);
+    assert!(
+        res.is_err(),
+        "Expected qks(-1.0) to return an error, got {:?}.",
+        res
+    );
+}
+
+#[test]
 fn test_cmp_f64_middle_nan() {
     let mut s = [1.0, f64::NAN, 3.0];
     s.sort_by(cmp_f64);
