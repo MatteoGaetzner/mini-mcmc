@@ -125,11 +125,6 @@ where
         out
     }
 
-    pub fn set_seed(mut self, seed: u64) -> Self {
-        self.seed = seed;
-        self
-    }
-
     /// Performs one Metropolis-Hastings update. Proposes a new state, computes the
     /// acceptance probability, and returns the (potentially updated) current state.
     ///

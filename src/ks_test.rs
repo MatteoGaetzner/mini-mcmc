@@ -314,6 +314,21 @@ fn test_qks_zero() {
 }
 
 #[test]
+fn test_qks_large() {
+    match qks(1.2) {
+        Err(msg) => panic!(
+            "Expected qks(1.2), to not error out, got error message {:?}.",
+            msg
+        ),
+        Ok(val) => assert!(
+            (val - 0.11224966667072497).abs() < 1e-8,
+            "Expected qks(1.2) ~= 00.11224966667072497, got {:?}.",
+            val
+        ),
+    }
+}
+
+#[test]
 fn test_bad_z_for_qks() {
     let res = qks(-1.0);
     assert!(
