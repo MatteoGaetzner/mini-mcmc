@@ -2,7 +2,7 @@
 
 /// Contains Gaussian-related distributions and traits for sampling/log-prob evaluation.
 // mod distributions;
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, ProposalDistribution};
 
 /// Provides the MetropolisHastings struct for running MCMC.
 // mod metrohast;
@@ -22,15 +22,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     const ITERATIONS: usize = 100_000;
     const BURNIN: usize = 10000;
     const N_CHAINS: usize = 8;
+    const SEED: u64 = 42;
 
     let target = Gaussian2D {
         mean: [0.0, 0.0].into(),
         cov: [[2.0, 1.0], [1.0, 2.0]].into(),
     };
-    let proposal = IsotropicGaussian::new(1.0);
+    let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
     let initial_state = vec![10.0, 12.0];
 
-    let mut mh = MetropolisHastings::new(target, proposal, initial_state, N_CHAINS);
+    let mut mh = MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(SEED);
 
     // Generate samples
     let mut samples = mh.run(BURNIN + ITERATIONS / N_CHAINS, BURNIN).concat();

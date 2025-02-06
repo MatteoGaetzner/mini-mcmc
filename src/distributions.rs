@@ -15,6 +15,9 @@ pub trait ProposalDistribution {
 
     /// Evaluates log q(θ′ | θ).
     fn log_prob(&self, from: &[f64], to: &[f64]) -> f64;
+
+    /// Set random seed.
+    fn set_seed(self, seed: u64) -> Self;
 }
 
 /// A trait for distributions from which we want to sample via some MCMC method.
@@ -110,6 +113,11 @@ impl ProposalDistribution for IsotropicGaussian {
         }
         lp += -from.len().to_f64().unwrap() * 0.5 * (2.0 * PI * self.std * self.std).ln();
         lp
+    }
+
+    fn set_seed(mut self, seed: u64) -> Self {
+        self.rng = SmallRng::seed_from_u64(seed);
+        self
     }
 }
 

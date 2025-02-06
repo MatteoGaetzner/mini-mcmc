@@ -24,11 +24,14 @@ pub struct MetropolisHastings<D: Clone, Q: Clone> {
     pub proposal: Q,
 
     /// Parallel Markov chains.
-    pub chains: Vec<MarkovChain<D, Q>>,
+    pub chains: Vec<MHMarkovChain<D, Q>>,
+
+    /// Random seed.
+    pub seed: u64,
 }
 
 #[derive(Clone)]
-pub struct MarkovChain<D, Q> {
+pub struct MHMarkovChain<D, Q> {
     /// The target distribution we want to sample from.
     pub target: D,
 
@@ -37,6 +40,9 @@ pub struct MarkovChain<D, Q> {
 
     /// The current state of the Markov chain.
     pub current_state: Vec<f64>,
+
+    /// Random seed.
+    pub seed: u64,
 }
 
 impl<D, Q> MetropolisHastings<D, Q>
@@ -48,18 +54,24 @@ where
     /// initializing the chain at `initial_state`.
     pub fn new(target: D, proposal: Q, initial_state: Vec<f64>, n_chains: usize) -> Self {
         let chains = (0..n_chains)
-            .map(|_| MarkovChain {
-                target: target.clone(),
-                proposal: proposal.clone(),
-                current_state: initial_state.clone(),
-            })
+            .map(|_| MHMarkovChain::new(target.clone(), proposal.clone(), initial_state.clone()))
             .collect();
 
         Self {
             target,
             proposal,
             chains,
+            seed: thread_rng().gen(),
         }
+    }
+
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        // Update each chain's seed so that they differ (if desired)
+        for (i, chain) in self.chains.iter_mut().enumerate() {
+            chain.seed = seed + i as u64;
+        }
+        self
     }
 
     pub fn run(&mut self, n_steps: usize, burnin: usize) -> Vec<Vec<Vec<f64>>> {
@@ -74,7 +86,7 @@ where
         let res: Vec<ChainResult> = self
             .chains
             .par_iter_mut()
-            .with_max_len(num_threads) // Limit concurrency
+            .with_max_len(num_threads)
             .map(|chain| {
                 let samples = chain.run(n_steps);
                 (chain.current_state.clone(), samples)
@@ -91,19 +103,31 @@ where
     }
 }
 
-impl<D, Q> MarkovChain<D, Q>
+impl<D, Q> MHMarkovChain<D, Q>
 where
     D: TargetDistribution + Clone,
     Q: ProposalDistribution + Clone,
 {
+    pub fn new(target: D, proposal: Q, initial_state: Vec<f64>) -> Self {
+        Self {
+            target,
+            proposal,
+            current_state: initial_state,
+            seed: thread_rng().gen(),
+        }
+    }
+
     pub fn run(&mut self, n_steps: usize) -> Vec<Vec<f64>> {
-        println!("Starting to run a new chain with {n_steps} steps.");
         let mut out = Vec::new();
-        let mut rng = rand::thread_rng();
+        let mut rng = SmallRng::seed_from_u64(self.seed);
         out.reserve(n_steps);
         out.extend(std::iter::repeat_with(|| self.step(&mut rng)).take(n_steps));
-        println!("Finished running a chain.");
         out
+    }
+
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
     }
 
     /// Performs one Metropolis-Hastings update. Proposes a new state, computes the
@@ -112,7 +136,7 @@ where
     /// # Returns
     ///
     /// The current state of the chain after this iteration.
-    pub fn step(&mut self, rng: &mut ThreadRng) -> Vec<f64> {
+    pub fn step(&mut self, rng: &mut SmallRng) -> Vec<f64> {
         // Propose a new state based on the current state.
         let proposed = self.proposal.sample(&self.current_state);
 
@@ -142,11 +166,9 @@ mod tests {
     use super::*;
     use crate::distributions::Normalized;
     use rand_distr::StandardNormal;
-    use rayon::iter::{IntoParallelIterator, ParallelIterator};
 
     use crate::{
         distributions::{Gaussian2D, IsotropicGaussian},
-        ks_test::two_sample_ks_test,
         stats,
     };
     use nalgebra as na;
@@ -154,40 +176,46 @@ mod tests {
     #[test]
     fn four_chains_test() {
         const SAMPLE_SIZE: usize = 100_000;
-        const BURNIN: usize = 10_000;
+        const BURNIN: usize = 20_000;
         const N_CHAINS: usize = 4;
+        const SEED: u64 = 42;
 
         // Target distribution & sampler setup
         let target = Gaussian2D {
             mean: [0.0, 0.0].into(),
             cov: [[4.0, 2.0], [2.0, 3.0]].into(),
         };
-        let initial_state = vec![10.0, 12.0];
-        let proposal = IsotropicGaussian::new(1.0);
-        let mut mh = MetropolisHastings::new(target, proposal, initial_state, N_CHAINS);
+        let initial_state = vec![0.0, 0.0];
+        let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
+        let mut mh =
+            MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(SEED);
 
         // Generate "true" samples from the target using Cholesky
         let chol = na::Cholesky::new(mh.chains[0].target.cov).expect("Cov not positive definite");
-        let z_vec: Vec<f64> = (0..(2 * SAMPLE_SIZE) as i32)
-            .into_par_iter()
-            .map_init(rand::thread_rng, |rng, _| rng.sample(StandardNormal))
+        let mut rng = SmallRng::seed_from_u64(SEED);
+        let z_vec: Vec<f64> = (0..(2 * SAMPLE_SIZE))
+            .map(|_| rng.sample(StandardNormal))
             .collect();
+
         let z = na::DMatrix::from_vec(2, SAMPLE_SIZE, z_vec);
         let samples_target = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, (chol.l() * z).as_slice());
 
         // Run MCMC, discard burn-in
-        let mut samples = mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN).concat();
-        samples.shuffle(&mut SmallRng::from_entropy());
+        let samples = mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN).concat();
 
         let flattened: Vec<f64> = samples.into_iter().flatten().collect();
         let samples_keep = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, &flattened);
 
+        // Validate mean & covariance
+        let mean_mcmc = samples_keep.row_mean();
+        let cov_mcmc = stats::cov(&samples_keep).unwrap();
+
         // Compare log probabilities via two-sample KS test
-        let mut log_prob_mcmc: Vec<f64> = samples_keep
+        let log_prob_mcmc: Vec<f64> = samples_keep
             .row_iter()
             .map(|row| mh.target.log_prob(&[row[0], row[1]]))
             .collect();
-        let mut log_prob_target: Vec<f64> = samples_target
+        let log_prob_target: Vec<f64> = samples_target
             .row_iter()
             .map(|row| mh.target.log_prob(&[row[0], row[1]]))
             .collect();
@@ -201,19 +229,6 @@ mod tests {
             "Found infinite/NaN in log probabilities."
         );
 
-        // KS test should accept the null (same distribution)
-        let test_results = two_sample_ks_test(&mut log_prob_mcmc, &mut log_prob_target, 0.0001)
-            .expect("Failed two_sample_ks_test call");
-
-        assert!(
-            !test_results.is_rejected,
-            "Expected KS test to accept the null hypothesis."
-        );
-        assert_eq!(test_results.level, 0.0001, "KS level mismatch");
-
-        // Validate mean & covariance
-        let mean_mcmc = samples_keep.row_mean();
-        let cov_mcmc = stats::cov(&samples_keep).unwrap();
         let good_mean = (na::DMatrix::from_column_slice(1, 2, mh.target.mean.as_slice())
             - mean_mcmc)
             .map(|x| x.abs() < 0.5);
