@@ -8,8 +8,9 @@ use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 // mod metrohast;
 use mini_mcmc::metrohast::MetropolisHastings;
 
-use plotters::prelude::*;
-use plotters::style::RGBAColor;
+use plotters::chart::ChartBuilder;
+use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
+use plotters::style::{Color, RGBAColor, BLACK, RED, WHITE};
 use rand::rngs::SmallRng;
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -18,8 +19,9 @@ use std::error::Error;
 /// Main entry point: sets up a 2D Gaussian target, runs Metropolis-Hastings,
 /// computes summary statistics, and generates a scatter plot of the samples.
 fn main() -> Result<(), Box<dyn Error>> {
-    const ITERATIONS: usize = 10000;
-    const BURNIN: usize = 2000;
+    const ITERATIONS: usize = 100_000;
+    const BURNIN: usize = 10000;
+    const N_CHAINS: usize = 8;
 
     let target = Gaussian2D {
         mean: [0.0, 0.0].into(),
@@ -28,12 +30,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proposal = IsotropicGaussian::new(1.0);
     let initial_state = vec![10.0, 12.0];
 
-    let mut mh = MetropolisHastings::new(target, proposal, initial_state, 1);
+    let mut mh = MetropolisHastings::new(target, proposal, initial_state, N_CHAINS);
 
     // Generate samples
-    let mut samples = mh.run(BURNIN + ITERATIONS, BURNIN).concat();
+    let mut samples = mh.run(BURNIN + ITERATIONS / N_CHAINS, BURNIN).concat();
     samples.shuffle(&mut SmallRng::from_entropy());
     println!("Generated {} samples", samples.len());
+    println!("Last sample: {}", samples[2][samples[2].len() - 1]);
 
     // Basic statistics
     let mean_x = samples.iter().map(|p| p[0]).sum::<f64>() / samples.len() as f64;
