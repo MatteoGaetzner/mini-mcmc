@@ -1,10 +1,12 @@
 //! An implementation of the Metropolis-Hastings sampler, built around a generic
 //! target distribution `D` and proposal distribution `Q`.
 
+use std::time::{Duration, Instant};
+
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use rand::prelude::*;
-use rayon::iter::{
-    IndexedParallelIterator, IntoParallelIterator, IntoParallelRefMutIterator, ParallelIterator,
-};
+use rayon::iter::IntoParallelIterator;
+use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
 
 use crate::distributions::{ProposalDistribution, TargetDistribution};
 
@@ -74,15 +76,16 @@ where
         self
     }
 
-    pub fn run(&mut self, n_steps: usize, burnin: usize) -> Vec<Vec<Vec<f64>>> {
+    pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<Vec<f64>>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
-                println!("Warning: determinining number of threads we should use failed. falling back to using a single thread.");
+                println!("Warning: could not get number of threads; defaulting to 1.");
                 1
             }
         };
 
+        // Collect results from each chain
         let res: Vec<ChainResult> = self
             .chains
             .par_iter_mut()
@@ -93,12 +96,64 @@ where
             })
             .collect();
 
+        // Copy final states back into each chain
         for (i, (final_state, _)) in res.iter().enumerate() {
             self.chains[i].current_state.clone_from(final_state);
         }
 
+        // Discard burnin and return the samples from each chain
         res.into_par_iter()
-            .map(|(_, samples)| samples[burnin..].to_vec())
+            .map(|(_, samples)| samples[discard..].to_vec())
+            .collect()
+    }
+
+    pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<Vec<f64>>> {
+        let num_threads = match std::thread::available_parallelism() {
+            Ok(v) => v.get(),
+            Err(_) => {
+                println!("Warning: could not get number of threads; defaulting to 1.");
+                1
+            }
+        };
+
+        // Create a MultiProgress to manage multiple progress bars
+        let multi = MultiProgress::new();
+        let pb_style = ProgressStyle::default_bar()
+            .template("{prefix} [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
+            .unwrap()
+            .progress_chars("##-");
+
+        // Collect results from each chain
+        let res: Vec<ChainResult> = self
+            .chains
+            .par_iter_mut()
+            .with_max_len(num_threads)
+            .enumerate()
+            .map(|(i, chain)| {
+                // For each chain, add a new progress bar to the MultiProgress
+                let pb = multi.add(indicatif::ProgressBar::new(n_steps as u64));
+                pb.set_prefix(format!("Chain {i}"));
+                pb.set_style(pb_style.clone());
+
+                // Run the chain, passing in the progress bar
+                let samples = chain.run_with_progress(n_steps, &pb);
+
+                // When done, finalize this bar
+                pb.finish_with_message("Done!");
+
+                // Return final state + samples
+                (chain.current_state.clone(), samples)
+            })
+            .collect();
+
+        // Copy final states back into each chain
+        for (i, (final_state, _)) in res.iter().enumerate() {
+            self.chains[i].current_state.clone_from(final_state);
+        }
+
+        // Discard burnin and return the samples from each chain
+        res.into_par_iter()
+            .map(|(_, samples)| samples[discard..].to_vec())
             .collect()
     }
 }
@@ -118,10 +173,47 @@ where
     }
 
     pub fn run(&mut self, n_steps: usize) -> Vec<Vec<f64>> {
-        let mut out = Vec::new();
+        let mut out = Vec::with_capacity(n_steps);
         let mut rng = SmallRng::seed_from_u64(self.seed);
-        out.reserve(n_steps);
-        out.extend(std::iter::repeat_with(|| self.step(&mut rng)).take(n_steps));
+        (0..n_steps).for_each(|_| out.push(self.step(&mut rng)));
+        out
+    }
+
+    pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> Vec<Vec<f64>> {
+        let mut out = Vec::with_capacity(n_steps);
+        let mut rng = SmallRng::seed_from_u64(self.seed);
+
+        let mut accept_count = 0_usize;
+
+        pb.set_length(n_steps as u64);
+
+        const UPDATE_INTERVAL: Duration = Duration::from_millis(500);
+        let mut last_update = Instant::now();
+
+        for step_idx in 0..n_steps {
+            let old_state = self.current_state.clone();
+            let new_state = self.step(&mut rng);
+
+            if new_state != old_state {
+                accept_count += 1;
+            }
+
+            out.push(new_state);
+
+            // Check if 0.5 s have passed or if we’re at the final iteration
+            if last_update.elapsed() >= UPDATE_INTERVAL || step_idx + 1 == n_steps {
+                // Compute acceptance rate
+                let accept_rate = accept_count as f64 / (step_idx + 1) as f64;
+
+                // Move progress bar to current step
+                pb.set_position(step_idx as u64 + 1);
+                pb.set_message(format!("AcceptRate={:.3}", accept_rate));
+
+                // Reset the timer
+                last_update = Instant::now();
+            }
+        }
+
         out
     }
 
@@ -160,6 +252,7 @@ where
 mod tests {
     use super::*;
     use crate::distributions::Normalized;
+    use crate::ks_test::TotalF64;
     use rand_distr::StandardNormal;
 
     use crate::{
@@ -237,6 +330,92 @@ mod tests {
         assert!(
             good_cov[0] && good_cov[1] && good_cov[2] && good_cov[3],
             "Covariance deviation too large."
+        );
+    }
+
+    //
+    // This test uses the MH sampler to generate samples, computes the log‐probabilities
+    // of each sample (under both the target and an “exact” sampler), and then runs the
+    // KS test on these log probabilities. It prints both the internal and external KS test results.
+    //
+    #[test]
+    fn test_mh_ks_comparison() {
+        // --- Setup MH sampler parameters ---
+        const SAMPLE_SIZE: usize = 100_000;
+        const BURNIN: usize = 100_000;
+        const N_CHAINS: usize = 4;
+        let seed: u64 = thread_rng().gen();
+
+        // Setup target distribution: a bivariate Gaussian.
+        let target = Gaussian2D {
+            mean: [0.0, 0.0].into(),
+            cov: [[4.0, 2.0], [2.0, 3.0]].into(),
+        };
+        let initial_state = vec![0.0, 0.0];
+        let proposal = IsotropicGaussian::new(1.0).set_seed(seed);
+        let mut mh =
+            MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(seed);
+
+        // --- Generate “true” samples from the target distribution ---
+        // We use Cholesky decomposition to generate independent samples.
+        let chol =
+            na::Cholesky::new(mh.chains[0].target.cov).expect("Covariance not positive definite");
+        let mut rng = SmallRng::seed_from_u64(seed);
+        let z_vec: Vec<f64> = (0..(2 * SAMPLE_SIZE))
+            .map(|_| rng.sample(StandardNormal))
+            .collect();
+        let z = na::DMatrix::from_vec(2, SAMPLE_SIZE, z_vec);
+        let samples_target = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, (chol.l() * z).as_slice());
+
+        // --- Run the MH sampler ---
+        // We run enough steps so that after discarding burn-in we have SAMPLE_SIZE samples.
+        let samples = mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN).concat();
+        let flattened: Vec<f64> = samples.into_iter().flatten().collect();
+        let samples_mcmc = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, &flattened);
+
+        // --- Compute log probabilities for both sets of samples ---
+        // (We assume your target distribution provides log_prob)
+        let log_prob_mcmc: Vec<f64> = samples_mcmc
+            .row_iter()
+            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .collect();
+        let log_prob_target: Vec<f64> = samples_target
+            .row_iter()
+            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .collect();
+
+        // --- Convert the log probabilities to TotalF64 so they can be sorted ---
+        let log_prob_mcmc_total: Vec<TotalF64> =
+            log_prob_mcmc.iter().copied().map(TotalF64).collect();
+        let log_prob_target_total: Vec<TotalF64> =
+            log_prob_target.iter().copied().map(TotalF64).collect();
+
+        // --- Run the internal KS test ---
+        // Here the chosen significance level (0.05) is arbitrary.
+        let res_internal: crate::ks_test::TestResult =
+            crate::ks_test::two_sample_ks_test(&log_prob_mcmc_total, &log_prob_target_total, 0.05)
+                .expect("Internal KS test failed");
+
+        // --- Run the external KS test ---
+        // The external function may use a different significance level (here 0.95).
+        let res_external =
+            kolmogorov_smirnov::test(&log_prob_mcmc_total, &log_prob_target_total, 0.95);
+
+        // --- Print both results for manual verification ---
+        println!(
+            "Internal KS test result:\n  statistic: {}\n  p_value: {}\n  is_rejected: {}",
+            res_internal.statistic, res_internal.p_value, res_internal.is_rejected
+        );
+        println!(
+            "External KS test result:\n  statistic: {}\n  p_value: {}\n  is_rejected: {}",
+            res_external.statistic,
+            1.0 - res_external.reject_probability,
+            res_external.is_rejected
+        );
+
+        assert!(
+            (res_internal.p_value - 1.0 + res_external.reject_probability).abs() < 0.001,
+            "Expected p-values to be close to each other."
         );
     }
 }

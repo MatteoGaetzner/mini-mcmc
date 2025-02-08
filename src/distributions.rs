@@ -33,7 +33,7 @@ pub trait Normalized {
 }
 
 /// A 2D Gaussian distribution parameterized by mean and a 2×2 covariance matrix.
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub struct Gaussian2D {
     pub mean: Vector2<f64>,
     pub cov: Matrix2<f64>,

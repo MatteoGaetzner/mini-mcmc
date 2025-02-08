@@ -1,2 +1,5 @@
 target/
-samples.png
+*.png
+*.arrow
+*.parquet
+*.csv
