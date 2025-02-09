@@ -4,36 +4,66 @@
 use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use num_traits::Float;
 use rand::prelude::*;
 use rayon::iter::IntoParallelIterator;
 use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
+use std::marker::PhantomData;
 
 use crate::distributions::{ProposalDistribution, TargetDistribution};
 
-// ChainResult: (last state of Markov chain, series of states)
-type ChainResult = (Vec<f64>, Vec<Vec<f64>>);
+/**
+The Metropolis-Hastings sampler, parameterized by:
+- `D`: the target distribution,
+- `Q`: the proposal distribution.
 
-/// The Metropolis-Hastings sampler, parameterized by:
-/// - `D`: the target distribution,
-/// - `Q`: the proposal distribution.
-///
-/// Maintains the current state of the chain, as well as an RNG.
-pub struct MetropolisHastings<D: Clone, Q: Clone> {
+This sampler maintains multiple parallel Markov chains (one per independent
+chain) and a global random seed. It delegates the per-chain work to the
+[`MHMarkovChain`] type.
+
+# Examples
+
+```rust
+// Note: This example assumes that your crate is named `mini_mcmc`
+// and that the types `Gaussian2D` and `IsotropicGaussian` are defined in
+// `mini_mcmc::distributions`.
+use mini_mcmc::metrohast::MetropolisHastings;
+use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+
+let target = Gaussian2D {
+    mean: [0.0, 0.0].into(),
+    cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+};
+let proposal = IsotropicGaussian::new(1.0);
+let initial_state = vec![0.0, 0.0];
+let mh = MetropolisHastings::new(target, proposal, initial_state, 1);
+
+// The sampler should have one chain.
+assert_eq!(mh.chains.len(), 1);
+```
+*/
+pub struct MetropolisHastings<S: Clone, T: Float, D: Clone, Q: Clone> {
     /// The target distribution we want to sample from.
     pub target: D,
 
     /// The proposal distribution used to generate candidate states.
     pub proposal: Q,
 
-    /// Parallel Markov chains.
-    pub chains: Vec<MHMarkovChain<D, Q>>,
+    /// The set of independent Markov chains.
+    pub chains: Vec<MHMarkovChain<S, T, D, Q>>,
 
-    /// Random seed.
+    /// Global random seed.
     pub seed: u64,
 }
 
 #[derive(Clone)]
-pub struct MHMarkovChain<D, Q> {
+/**
+A single Markov chain for the Metropolis-Hastings algorithm.
+
+Each chain holds its own copy of the target and proposal distributions,
+its current state, and a chain-specific random seed.
+*/
+pub struct MHMarkovChain<S, T, D, Q> {
     /// The target distribution we want to sample from.
     pub target: D,
 
@@ -41,42 +71,123 @@ pub struct MHMarkovChain<D, Q> {
     pub proposal: Q,
 
     /// The current state of the Markov chain.
-    pub current_state: Vec<f64>,
+    pub current_state: S,
 
     /// Random seed.
     pub seed: u64,
+
+    /// Random number generator.
+    pub rng: SmallRng,
+
+    phantom: PhantomData<T>,
 }
 
-impl<D, Q> MetropolisHastings<D, Q>
+impl<S, T, D, Q> MetropolisHastings<S, T, D, Q>
 where
-    D: TargetDistribution + std::clone::Clone + std::marker::Send,
-    Q: ProposalDistribution + std::clone::Clone + std::marker::Send,
+    D: TargetDistribution<S, T> + std::clone::Clone + std::marker::Send,
+    Q: ProposalDistribution<S, T> + std::clone::Clone + std::marker::Send,
+    T: Float + Send,
+    S: Clone + std::cmp::PartialEq + Send,
+    rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    /// Constructs a new Metropolis-Hastings sampler with a given target and proposal,
-    /// initializing the chain at `initial_state`.
-    pub fn new(target: D, proposal: Q, initial_state: Vec<f64>, n_chains: usize) -> Self {
+    /**
+    Constructs a new Metropolis-Hastings sampler with a given target and proposal,
+    initializing each chain at `initial_state` and creating `n_chains` parallel chains.
+
+    # Arguments
+
+    * `target` - The target distribution from which to sample.
+    * `proposal` - The proposal distribution used to generate candidate states.
+    * `initial_state` - The starting state for all chains.
+    * `n_chains` - The number of parallel Markov chains to run.
+
+    # Examples
+
+    ```rust
+    use mini_mcmc::metrohast::MetropolisHastings;
+    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+
+    let target = Gaussian2D {
+        mean: [0.0, 0.0].into(),
+        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    };
+    let proposal = IsotropicGaussian::new(1.0);
+    let initial_state = vec![0.0, 0.0];
+    let mh = MetropolisHastings::new(target, proposal, initial_state, 1);
+    assert_eq!(mh.chains.len(), 1);
+    ```
+    */
+    pub fn new(target: D, proposal: Q, initial_state: S, n_chains: usize) -> Self {
         let chains = (0..n_chains)
             .map(|_| MHMarkovChain::new(target.clone(), proposal.clone(), initial_state.clone()))
             .collect();
+        let seed = thread_rng().gen::<u64>();
 
         Self {
             target,
             proposal,
             chains,
-            seed: thread_rng().gen(),
+            seed,
         }
     }
 
+    /**
+    Sets a new seed for the sampler and updates each chain's seed accordingly.
+
+    This method allows you to control randomness and reproduce results. Each chain
+    is given a unique seed by adding its index to the provided seed.
+
+    # Arguments
+
+    * `seed` - The new seed value.
+
+    # Examples
+
+    ```rust
+    use mini_mcmc::metrohast::MetropolisHastings;
+    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+
+    let target = Gaussian2D {
+        mean: [0.0, 0.0].into(),
+        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    };
+    let proposal = IsotropicGaussian::new(1.0);
+    let initial_state = vec![0.0, 0.0];
+    let mh = MetropolisHastings::new(target, proposal, initial_state, 2).set_seed(42);
+    // Each chain's seed should be 42 and 43, respectively.
+    assert_eq!(mh.seed, 42);
+    assert_eq!(mh.chains[0].seed, 42);
+    assert_eq!(mh.chains[1].seed, 43);
+    ```
+    */
     pub fn set_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         // Update each chain's seed so that they differ (if desired)
         for (i, chain) in self.chains.iter_mut().enumerate() {
             chain.seed = seed + i as u64;
+            chain.rng = SmallRng::seed_from_u64(seed + i as u64)
         }
         self
     }
 
-    pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<Vec<f64>>> {
+    /**
+    Runs the sampler for a total of `n_steps` per chain, discarding the first `discard`
+    samples as burn-in.
+
+    This method runs the sampler in parallel over all chains and returns a vector of
+    sample sequences (one per chain) with the burn-in samples removed.
+
+    # Arguments
+
+    * `n_steps` - The total number of steps to run for each chain.
+    * `discard` - The number of initial samples (burn-in) to discard.
+
+    # Returns
+
+    A vector containing the samples (as vectors of state vectors) from each chain,
+    with burn-in discarded.
+    */
+    pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<S>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
@@ -86,7 +197,7 @@ where
         };
 
         // Collect results from each chain
-        let res: Vec<ChainResult> = self
+        let res: Vec<(S, Vec<S>)> = self
             .chains
             .par_iter_mut()
             .with_max_len(num_threads)
@@ -107,7 +218,24 @@ where
             .collect()
     }
 
-    pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<Vec<f64>>> {
+    /**
+    Runs the sampler with a visual progress bar for each chain.
+
+    This method uses the [`indicatif`] crate to display a progress bar for each chain
+    while sampling. It otherwise behaves similarly to [`run`], returning the samples with
+    burn-in discarded.
+
+    # Arguments
+
+    * `n_steps` - The total number of steps to run for each chain.
+    * `discard` - The number of initial samples (burn-in) to discard.
+
+    # Returns
+
+    A vector containing the samples (as vectors of state vectors) from each chain,
+    with burn-in discarded.
+    */
+    pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<S>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
@@ -124,7 +252,7 @@ where
             .progress_chars("##-");
 
         // Collect results from each chain
-        let res: Vec<ChainResult> = self
+        let res: Vec<(S, Vec<S>)> = self
             .chains
             .par_iter_mut()
             .with_max_len(num_threads)
@@ -158,58 +286,109 @@ where
     }
 }
 
-impl<D, Q> MHMarkovChain<D, Q>
+impl<S, T, D, Q> MHMarkovChain<S, T, D, Q>
 where
-    D: TargetDistribution + Clone,
-    Q: ProposalDistribution + Clone,
+    D: TargetDistribution<S, T> + Clone,
+    Q: ProposalDistribution<S, T> + Clone,
+    S: Clone + std::cmp::PartialEq,
+    T: Float,
+    rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    pub fn new(target: D, proposal: Q, initial_state: Vec<f64>) -> Self {
+    const UPDATE_INTERVAL: Duration = Duration::from_millis(500);
+
+    /**
+    Creates a new Markov chain for the Metropolis-Hastings sampler.
+
+    # Arguments
+
+    * `target` - The target distribution from which to sample.
+    * `proposal` - The proposal distribution used for generating candidate states.
+    * `initial_state` - The initial state of the chain.
+
+    # Returns
+
+    A new instance of `MHMarkovChain`.
+
+    # Examples
+
+    ```rust
+    use mini_mcmc::metrohast::MHMarkovChain;
+    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+
+    let target = Gaussian2D {
+        mean: [0.0, 0.0].into(),
+        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    };
+    let proposal = IsotropicGaussian::new(1.0);
+    let chain = MHMarkovChain::new(target, proposal, vec![0.0, 0.0]);
+    assert_eq!(chain.current_state, vec![0.0, 0.0]);
+    ```
+    */
+    pub fn new(target: D, proposal: Q, initial_state: S) -> Self {
+        let seed = thread_rng().gen::<u64>();
         Self {
             target,
             proposal,
             current_state: initial_state,
-            seed: thread_rng().gen(),
+            seed,
+            rng: SmallRng::seed_from_u64(seed),
+            phantom: PhantomData,
         }
     }
 
-    pub fn run(&mut self, n_steps: usize) -> Vec<Vec<f64>> {
+    /**
+    Runs the Markov chain for a given number of steps.
+
+    # Arguments
+
+    * `n_steps` - The number of iterations to run the chain.
+
+    # Returns
+
+    A vector containing the state of the chain after each step.
+    */
+    pub fn run(&mut self, n_steps: usize) -> Vec<S> {
         let mut out = Vec::with_capacity(n_steps);
-        let mut rng = SmallRng::seed_from_u64(self.seed);
-        (0..n_steps).for_each(|_| out.push(self.step(&mut rng)));
+        (0..n_steps).for_each(|_| out.push(self.step()));
         out
     }
 
-    pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> Vec<Vec<f64>> {
-        let mut out = Vec::with_capacity(n_steps);
-        let mut rng = SmallRng::seed_from_u64(self.seed);
+    /**
+    Runs the Markov chain for a given number of steps while updating a progress bar.
 
+    This method uses the provided [`ProgressBar`] to indicate progress. The progress bar is
+    updated approximately every 500 milliseconds.
+
+    # Arguments
+
+    * `n_steps` - The number of iterations to run the chain.
+    * `pb` - A reference to a progress bar to update during the run.
+
+    # Returns
+
+    A vector containing the state of the chain after each step.
+    */
+    pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> Vec<S> {
+        let mut out = Vec::with_capacity(n_steps);
         let mut accept_count = 0_usize;
+        let mut last_update = Instant::now();
 
         pb.set_length(n_steps as u64);
 
-        const UPDATE_INTERVAL: Duration = Duration::from_millis(500);
-        let mut last_update = Instant::now();
-
         for step_idx in 0..n_steps {
             let old_state = self.current_state.clone();
-            let new_state = self.step(&mut rng);
-
+            let new_state = self.step();
             if new_state != old_state {
                 accept_count += 1;
             }
 
             out.push(new_state);
 
-            // Check if 0.5 s have passed or if we’re at the final iteration
-            if last_update.elapsed() >= UPDATE_INTERVAL || step_idx + 1 == n_steps {
-                // Compute acceptance rate
+            // Update progress bar if enough time has passed or if this is the last iteration
+            if last_update.elapsed() >= Self::UPDATE_INTERVAL || step_idx + 1 == n_steps {
                 let accept_rate = accept_count as f64 / (step_idx + 1) as f64;
-
-                // Move progress bar to current step
                 pb.set_position(step_idx as u64 + 1);
                 pb.set_message(format!("AcceptRate={:.3}", accept_rate));
-
-                // Reset the timer
                 last_update = Instant::now();
             }
         }
@@ -217,13 +396,42 @@ where
         out
     }
 
-    /// Performs one Metropolis-Hastings update. Proposes a new state, computes the
-    /// acceptance probability, and returns the (potentially updated) current state.
-    ///
-    /// # Returns
-    ///
-    /// The current state of the chain after this iteration.
-    pub fn step(&mut self, rng: &mut SmallRng) -> Vec<f64> {
+    /**
+    Performs one update step of the Metropolis-Hastings algorithm.
+
+    Proposes a new state using the proposal distribution, computes the acceptance probability
+    based on the target and proposal densities, and updates the chain's current state if the
+    proposal is accepted.
+
+    # Arguments
+
+    * `rng` - A mutable reference to a random number generator.
+
+    # Returns
+
+    The new state of the chain after the update step.
+
+    # Examples
+
+    ```rust
+    use mini_mcmc::metrohast::MHMarkovChain;
+    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
+
+    let target = Gaussian2D {
+        mean: [0.0, 0.0].into(),
+        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    };
+    let proposal = IsotropicGaussian::new(1.0);
+    let mut chain = MHMarkovChain::new(target, proposal, vec![0.0, 0.0]);
+
+    let new_state = chain.step();
+    // The state should have the same dimensionality as the initial state.
+    assert_eq!(new_state.len(), 2);
+    ```
+    */
+    pub fn step(&mut self) -> S {
         // Propose a new state based on the current state.
         let proposed = self.proposal.sample(&self.current_state);
 
@@ -240,7 +448,7 @@ where
         let log_accept_ratio = (proposed_lp + log_q_backward) - (current_lp + log_q_forward);
 
         // Accept or reject based on a uniform(0,1) draw.
-        let u: f64 = rng.gen();
+        let u: T = self.rng.gen();
         if log_accept_ratio > u.ln() {
             self.current_state = proposed;
         }
@@ -274,7 +482,7 @@ mod tests {
             cov: [[4.0, 2.0], [2.0, 3.0]].into(),
         };
         let initial_state = vec![0.0, 0.0];
-        let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
+        let proposal = IsotropicGaussian::<f64>::new(1.0).set_seed(SEED);
         let mut mh =
             MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(SEED);
 
@@ -301,11 +509,11 @@ mod tests {
         // Compare log probabilities via two-sample KS test
         let log_prob_mcmc: Vec<f64> = samples_keep
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
         let log_prob_target: Vec<f64> = samples_target
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
 
         // Quick sanity check for NaN/infinite
@@ -377,11 +585,11 @@ mod tests {
         // (We assume your target distribution provides log_prob)
         let log_prob_mcmc: Vec<f64> = samples_mcmc
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
         let log_prob_target: Vec<f64> = samples_target
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
 
         // --- Convert the log probabilities to TotalF64 so they can be sorted ---

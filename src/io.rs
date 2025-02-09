@@ -17,45 +17,47 @@ use arrow::{
 };
 
 #[cfg(feature = "csv")]
-/// Saves MCMC sample data as a CSV file.
-///
-/// The data is expected to be in a three‐dimensional structure where:
-/// - The outer slice represents **chains**.
-/// - Each chain is a vector of **samples**.
-/// - Each sample is a vector of values (one value per dimension).
-///
-/// The resulting CSV file will have a header row with the columns:
-/// - `"chain"` — the index of the chain,
-/// - `"sample"` — the index of the sample within the chain,
-/// - One column per dimension, named `"dim_0"`, `"dim_1"`, etc.
-///
-/// If the provided data is empty or if the first chain is empty,
-/// the CSV file will contain only the header row (which in the absence
-/// of any sample dimensions will be just `"chain,sample"`).
-///
-/// # Arguments
-///
-/// * `data` - A reference to the MCMC sample data, organized as
-///   `data[chain][sample][dimension]`. Each value must implement
-///   [`std::fmt::Display`] so it can be converted to a string.
-/// * `filename` - The file path where the CSV data will be written.
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the CSV file was written successfully. Otherwise,
-/// returns an error (wrapped in a [`Box<dyn Error>`]) if any I/O or CSV formatting
-/// error occurs.
-///
-/// # Examples
-///
-/// ```rust
-/// # use mini_mcmc::io::save_csv;
-/// // A single chain with a single sample that has one dimension.
-/// let data = vec![vec![vec![42]]];
-/// save_csv(&data, "/tmp/output.csv")?;
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-///
+/**
+Saves MCMC sample data as a CSV file.
+
+The data is expected to be in a three‐dimensional structure where:
+- The outer slice represents **chains**.
+- Each chain is a vector of **samples**.
+- Each sample is a vector of values (one value per dimension).
+
+The resulting CSV file will have a header row with the columns:
+- `"chain"` — the index of the chain,
+- `"sample"` — the index of the sample within the chain,
+- One column per dimension, named `"dim_0"`, `"dim_1"`, etc.
+
+If the provided data is empty or if the first chain is empty,
+the CSV file will contain only the header row (which in the absence
+of any sample dimensions will be just `"chain,sample"`).
+
+# Arguments
+
+* `data` - A reference to the MCMC sample data, organized as
+  `data[chain][sample][dimension]`. Each value must implement
+  [`std::fmt::Display`] so it can be converted to a string.
+* `filename` - The file path where the CSV data will be written.
+
+# Returns
+
+Returns `Ok(())` if the CSV file was written successfully. Otherwise,
+returns an error (wrapped in a [`Box<dyn Error>`]) if any I/O or CSV formatting
+error occurs.
+
+# Examples
+
+```rust
+# use mini_mcmc::io::save_csv;
+// A single chain with a single sample that has one dimension.
+let data = vec![vec![vec![42]]];
+save_csv(&data, "/tmp/output.csv")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+*/
 pub fn save_csv<T: std::fmt::Display>(
     data: &[Vec<Vec<T>>],
     filename: &str,
@@ -85,16 +87,28 @@ pub fn save_csv<T: std::fmt::Display>(
 }
 
 #[cfg(feature = "arrow")]
-/// Saves MCMC data (chain x sample x dimension) as an Apache Arrow file.
-///
-/// # Arguments
-///
-/// * `data`     - A slice of MCMC data. `data[chain][sample][dim]`.
-/// * `filename` - The path to the Arrow (IPC) file to create.
-///
-/// # Type Parameters
-///
-/// * `T` - Must implement `Into<f64> + Copy`. Each dimension value will be stored as f64.
+/**
+Saves MCMC data (chain x sample x dimension) as an Apache Arrow file.
+
+# Arguments
+
+* `data`     - A slice of MCMC data. `data[chain][sample][dim]`.
+* `filename` - The path to the Arrow (IPC) file to create.
+
+# Type Parameters
+
+* `T` - Must implement `Into<f64> + Copy`. Each dimension value will be stored as f64.
+
+# Examples
+
+```rust
+# use mini_mcmc::io::save_arrow;
+let data = vec![vec![vec![42.0_f64]]]; // 1 chain, 1 sample, 1 dimension
+save_arrow(&data, "/tmp/output.arrow")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+*/
 pub fn save_arrow<T: Into<f64> + Copy>(
     data: &[Vec<Vec<T>>],
     filename: &str,
@@ -180,27 +194,29 @@ pub fn save_arrow<T: Into<f64> + Copy>(
 }
 
 #[cfg(feature = "parquet")]
-/// Saves MCMC data (chain × sample × dimension) to a Parquet file.
-///
-/// # Arguments
-///
-/// * `data` - A slice of MCMC data, organized as `data[chain][sample][dimension]`.
-///   Each dimension value must implement `Into<f64> + Copy`.
-/// * `filename` - The path to the Parquet file to create.
-///
-/// # Returns
-///
-/// Returns `Ok(())` if the file was written successfully. Otherwise,
-/// returns an error wrapped in `Box<dyn Error>`.
-///
-/// # Example
-///
-/// ```rust
-/// # use mini_mcmc::io::save_parquet;
-/// let data = vec![vec![vec![42.0_f64]]]; // 1 chain, 1 sample, 1 dimension
-/// save_parquet(&data, "/tmp/output.parquet")?;
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
+/**
+Saves MCMC data (chain × sample × dimension) to a Parquet file.
+
+# Arguments
+
+* `data` - A slice of MCMC data, organized as `data[chain][sample][dimension]`.
+  Each dimension value must implement `Into<f64> + Copy`.
+* `filename` - The path to the Parquet file to create.
+
+# Returns
+
+Returns `Ok(())` if the file was written successfully. Otherwise,
+returns an error wrapped in `Box<dyn Error>`.
+
+# Example
+
+```rust
+# use mini_mcmc::io::save_parquet;
+let data = vec![vec![vec![42.0_f64]]]; // 1 chain, 1 sample, 1 dimension
+save_parquet(&data, "/tmp/output.parquet")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+*/
 pub fn save_parquet<T: Into<f64> + Copy>(
     data: &[Vec<Vec<T>>],
     filename: &str,

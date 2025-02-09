@@ -1,10 +1,44 @@
-//! A minimal two-sample Kolmogorov–Smirnov test, adapted from the `kolmogorov_smirnov` crate
-//! under the Apache 2.0 License (see references in doc comments).
+/*!
+A minimal two-sample Kolmogorov–Smirnov test implementation.
+
+This module provides functionality to perform a two-sample KS test,
+adapted from the [`kolmogorov_smirnov`](https://crates.io/crates/kolmogorov_smirnov)
+crate under the Apache 2.0 License. The KS test compares two samples to determine
+whether they come from the same distribution.
+
+# Overview
+
+The public API consists of:
+
+- The [`TotalF64`] struct, a wrapper around `f64` that provides a total order (even when NaN values occur).
+- The [`two_sample_ks_test`] function, which returns a [`TestResult`] containing the test statistic,
+  p-value, and a boolean flag indicating if the null hypothesis is rejected at a given significance level.
+
+The internal functions such as `compute_ks_statistic`, `ks_p_value`, `pks`, and `qks` perform the
+necessary computations based on algorithms found in *Numerical Recipes (Third Edition)*.
+*/
 
 use rand_distr::num_traits::ToPrimitive;
-
 use std::cmp::Ordering;
 
+/**
+A wrapper around `f64` that implements a total ordering.
+
+This type is used for sorting and comparing floating-point values in a way that
+treats NaN values as equal (and places them after all finite numbers).
+
+# Examples
+
+```rust
+use mini_mcmc::ks_test::TotalF64;
+
+let mut values = [TotalF64(3.0), TotalF64(f64::NAN), TotalF64(1.0)];
+values.sort();
+assert_eq!(values[0].0, 1.0);
+assert_eq!(values[1].0, 3.0);
+assert!(values[2].0.is_nan());
+```
+*/
 #[derive(Debug, Copy, Clone)]
 pub struct TotalF64(pub f64);
 
@@ -32,8 +66,52 @@ impl Ord for TotalF64 {
     }
 }
 
-/// Performs a two-sample KS test at the given significance level. Returns a `TestResult`
-/// indicating whether the null hypothesis (same distribution) is rejected.
+/**
+Performs a two-sample Kolmogorov–Smirnov test on two samples at the given significance level.
+
+The function computes the maximum difference between the empirical distribution functions
+of the two samples and then estimates a p-value. If the p-value is less than the provided
+significance level, the null hypothesis (that the two samples are drawn from the same distribution)
+is rejected.
+
+# Type Parameters
+
+* `T`: A type that implements `Ord`, `Clone`, and `Copy`. In practice, you may wrap your
+  floating-point numbers with [`TotalF64`] to ensure a total ordering.
+
+# Arguments
+
+* `sample_1` - A slice containing the first sample.
+* `sample_2` - A slice containing the second sample.
+* `level` - The significance level at which to test the null hypothesis (e.g. 0.05).
+
+# Returns
+
+Returns a [`TestResult`] with the KS test statistic, p-value, and a flag indicating if the null
+hypothesis is rejected.
+
+# Errors
+
+Returns an error `String` if either sample is empty or if the p-value cannot be computed.
+
+# Examples
+
+```rust
+use mini_mcmc::ks_test::{two_sample_ks_test, TotalF64};
+
+// Two identical samples should yield a KS statistic of 0 and a p-value of 1.
+let sample_1: Vec<TotalF64> = (0..10).map(|x| TotalF64(x as f64)).collect();
+let result = two_sample_ks_test(&sample_1, &sample_1, 0.05).unwrap();
+assert_eq!(result.statistic, 0.0);
+assert!((result.p_value - 1.0).abs() < 1e-10);
+
+// For different samples, the statistic will be > 0 and the p-value will be less than 1.
+let sample_2: Vec<TotalF64> = sample_1.iter().map(|x| TotalF64(x.0 * x.0)).collect();
+let result_diff = two_sample_ks_test(&sample_1, &sample_2, 0.05).unwrap();
+assert!(result_diff.statistic > 0.0);
+assert!(result_diff.p_value < 1.0);
+```
+*/
 pub fn two_sample_ks_test<T: Ord + Clone + Copy>(
     sample_1: &[T],
     sample_2: &[T],
@@ -49,11 +127,13 @@ pub fn two_sample_ks_test<T: Ord + Clone + Copy>(
     })
 }
 
-/// Stores the result of a two-sample KS test, indicating whether the null was rejected,
-/// along with the test statistic, p-value, and the chosen level.
-///
-/// Based on `TestResult` from [kolmogorov_smirnov].
-/// Modifications: Removed critical value field, renamed attributes.
+/**
+The result of a two-sample Kolmogorov–Smirnov test.
+
+Contains the test statistic, the computed p-value, the significance level used for testing,
+and a boolean flag `is_rejected` indicating whether the null hypothesis (that the two samples
+come from the same distribution) is rejected.
+*/
 #[derive(Debug)]
 pub struct TestResult {
     pub is_rejected: bool,
@@ -62,9 +142,28 @@ pub struct TestResult {
     pub level: f64,
 }
 
-/// Computes the Kolmogorov–Smirnov p-value for the two-sample case.
-/// If below `level`, the null hypothesis can be rejected.
+/**
+Computes the Kolmogorov–Smirnov p-value for the two-sample case.
+
+This function uses an approximation based on the effective sample size and
+the KS test statistic. It asserts that both samples have sizes greater than 7 for accuracy.
+
+# Arguments
+
+* `statistic` - The KS test statistic.
+* `n1` - The size of the first sample.
+* `n2` - The size of the second sample.
+
+# Returns
+
+Returns the p-value as an `f64` if successful.
+
+# Panics
+
+This function panics if either sample size is not greater than 7.
+*/
 fn ks_p_value(statistic: f64, n1: usize, n2: usize) -> Result<f64, String> {
+    dbg!(n1, n2);
     assert!(n1 > 7 && n2 > 7, "Requires sample sizes > 7 for accuracy.");
     let factor = ((n1 as f64 * n2 as f64) / (n1 as f64 + n2 as f64)).sqrt();
     let term = factor * statistic;
@@ -75,8 +174,25 @@ fn ks_p_value(statistic: f64, n1: usize, n2: usize) -> Result<f64, String> {
     Ok(p_value)
 }
 
-/// Computes the two-sample KS statistic. Sorts both slices and computes the maximum
-/// difference between their empirical distribution functions.
+/**
+Computes the two-sample KS statistic as the maximum absolute difference between the
+empirical distribution functions of the two samples.
+
+The input samples are first sorted (in ascending order) before computing the statistic.
+
+# Arguments
+
+* `sample_1` - The first sample.
+* `sample_2` - The second sample.
+
+# Returns
+
+Returns the KS statistic as an `f64` if both samples are non-empty.
+
+# Errors
+
+Returns an error if either sample is empty.
+*/
 fn compute_ks_statistic<T: Ord + Clone + Copy>(
     sample_1: &[T],
     sample_2: &[T],
@@ -123,7 +239,22 @@ fn compute_ks_statistic<T: Ord + Clone + Copy>(
     Ok(max_diff)
 }
 
-/// Advances the index `i` while the next value in `sample` is <= `cur_x`.
+/**
+Advances the index `i` while the next value in `sample` is less than or equal to `cur_x`.
+
+This helper function is used in the computation of the KS statistic.
+
+# Arguments
+
+* `i` - A mutable reference to the current index.
+* `n` - The total number of elements in the sample (as `i32`).
+* `sample` - The sorted sample slice.
+* `cur_x` - The current threshold value.
+
+# Example
+
+(This function is internal; see [`compute_ks_statistic`] for its usage.)
+*/
 fn advance<T: Ord + Clone>(i: &mut i32, n: i32, sample: &[T], cur_x: &T) {
     while *i + 1 < n {
         let next_val = &sample[(*i + 1) as usize];
@@ -135,9 +266,32 @@ fn advance<T: Ord + Clone>(i: &mut i32, n: i32, sample: &[T], cur_x: &T) {
     }
 }
 
-/// CDF of the Kolmogorov–Smirnov distribution (one-sided).
-/// Uses the algorithm from *Numerical Recipes* (Third Edition).
-fn pks(z: f64) -> Result<f64, String> {
+/**
+Computes the one-sided cumulative distribution function (CDF) of the KS distribution.
+
+This function uses an algorithm adapted from *Numerical Recipes (Third Edition)*.
+
+# Arguments
+
+* `z` - The argument of the CDF (must be non-negative).
+
+# Returns
+
+Returns the CDF value for the KS distribution.
+
+# Errors
+
+Returns an error if `z` is negative.
+
+# Examples
+
+```rust
+// For z = 0, the CDF should be 0.
+let cdf = mini_mcmc::ks_test::pks(0.0).unwrap();
+assert_eq!(cdf, 0.0);
+```
+*/
+pub fn pks(z: f64) -> Result<f64, String> {
     if z < 0. {
         return Err("Bad z for KS distribution function.".into());
     }
@@ -154,9 +308,32 @@ fn pks(z: f64) -> Result<f64, String> {
     Ok(1. - 2. * (x - x.powf(4.) + x.powf(9.)))
 }
 
-/// Q-function (complementary CDF) of the Kolmogorov–Smirnov distribution.
-/// Also from *Numerical Recipes*.
-fn qks(z: f64) -> Result<f64, String> {
+/**
+Computes the complementary CDF (Q-function) of the KS distribution.
+
+This function is also adapted from *Numerical Recipes (Third Edition)*.
+
+# Arguments
+
+* `z` - The argument of the Q-function (must be non-negative).
+
+# Returns
+
+Returns the complementary probability for the KS distribution.
+
+# Errors
+
+Returns an error if `z` is negative.
+
+# Examples
+
+```rust
+// For z = 0, the Q-function should return 1.
+let q = mini_mcmc::ks_test::qks(0.0).unwrap();
+assert_eq!(q, 1.0);
+```
+*/
+pub fn qks(z: f64) -> Result<f64, String> {
     if z < 0. {
         return Err("Bad z for KS distribution function.".into());
     }

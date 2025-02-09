@@ -90,11 +90,11 @@ mod tests {
         // Compare log probabilities via two-sample KS test
         let log_prob_mcmc: Vec<f64> = samples_keep
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
         let log_prob_target: Vec<f64> = samples_target
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
 
         // Quick sanity check for NaN/infinite
@@ -172,11 +172,11 @@ mod tests {
         // Compute log probabilities and run KS test
         let log_prob_mcmc: Vec<f64> = samples_keep
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
         let log_prob_target: Vec<f64> = samples_target
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
             .collect();
 
         assert!(
