@@ -1,3 +1,4 @@
+use nalgebra as na;
 use std::error::Error;
 use std::fs::File;
 use std::sync::Arc;
@@ -51,21 +52,22 @@ error occurs.
 
 ```rust
 # use mini_mcmc::io::save_csv;
+# use nalgebra as na;
 // A single chain with a single sample that has one dimension.
-let data = vec![vec![vec![42]]];
+let data = vec![na::dmatrix![1, 2, 3, 4]];
 save_csv(&data, "/tmp/output.csv")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 */
 pub fn save_csv<T: std::fmt::Display>(
-    data: &[Vec<Vec<T>>],
+    data: &[na::DMatrix<T>],
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
     let mut wtr = Writer::from_writer(File::create(filename)?);
 
-    let num_dimensions = if !data.is_empty() && !data[0].is_empty() {
-        data[0][0].len()
+    let num_dimensions = if !data.is_empty() && data[0].nrows() > 0 {
+        data[0].ncols()
     } else {
         0
     };
@@ -75,7 +77,7 @@ pub fn save_csv<T: std::fmt::Display>(
 
     // Flatten and write data
     for (chain_idx, chain) in data.iter().enumerate() {
-        for (sample_idx, sample) in chain.iter().enumerate() {
+        for (sample_idx, sample) in chain.row_iter().enumerate() {
             let mut row = vec![chain_idx.to_string(), sample_idx.to_string()];
             row.extend(sample.iter().map(|v| v.to_string()));
             wtr.write_record(&row)?;
@@ -103,21 +105,22 @@ Saves MCMC data (chain x sample x dimension) as an Apache Arrow file.
 
 ```rust
 # use mini_mcmc::io::save_arrow;
-let data = vec![vec![vec![42.0_f64]]]; // 1 chain, 1 sample, 1 dimension
+# use nalgebra as na;
+let data = vec![na::dmatrix![42]]; // 1 chain, 1 sample, 1 dimension
 save_arrow(&data, "/tmp/output.arrow")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 
 */
 pub fn save_arrow<T: Into<f64> + Copy>(
-    data: &[Vec<Vec<T>>],
+    data: &[na::DMatrix<T>],
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Compute dimensions (but don't return early if empty)
     let n_chains = data.len();
-    let n_samples = if n_chains > 0 { data[0].len() } else { 0 };
+    let n_samples = if n_chains > 0 { data[0].nrows() } else { 0 };
     let n_dims = if n_chains > 0 && n_samples > 0 {
-        data[0][0].len()
+        data[0].ncols()
     } else {
         0
     };
@@ -125,10 +128,10 @@ pub fn save_arrow<T: Into<f64> + Copy>(
     // Validate that each chain has the same number of samples,
     // and each sample has the same number of dimensions.
     for chain in data {
-        if chain.len() != n_samples {
+        if chain.nrows() != n_samples {
             return Err("Inconsistent number of samples among chains".into());
         }
-        for sample in chain {
+        for sample in chain.row_iter() {
             if sample.len() != n_dims {
                 return Err("Inconsistent sample dimensions among chains".into());
             }
@@ -159,7 +162,8 @@ pub fn save_arrow<T: Into<f64> + Copy>(
     // If there's actual data, fill the builders
     if n_chains > 0 {
         for (chain_idx, chain) in data.iter().enumerate() {
-            for (sample_idx, sample) in chain.iter().enumerate() {
+            for (sample_idx, sample) in chain.row_iter().enumerate() {
+                println!("{chain_idx}, {sample_idx}");
                 chain_builder.append_value(chain_idx as u32);
                 sample_builder.append_value(sample_idx as u32);
 
@@ -212,20 +216,21 @@ returns an error wrapped in `Box<dyn Error>`.
 
 ```rust
 # use mini_mcmc::io::save_parquet;
-let data = vec![vec![vec![42.0_f64]]]; // 1 chain, 1 sample, 1 dimension
+# use nalgebra as na;
+let data = vec![na::dmatrix![1.0, 2.0, 3.0, 4.0]];
 save_parquet(&data, "/tmp/output.parquet")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_parquet<T: Into<f64> + Copy>(
-    data: &[Vec<Vec<T>>],
+    data: &[na::DMatrix<T>],
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Compute dimensions
     let n_chains = data.len();
-    let n_samples = if n_chains > 0 { data[0].len() } else { 0 };
+    let n_samples = if n_chains > 0 { data[0].nrows() } else { 0 };
     let n_dims = if n_chains > 0 && n_samples > 0 {
-        data[0][0].len()
+        data[0].ncols()
     } else {
         0
     };
@@ -233,10 +238,10 @@ pub fn save_parquet<T: Into<f64> + Copy>(
     // Validate that each chain has the same number of samples
     // and that each sample has the same number of dimensions
     for chain in data {
-        if chain.len() != n_samples {
+        if chain.nrows() != n_samples {
             return Err("Inconsistent number of samples among chains".into());
         }
-        for sample in chain {
+        for sample in chain.row_iter() {
             if sample.len() != n_dims {
                 return Err("Inconsistent sample dimensions among chains".into());
             }
@@ -266,7 +271,7 @@ pub fn save_parquet<T: Into<f64> + Copy>(
     // Populate builders
     if n_chains > 0 {
         for (chain_idx, chain) in data.iter().enumerate() {
-            for (sample_idx, sample) in chain.iter().enumerate() {
+            for (sample_idx, sample) in chain.row_iter().enumerate() {
                 chain_builder.append_value(chain_idx as u32);
                 sample_builder.append_value(sample_idx as u32);
 
@@ -319,7 +324,7 @@ mod tests {
     /// Test saving empty data to CSV (zero chains).
     #[test]
     fn test_save_csv_empty_data() {
-        let data: Vec<Vec<Vec<f64>>> = vec![]; // no chains
+        let data: Vec<na::DMatrix<f32>> = vec![]; // no chains
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -340,7 +345,7 @@ mod tests {
     /// Test saving a single chain with a single sample (and single dimension) to CSV.
     #[test]
     fn test_save_csv_single_chain_single_sample() {
-        let data = vec![vec![vec![42.0]]]; // chain=0, sample=0, dim_0=42
+        let data = vec![na::dmatrix![42]]; // chain=0, sample=0, dim_0=42
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -361,8 +366,8 @@ mod tests {
     fn test_save_csv_multi_chain() {
         // data[chain][sample][dim]
         let data = vec![
-            vec![vec![1.0, 2.0], vec![3.0, 4.0]],
-            vec![vec![10.0, 20.0], vec![30.0, 40.0]],
+            na::DMatrix::<i32>::from_row_slice(2, 2, &[1, 2, 3, 4]),
+            na::DMatrix::<i32>::from_row_slice(2, 2, &[10, 20, 30, 40]),
         ];
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
@@ -385,7 +390,7 @@ chain,sample,dim_0,dim_1
     /// Test saving empty data to Arrow (zero chains).
     #[test]
     fn test_save_arrow_empty_data() {
-        let data: Vec<Vec<Vec<i32>>> = vec![]; // no chains
+        let data: Vec<na::DMatrix<f32>> = vec![]; // no chains
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -418,7 +423,7 @@ chain,sample,dim_0,dim_1
     /// Test saving a single chain/single sample (with single dimension) to Arrow using `f64`.
     #[test]
     fn test_save_arrow_single_chain_single_sample_f64() -> Result<(), Box<dyn Error>> {
-        let data = vec![vec![vec![42.0_f64]]];
+        let data = vec![na::dmatrix![42f64]];
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
 
@@ -471,8 +476,8 @@ chain,sample,dim_0,dim_1
         // chain=1, sample=0 => dims=[10.0, 20.5]
         // chain=1, sample=1 => dims=[30.0, 40.5]
         let data = vec![
-            vec![vec![1.0_f32, 2.5_f32], vec![3.0_f32, 4.5_f32]],
-            vec![vec![10.0_f32, 20.5_f32], vec![30.0_f32, 40.5_f32]],
+            na::DMatrix::<f32>::from_row_slice(2, 2, &[1f32, 2.5f32, 3f32, 4.5f32]),
+            na::DMatrix::<f32>::from_row_slice(2, 2, &[10f32, 20.5f32, 30f32, 40.5f32]),
         ];
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
@@ -489,6 +494,7 @@ chain,sample,dim_0,dim_1
         assert!(reader.next().is_none());
 
         // Check shape: 4 rows, columns = chain, sample, dim_0, dim_1 => total 4 columns
+        dbg!(batch.clone());
         assert_eq!(batch.num_rows(), 4);
         assert_eq!(batch.num_columns(), 4);
 
@@ -545,8 +551,8 @@ chain,sample,dim_0,dim_1
     #[test]
     fn test_save_arrow_integer_data() {
         let data = vec![
-            vec![vec![100_i32, 200, 300], vec![400_i32, 500, 600]],
-            vec![vec![700_i32, 800, 900], vec![1000_i32, 1100, 1200]],
+            na::dmatrix![100, 200, 300, 400, 500, 600],
+            na::dmatrix![700, 800, 900, 1000, 1100, 1200],
         ];
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
@@ -567,7 +573,7 @@ chain,sample,dim_0,dim_1
     #[test]
     fn test_save_arrow_inconsistent_chain_lengths() {
         // Chain 0 has 2 samples, chain 1 has 1 sample
-        let data = vec![vec![vec![1.0_f64], vec![2.0_f64]], vec![vec![3.0_f64]]];
+        let data = vec![na::dmatrix![1f64, 2f64], na::dmatrix![3f64]];
 
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
@@ -584,10 +590,7 @@ chain,sample,dim_0,dim_1
     fn test_save_arrow_inconsistent_dimensions() {
         // The second sample in chain 0 has only 1 dimension,
         // but the first sample had 2 dimensions.
-        let data = vec![vec![
-            vec![1.0_f64, 2.0_f64],
-            vec![3.0_f64], // fewer dims
-        ]];
+        let data = vec![na::dmatrix![1f64, 2f64], na::dmatrix![3f64]];
 
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
@@ -602,8 +605,8 @@ chain,sample,dim_0,dim_1
     /// Test saving empty data to Parquet (zero chains).
     #[test]
     fn test_save_parquet_empty_data() -> Result<(), Box<dyn Error>> {
-        let data: Vec<Vec<Vec<f64>>> = vec![]; // no chains
-                                               // let file = NamedTempFile::new()?;
+        let data: Vec<na::DMatrix<f64>> = vec![]; // no chains
+                                                  // let file = NamedTempFile::new()?;
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -628,7 +631,7 @@ chain,sample,dim_0,dim_1
     /// Test saving a single chain, single sample (one dimension).
     #[test]
     fn test_save_parquet_single_chain_single_sample() -> Result<(), Box<dyn Error>> {
-        let data = vec![vec![vec![42.0_f64]]]; // chain=0, sample=0, dim_0=42
+        let data = vec![na::dmatrix![42f64]]; // chain=0, sample=0, dim_0=42
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
 
@@ -678,8 +681,8 @@ chain,sample,dim_0,dim_1
         // chain=0 => sample=0 => [1.0, 2.0], sample=1 => [3.0, 4.0]
         // chain=1 => sample=0 => [10.0, 20.0], sample=1 => [30.0, 40.0]
         let data = vec![
-            vec![vec![1.0, 2.0], vec![3.0, 4.0]],
-            vec![vec![10.0, 20.0], vec![30.0, 40.0]],
+            na::DMatrix::<f64>::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]),
+            na::DMatrix::<f64>::from_row_slice(2, 2, &[10.0, 20.0, 30.0, 40.0]),
         ];
 
         let file = NamedTempFile::new()?;
@@ -753,7 +756,7 @@ chain,sample,dim_0,dim_1
     #[test]
     fn test_save_parquet_inconsistent_chain_lengths() {
         // Chain 0 has 2 samples, chain 1 has 1 sample
-        let data = vec![vec![vec![1.0_f64], vec![2.0_f64]], vec![vec![3.0_f64]]];
+        let data = vec![na::dmatrix![1f64, 2f64], na::dmatrix![3f64]];
 
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
@@ -770,10 +773,7 @@ chain,sample,dim_0,dim_1
     fn test_save_parquet_inconsistent_dimensions() {
         // The second sample in chain 0 has only 1 dimension,
         // but the first sample had 2 dimensions.
-        let data = vec![vec![
-            vec![1.0_f64, 2.0_f64],
-            vec![3.0_f64], // fewer dims
-        ]];
+        let data = vec![na::dmatrix![1, 2], na::dmatrix![3]];
 
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();

@@ -4,6 +4,7 @@
 use std::time::{Duration, Instant};
 
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use nalgebra as na;
 use num_traits::Float;
 use rand::prelude::*;
 use rayon::iter::IntoParallelIterator;
@@ -35,8 +36,8 @@ let target = Gaussian2D {
     cov: [[1.0, 0.0], [0.0, 1.0]].into(),
 };
 let proposal = IsotropicGaussian::new(1.0);
-let initial_state = vec![0.0, 0.0];
-let mh = MetropolisHastings::new(target, proposal, initial_state, 1);
+let initial_state = [0.0, 0.0];
+let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
 
 // The sampler should have one chain.
 assert_eq!(mh.chains.len(), 1);
@@ -71,7 +72,7 @@ pub struct MHMarkovChain<S, T, D, Q> {
     pub proposal: Q,
 
     /// The current state of the Markov chain.
-    pub current_state: S,
+    pub current_state: Vec<S>,
 
     /// Random seed.
     pub seed: u64,
@@ -87,7 +88,7 @@ where
     D: TargetDistribution<S, T> + std::clone::Clone + std::marker::Send,
     Q: ProposalDistribution<S, T> + std::clone::Clone + std::marker::Send,
     T: Float + Send,
-    S: Clone + std::cmp::PartialEq + Send,
+    S: Clone + std::cmp::PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
     /**
@@ -112,14 +113,14 @@ where
         cov: [[1.0, 0.0], [0.0, 1.0]].into(),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = vec![0.0, 0.0];
-    let mh = MetropolisHastings::new(target, proposal, initial_state, 1);
+    let initial_state = [0.0, 0.0];
+    let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
     assert_eq!(mh.chains.len(), 1);
     ```
     */
-    pub fn new(target: D, proposal: Q, initial_state: S, n_chains: usize) -> Self {
+    pub fn new(target: D, proposal: Q, initial_state: &[S], n_chains: usize) -> Self {
         let chains = (0..n_chains)
-            .map(|_| MHMarkovChain::new(target.clone(), proposal.clone(), initial_state.clone()))
+            .map(|_| MHMarkovChain::new(target.clone(), proposal.clone(), initial_state))
             .collect();
         let seed = thread_rng().gen::<u64>();
 
@@ -152,8 +153,8 @@ where
         cov: [[1.0, 0.0], [0.0, 1.0]].into(),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = vec![0.0, 0.0];
-    let mh = MetropolisHastings::new(target, proposal, initial_state, 2).set_seed(42);
+    let initial_state = [0.0, 0.0];
+    let mh = MetropolisHastings::new(target, proposal, &initial_state, 2).set_seed(42);
     // Each chain's seed should be 42 and 43, respectively.
     assert_eq!(mh.seed, 42);
     assert_eq!(mh.chains[0].seed, 42);
@@ -187,7 +188,7 @@ where
     A vector containing the samples (as vectors of state vectors) from each chain,
     with burn-in discarded.
     */
-    pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<S>> {
+    pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
@@ -197,7 +198,7 @@ where
         };
 
         // Collect results from each chain
-        let res: Vec<(S, Vec<S>)> = self
+        let res: Vec<(Vec<S>, na::DMatrix<S>)> = self
             .chains
             .par_iter_mut()
             .with_max_len(num_threads)
@@ -214,7 +215,7 @@ where
 
         // Discard burnin and return the samples from each chain
         res.into_par_iter()
-            .map(|(_, samples)| samples[discard..].to_vec())
+            .map(|(_, samples)| samples.rows(discard, samples.nrows() - discard).into())
             .collect()
     }
 
@@ -235,7 +236,7 @@ where
     A vector containing the samples (as vectors of state vectors) from each chain,
     with burn-in discarded.
     */
-    pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<Vec<S>> {
+    pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
@@ -252,7 +253,7 @@ where
             .progress_chars("##-");
 
         // Collect results from each chain
-        let res: Vec<(S, Vec<S>)> = self
+        let res: Vec<(Vec<S>, na::DMatrix<S>)> = self
             .chains
             .par_iter_mut()
             .with_max_len(num_threads)
@@ -274,14 +275,16 @@ where
             })
             .collect();
 
+        println!("Finished collecting from chains!");
         // Copy final states back into each chain
         for (i, (final_state, _)) in res.iter().enumerate() {
             self.chains[i].current_state.clone_from(final_state);
         }
+        println!("Finished cloning from chains!");
 
         // Discard burnin and return the samples from each chain
         res.into_par_iter()
-            .map(|(_, samples)| samples[discard..].to_vec())
+            .map(|(_, samples)| samples.rows(discard, samples.nrows() - discard).into())
             .collect()
     }
 }
@@ -290,7 +293,7 @@ impl<S, T, D, Q> MHMarkovChain<S, T, D, Q>
 where
     D: TargetDistribution<S, T> + Clone,
     Q: ProposalDistribution<S, T> + Clone,
-    S: Clone + std::cmp::PartialEq,
+    S: Clone + std::cmp::PartialEq + na::Scalar + num_traits::Zero,
     T: Float,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
@@ -320,16 +323,16 @@ where
         cov: [[1.0, 0.0], [0.0, 1.0]].into(),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let chain = MHMarkovChain::new(target, proposal, vec![0.0, 0.0]);
+    let chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
     assert_eq!(chain.current_state, vec![0.0, 0.0]);
     ```
     */
-    pub fn new(target: D, proposal: Q, initial_state: S) -> Self {
+    pub fn new(target: D, proposal: Q, initial_state: &[S]) -> Self {
         let seed = thread_rng().gen::<u64>();
         Self {
             target,
             proposal,
-            current_state: initial_state,
+            current_state: initial_state.to_vec(),
             seed,
             rng: SmallRng::seed_from_u64(seed),
             phantom: PhantomData,
@@ -347,9 +350,12 @@ where
 
     A vector containing the state of the chain after each step.
     */
-    pub fn run(&mut self, n_steps: usize) -> Vec<S> {
-        let mut out = Vec::with_capacity(n_steps);
-        (0..n_steps).for_each(|_| out.push(self.step()));
+    pub fn run(&mut self, n_steps: usize) -> na::DMatrix<S> {
+        // let mut out = Vec::with_capacity(n_steps);
+        let mut out = na::DMatrix::<S>::zeros(n_steps, self.current_state.len());
+        (0..n_steps).for_each(|i| {
+            out.row_mut(i).copy_from_slice(&self.step());
+        });
         out
     }
 
@@ -368,8 +374,8 @@ where
 
     A vector containing the state of the chain after each step.
     */
-    pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> Vec<S> {
-        let mut out = Vec::with_capacity(n_steps);
+    pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> na::DMatrix<S> {
+        let mut out = na::DMatrix::<S>::zeros(n_steps, self.current_state.len());
         let mut accept_count = 0_usize;
         let mut last_update = Instant::now();
 
@@ -382,7 +388,7 @@ where
                 accept_count += 1;
             }
 
-            out.push(new_state);
+            out.row_mut(step_idx).copy_from_slice(&new_state);
 
             // Update progress bar if enough time has passed or if this is the last iteration
             if last_update.elapsed() >= Self::UPDATE_INTERVAL || step_idx + 1 == n_steps {
@@ -424,16 +430,16 @@ where
         cov: [[1.0, 0.0], [0.0, 1.0]].into(),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let mut chain = MHMarkovChain::new(target, proposal, vec![0.0, 0.0]);
+    let mut chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
 
     let new_state = chain.step();
     // The state should have the same dimensionality as the initial state.
     assert_eq!(new_state.len(), 2);
     ```
     */
-    pub fn step(&mut self) -> S {
+    pub fn step(&mut self) -> Vec<S> {
         // Propose a new state based on the current state.
-        let proposed = self.proposal.sample(&self.current_state);
+        let proposed: Vec<S> = self.proposal.sample(&self.current_state);
 
         // Compute log probabilities under the target distribution.
         let current_lp = self.target.unnorm_log_prob(&self.current_state);
@@ -481,10 +487,10 @@ mod tests {
             mean: [0.0, 0.0].into(),
             cov: [[4.0, 2.0], [2.0, 3.0]].into(),
         };
-        let initial_state = vec![0.0, 0.0];
+        let initial_state = [0.0, 0.0];
         let proposal = IsotropicGaussian::<f64>::new(1.0).set_seed(SEED);
         let mut mh =
-            MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(SEED);
+            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(SEED);
 
         // Generate "true" samples from the target using Cholesky
         let chol = na::Cholesky::new(mh.chains[0].target.cov).expect("Cov not positive definite");
@@ -497,23 +503,29 @@ mod tests {
         let samples_target = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, (chol.l() * z).as_slice());
 
         // Run MCMC, discard burn-in
-        let samples = mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN).concat();
-
-        let flattened: Vec<f64> = samples.into_iter().flatten().collect();
-        let samples_keep = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, &flattened);
+        let mut samples = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
+        mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN)
+            .into_iter()
+            .enumerate()
+            .for_each(|(i, chain_samples)| {
+                dbg!(i, chain_samples.row_mean());
+                samples
+                    .rows_mut(i * chain_samples.nrows(), chain_samples.nrows())
+                    .copy_from(&chain_samples)
+            });
 
         // Validate mean & covariance
-        let mean_mcmc = samples_keep.row_mean();
-        let cov_mcmc = stats::cov(&samples_keep).unwrap();
+        let mean_mcmc = samples.row_mean();
+        let cov_mcmc = stats::cov(&samples).unwrap();
 
         // Compare log probabilities via two-sample KS test
-        let log_prob_mcmc: Vec<f64> = samples_keep
+        let log_prob_mcmc: Vec<f64> = samples
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
             .collect();
         let log_prob_target: Vec<f64> = samples_target
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
             .collect();
 
         // Quick sanity check for NaN/infinite
@@ -533,6 +545,7 @@ mod tests {
             "Mean deviation too large from target."
         );
 
+        dbg!(mh.target.cov, &cov_mcmc);
         let good_cov = (na::DMatrix::from_column_slice(2, 2, mh.target.cov.as_slice()) - cov_mcmc)
             .map(|x| x.abs() < 0.5);
         assert!(
@@ -559,10 +572,10 @@ mod tests {
             mean: [0.0, 0.0].into(),
             cov: [[4.0, 2.0], [2.0, 3.0]].into(),
         };
-        let initial_state = vec![0.0, 0.0];
+        let initial_state = [0.0, 0.0];
         let proposal = IsotropicGaussian::new(1.0).set_seed(seed);
         let mut mh =
-            MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(seed);
+            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
 
         // --- Generate “true” samples from the target distribution ---
         // We use Cholesky decomposition to generate independent samples.
@@ -577,19 +590,25 @@ mod tests {
 
         // --- Run the MH sampler ---
         // We run enough steps so that after discarding burn-in we have SAMPLE_SIZE samples.
-        let samples = mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN).concat();
-        let flattened: Vec<f64> = samples.into_iter().flatten().collect();
-        let samples_mcmc = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, &flattened);
+        let mut samples_mcmc = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
+        mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN)
+            .into_iter()
+            .enumerate()
+            .for_each(|(i, chain_samples)| {
+                samples_mcmc
+                    .rows_mut(i * chain_samples.nrows(), chain_samples.nrows())
+                    .copy_from(&chain_samples)
+            });
 
         // --- Compute log probabilities for both sets of samples ---
         // (We assume your target distribution provides log_prob)
         let log_prob_mcmc: Vec<f64> = samples_mcmc
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
             .collect();
         let log_prob_target: Vec<f64> = samples_target
             .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]].to_vec()))
+            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
             .collect();
 
         // --- Convert the log probabilities to TotalF64 so they can be sorted ---
@@ -625,5 +644,66 @@ mod tests {
             (res_internal.p_value - 1.0 + res_external.reject_probability).abs() < 0.001,
             "Expected p-values to be close to each other."
         );
+    }
+
+    #[test]
+    fn test_run_with_progress() {
+        // We'll do a small run to keep the test fast
+        const SAMPLE_SIZE: usize = 2000;
+        const DISCARD: usize = 500;
+        const N_CHAINS: usize = 2;
+        const SEED: u64 = 42;
+
+        // Setup a small Gaussian2D target and an isotropic proposal
+        let target = Gaussian2D {
+            mean: [0.0, 0.0].into(),
+            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+        };
+        let proposal = IsotropicGaussian::<f32>::new(0.5).set_seed(SEED);
+        let initial_state = [1.0, 1.0];
+
+        // Create the MH sampler with multiple chains
+        let mut mh_progress =
+            MetropolisHastings::new(target, proposal.clone(), &initial_state.clone(), N_CHAINS)
+                .set_seed(SEED);
+
+        // Run with progress bars
+        println!("STARTING RUNNING WITH PROGRESS");
+        let samples_progress =
+            mh_progress.run_with_progress(SAMPLE_SIZE / N_CHAINS + DISCARD, DISCARD);
+        println!("FINISHED RUNNING WITH PROGRESS");
+
+        // Basic checks
+        assert_eq!(samples_progress.len(), N_CHAINS);
+
+        for chain_samples in &samples_progress {
+            assert_eq!(chain_samples.nrows(), SAMPLE_SIZE / 2);
+        }
+
+        // Compare to normal run
+        let mut mh_normal =
+            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(SEED);
+        let samples_normal = mh_normal.run(SAMPLE_SIZE / N_CHAINS + DISCARD, DISCARD);
+
+        // Check that shape is the same
+        assert_eq!(samples_normal.len(), N_CHAINS);
+        for chain_samples in &samples_normal {
+            assert_eq!(chain_samples.nrows(), SAMPLE_SIZE / 2);
+        }
+
+        // Compare means across the two runs.
+        // We'll just do a naive check that they're "similar".
+        for (sp_chain, sn_chain) in samples_progress.iter().zip(samples_normal.iter()) {
+            let sp_mean = sp_chain.row_mean();
+            let sn_mean = sn_chain.row_mean();
+            assert!(
+                (sp_mean[0] - sn_mean[0]).abs() < 0.5,
+                "Means differ more than expected on dimension 0"
+            );
+            assert!(
+                (sp_mean[1] - sn_mean[1]).abs() < 0.5,
+                "Means differ more than expected on dimension 1"
+            );
+        }
     }
 }

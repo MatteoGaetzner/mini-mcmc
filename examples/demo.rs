@@ -3,6 +3,7 @@
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, ProposalDistribution};
 use mini_mcmc::io::save_parquet;
 use mini_mcmc::metrohast::MetropolisHastings;
+use nalgebra as na;
 
 use plotters::chart::ChartBuilder;
 use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
@@ -23,30 +24,37 @@ fn main() -> Result<(), Box<dyn Error>> {
         cov: [[2.0, 1.0], [1.0, 2.0]].into(),
     };
     let proposal = IsotropicGaussian::new(2.0).set_seed(seed);
-    let initial_state = vec![10.0, 12.0];
+    let initial_state = [10.0, 12.0];
 
-    let mut mh = MetropolisHastings::new(target, proposal, initial_state, N_CHAINS).set_seed(seed);
+    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
 
     // Generate samples
     let samples = mh.run_with_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN);
-    let pooled = samples.concat();
+    let mut pooled = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
+    samples.iter().enumerate().for_each(|(i, x)| {
+        pooled
+            .rows_mut(i * x.nrows(), x.nrows())
+            .copy_from_slice(x.as_slice())
+    });
 
     println!("Generated {} samples", pooled.len());
-    println!("Last sample: {:?}", pooled.last());
+    println!("Last sample: {:?}", pooled.row(pooled.nrows() - 1));
 
     // Basic statistics
-    let mean_x = pooled.iter().map(|p| p[0]).sum::<f64>() / pooled.len() as f64;
-    let mean_y = pooled.iter().map(|p| p[1]).sum::<f64>() / pooled.len() as f64;
-    println!("Mean after burn-in: ({:.2}, {:.2})", mean_x, mean_y);
+    let row_mean = pooled.row_mean();
+    println!(
+        "Mean after burn-in: ({:.2}, {:.2})",
+        row_mean[0], row_mean[1]
+    );
 
     // Compute quantiles for plotting ranges
-    let mut x_coords: Vec<f64> = pooled.iter().map(|p| p[0]).collect();
-    let mut y_coords: Vec<f64> = pooled.iter().map(|p| p[1]).collect();
+    let mut x_coords: Vec<f64> = Vec::from_iter(pooled.column(0).iter().copied());
+    let mut y_coords: Vec<f64> = Vec::from_iter(pooled.column(1).iter().copied());
     x_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
     y_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
 
-    let lower_idx = (0.005 * pooled.len() as f64) as usize;
-    let upper_idx = (0.995 * pooled.len() as f64) as usize;
+    let lower_idx = (0.005 * pooled.nrows() as f64) as usize;
+    let upper_idx = (0.995 * pooled.nrows() as f64) as usize;
     let x_range = x_coords[lower_idx]..x_coords[upper_idx];
     let y_range = y_coords[lower_idx]..y_coords[upper_idx];
     println!("x_range: {:?}", x_range);
@@ -54,8 +62,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Filter samples within the plotting range
     let filtered: Vec<_> = pooled
-        .iter()
-        .filter(|&point| x_range.contains(&point[0]) && y_range.contains(&point[1]))
+        .row_iter()
+        .filter(|point| x_range.contains(&point[0]) && y_range.contains(&point[1]))
         .collect();
     println!("Filtered samples: {}", filtered.len());
 
@@ -88,7 +96,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     chart
         .draw_series(std::iter::once(Circle::new(
-            (mean_x, mean_y),
+            (row_mean[0], row_mean[1]),
             6,
             RED.filled(),
         )))?

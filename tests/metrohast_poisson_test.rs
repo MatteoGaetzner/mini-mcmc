@@ -20,26 +20,24 @@ mod discrete_tests {
     }
 
     impl TargetDistribution<i32, f64> for PoissonDist {
-        fn unnorm_log_prob(&self, k: &i32) -> f64 {
-            if *k < 0 {
+        fn unnorm_log_prob(&self, k: &[i32]) -> f64 {
+            if k[0] < 0 {
                 // Probability zero if k < 0
                 f64::NEG_INFINITY
             } else {
                 // unnorm_log_prob(k) = k ln(lambda) - lambda - ln(k!)
                 // We'll compute ln(k!) using an approximation (ln_gamma(k+1)) or a small table for demonstration
-                let kf = *k as f64;
-                kf * self.lambda.ln() - self.lambda - ln_factorial(*k)
+                let kf = k[0] as f64;
+                kf * self.lambda.ln() - self.lambda - ln_factorial(k[0])
             }
         }
     }
 
-    // A small helper to approximate ln(k!) using a simple table or gamma function:
+    // A small helper for computing ln(k!)
     fn ln_factorial(k: i32) -> f64 {
         if k < 2 {
             0.0
         } else {
-            // For large k, you might use a more accurate approximation or a table,
-            // e.g. special::Gamma::ln_gamma(k+1). For demonstration, let's do a naive loop:
             let mut acc = 0.0;
             for i in 1..=k {
                 acc += (i as f64).ln();
@@ -62,19 +60,19 @@ mod discrete_tests {
     }
 
     impl ProposalDistribution<i32, f64> for PoissonRandomWalk {
-        fn sample(&mut self, current: &i32) -> i32 {
+        fn sample(&mut self, current: &[i32]) -> Vec<i32> {
             // Move +1 or -1 with 50% chance, but disallow going below 0.
             let step = if self.rng.gen_bool(0.5) { 1 } else { -1 };
-            let new_state = current + step;
+            let new_state = current[0] + step;
             if new_state < 0 {
                 // Reflect instead of going negative (or could do clamp)
-                0
+                vec![0]
             } else {
-                new_state
+                vec![new_state]
             }
         }
 
-        fn log_prob(&self, _from: &i32, _to: &i32) -> f64 {
+        fn log_prob(&self, _from: &[i32], _to: &[i32]) -> f64 {
             // Symmetric move => probability = 0.5 => log_prob = ln(0.5)
             0.5_f64.ln()
         }
@@ -93,13 +91,13 @@ mod discrete_tests {
         // Set up the target distribution and proposal
         let target = PoissonDist { lambda: 4.0 };
         let proposal = PoissonRandomWalk::new();
-        let initial_state = 0i32;
+        let initial_state = [0i32];
 
         // Build Metropolis-Hastings
-        let mut mh = MetropolisHastings::new(target, proposal, initial_state, 1).set_seed(42);
+        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
 
         // Sample
-        let samples_per_chain: Vec<Vec<i32>> = mh.run(20_000, 2_000);
+        let samples_per_chain = mh.run(20_000, 2_000);
         let samples = &samples_per_chain[0]; // single chain
 
         // Build a histogram of sample frequencies for k in [0..10]
@@ -163,14 +161,14 @@ mod discrete_tests {
     }
 
     impl TargetDistribution<i32, f64> for BinomialDist {
-        fn unnorm_log_prob(&self, k: &i32) -> f64 {
-            if *k < 0 || *k > self.n {
+        fn unnorm_log_prob(&self, k: &[i32]) -> f64 {
+            if k[0] < 0 || k[0] > self.n {
                 return f64::NEG_INFINITY;
             }
             // unnorm_log_prob(k) = ln( nCk ) + k ln(p) + (n-k) ln(1-p)
-            let kf = *k as f64;
+            let kf = k[0] as f64;
             let nf = self.n as f64;
-            binomial_coeff_ln(self.n, *k) + kf * self.p.ln() + (nf - kf) * (1.0 - self.p).ln()
+            binomial_coeff_ln(self.n, k[0]) + kf * self.p.ln() + (nf - kf) * (1.0 - self.p).ln()
         }
     }
 
@@ -195,14 +193,14 @@ mod discrete_tests {
     }
 
     impl ProposalDistribution<i32, f64> for BinomialRandomWalk {
-        fn sample(&mut self, current: &i32) -> i32 {
+        fn sample(&mut self, current: &[i32]) -> Vec<i32> {
             // ±1 random walk, clamped to [0..n]
             let step = if self.rng.gen_bool(0.5) { 1 } else { -1 };
-            let new_val = current + step;
-            new_val.max(0).min(self.n)
+            let new_val = current[0] + step;
+            vec![new_val.max(0).min(self.n)]
         }
 
-        fn log_prob(&self, _from: &i32, _to: &i32) -> f64 {
+        fn log_prob(&self, _from: &[i32], _to: &[i32]) -> f64 {
             // Symmetric => probability 0.5 => ln(0.5)
             0.5_f64.ln()
         }
@@ -220,9 +218,9 @@ mod discrete_tests {
     fn test_binomial_mh() {
         let target = BinomialDist { n: 10, p: 0.3 };
         let proposal = BinomialRandomWalk::new(10);
-        let initial_state = 5; // start from the middle
+        let initial_state = [5]; // start from the middle
 
-        let mut mh = MetropolisHastings::new(target, proposal, initial_state, 1).set_seed(42);
+        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
 
         let samples_per_chain = mh.run(20_000, 2_000);
         let samples = &samples_per_chain[0];
