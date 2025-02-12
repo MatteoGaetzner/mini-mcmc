@@ -12,7 +12,7 @@ Once published on crates.io, add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mini-mcmc = "0.1.0"
+mini-mcmc = "0.1.1"
 ```
 
 Then you can `use mini_mcmc` in your Rust code.
