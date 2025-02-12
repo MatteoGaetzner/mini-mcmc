@@ -1,45 +1,45 @@
 /*!
-Defines target and proposal distributions for 2D (and by extension, arbitrary-dimensional)
-Gaussian models along with traits for sampling and evaluating log-probabilities. It also
-defines a simple discrete distribution (a categorical distribution).
+Defines target and proposal distributions for Markov chain Monte Carlo, including
+a **2D Gaussian** with a full covariance matrix, an **isotropic Gaussian** that
+can be used in any dimension, and a **categorical** (discrete) distribution.
 
-This module is generic over the floating-point precision (e.g., `f32` or `f64`) using
-the [`num_traits::Float`] trait, and it provides a new trait for discrete distributions.
+This module is generic over the floating-point precision (e.g. `f32` or `f64`)
+using [`num_traits::Float`]. It also defines several traits:
+- [`TargetDistribution`] for densities we want to sample from,
+- [`ProposalDistribution`] for proposal mechanisms,
+- [`Normalized`] for distributions that can compute a fully normalized log-prob,
+- [`DiscreteDistribution`] for distributions over finite sets.
 
 # Examples
 
 ### Continuous Distributions
 
 ```rust
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, ProposalDistribution, TargetDistribution, Normalized};
+use mini_mcmc::distributions::{
+    Gaussian2D, IsotropicGaussian, ProposalDistribution,
+    TargetDistribution, Normalized
+};
 use nalgebra::{Vector2, Matrix2};
 
-// Create a 2D Gaussian target distribution using f64.
+// ----------------------
+// Example: Gaussian2D (2D with full covariance)
+// ----------------------
 let mean = Vector2::new(0.0, 0.0);
-let cov = Matrix2::new(1.0, 0.0, 0.0, 1.0);
+let cov = Matrix2::new(1.0, 0.0,
+                       0.0, 1.0);
 let gauss: Gaussian2D<f64> = Gaussian2D { mean, cov };
-let logp = gauss.log_prob(&vec![0.5, -0.5]);
-println!("Normalized log-probability: {}", logp);
 
-// Create an isotropic Gaussian proposal distribution.
+// Compute the fully normalized log-prob at (0.5, -0.5):
+let logp = gauss.log_prob(&vec![0.5, -0.5]);
+println!("Normalized log-probability (2D Gaussian): {}", logp);
+
+// ----------------------
+// Example: IsotropicGaussian (any dimension)
+// ----------------------
 let mut proposal: IsotropicGaussian<f64> = IsotropicGaussian::new(1.0);
-let current = vec![0.0, 0.0];
+let current = vec![0.0, 0.0];  // dimension = 2 in this example
 let candidate = proposal.sample(&current);
 println!("Candidate state: {:?}", candidate);
-```
-
-### Discrete Distributions
-
-```rust
-use mini_mcmc::distributions::{Categorical, DiscreteDistribution};
-
-// Create a categorical distribution over three categories.
-let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
-let sample = cat.sample();
-println!("Sampled category: {}", sample);
-let logp = cat.log_prob(sample);
-println!("Log-probability of sampled category: {}", logp);
-```
 */
 
 use nalgebra::{Matrix2, Vector2};
@@ -76,7 +76,19 @@ pub trait Normalized<S, T: Float> {
     fn log_prob(&self, theta: &[S]) -> T;
 }
 
-/// A trait for discrete distributions whose state is represented as an index.
+/** A trait for discrete distributions whose state is represented as an index.
+ ```rust
+ use mini_mcmc::distributions::{Categorical, DiscreteDistribution};
+
+ // Create a categorical distribution over three categories.
+ let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
+ let sample = cat.sample();
+ println!("Sampled category: {}", sample);
+
+ let logp = cat.log_prob(sample);
+ println!("Log-probability of sampled category: {}", logp);
+ ```
+*/
 pub trait DiscreteDistribution<T: Float> {
     /// Samples an index from the distribution.
     fn sample(&mut self) -> usize;
@@ -87,19 +99,23 @@ pub trait DiscreteDistribution<T: Float> {
 /**
 A 2D Gaussian distribution parameterized by a mean vector and a 2×2 covariance matrix.
 
-This struct is generic over the floating-point type `T` (e.g. `f32` or `f64`).
+- The generic type `T` is typically `f32` or `f64`.
+- Implements both [`TargetDistribution`] (for unnormalized log-prob) and
+  [`Normalized`] (for fully normalized log-prob).
 
-# Examples
+# Example
 
 ```rust
 use mini_mcmc::distributions::{Gaussian2D, Normalized};
 use nalgebra::{Vector2, Matrix2};
 
 let mean = Vector2::new(0.0, 0.0);
-let cov = Matrix2::new(1.0, 0.0, 0.0, 1.0);
+let cov = Matrix2::new(1.0, 0.0,
+                       0.0, 1.0);
 let gauss: Gaussian2D<f64> = Gaussian2D { mean, cov };
+
 let lp = gauss.log_prob(&vec![0.5, -0.5]);
-println!("Log probability: {}", lp);
+println!("Normalized log probability: {}", lp);
 ```
 */
 #[derive(Clone, Copy)]
@@ -160,10 +176,15 @@ where
 }
 
 /**
-An isotropic Gaussian distribution used as a proposal distribution.
+An *isotropic* Gaussian distribution usable as either a target or a proposal
+in MCMC. It works for **any dimension** because it applies independent
+Gaussian noise (`mean = 0`, `std = self.std`) to each coordinate.
 
-This distribution adds independent Gaussian noise (with mean 0 and standard deviation `std`)
-to each coordinate of the current state. It is generic over the floating-point type `T`.
+- Implements [`ProposalDistribution`] so it can propose new states
+  from a current state.
+- Also implements [`TargetDistribution`] for an unnormalized log-prob,
+  which might be useful if you want to treat it as a target distribution
+  in simplified scenarios.
 
 # Examples
 
@@ -171,9 +192,13 @@ to each coordinate of the current state. It is generic over the floating-point t
 use mini_mcmc::distributions::{IsotropicGaussian, ProposalDistribution};
 
 let mut proposal: IsotropicGaussian<f64> = IsotropicGaussian::new(1.0);
-let current = vec![0.0, 0.0];
+let current = vec![0.0, 0.0, 0.0]; // dimension = 3
 let candidate = proposal.sample(&current);
 println!("Candidate state: {:?}", candidate);
+
+// Evaluate log q(candidate | current):
+let logq = proposal.log_prob(&current, &candidate);
+println!("Log of the proposal density: {}", logq);
 ```
 */
 #[derive(Clone)]

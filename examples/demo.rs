@@ -38,7 +38,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
 
     println!("Generated {} samples", pooled.len());
-    println!("Last sample: {:?}", pooled.row(pooled.nrows() - 1));
 
     // Basic statistics
     let row_mean = pooled.row_mean();
@@ -57,8 +56,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let upper_idx = (0.995 * pooled.nrows() as f64) as usize;
     let x_range = x_coords[lower_idx]..x_coords[upper_idx];
     let y_range = y_coords[lower_idx]..y_coords[upper_idx];
-    println!("x_range: {:?}", x_range);
-    println!("y_range: {:?}", y_range);
 
     // Filter samples within the plotting range
     let filtered: Vec<_> = pooled
@@ -113,7 +110,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Saved scatter plot to scatter_plot.png");
 
     let _ = save_parquet(&samples, "samples.parquet");
-    println!("Saved sampels in file samples.arrow.");
+    println!("Saved sampels in file samples.parquet.");
 
     Ok(())
 }
@@ -124,5 +121,9 @@ fn test_main() {
     assert!(
         std::path::Path::new("scatter_plot.png").exists(),
         "Expected scatter_plot.png to exist."
+    );
+    assert!(
+        std::path::Path::new("samples.parquet").exists(),
+        "Expected sample.parquet to exist."
     );
 }

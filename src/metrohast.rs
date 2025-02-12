@@ -173,26 +173,31 @@ where
 
     /**
     Runs the sampler for a total of `n_steps` per chain, discarding the first `discard`
-    samples as burn-in.
+    samples (burn-in).
 
-    This method runs the sampler in parallel over all chains and returns a vector of
-    sample sequences (one per chain) with the burn-in samples removed.
+    This method runs the sampler in parallel over all chains and returns
+    a [`Vec<na::DMatrix<S>>`], where each `DMatrix` corresponds to one chain.
+    For each chain's matrix:
+
+    - **`nrows()`** = `n_steps - discard` (the number of kept samples),
+    - **`ncols()`** = the dimensionality of the state
+      (i.e., the length of the chain's current state vector).
 
     # Arguments
 
-    * `n_steps` - The total number of steps to run for each chain.
-    * `discard` - The number of initial samples (burn-in) to discard.
+    * `n_steps` - The total number of steps (samples) to collect per chain.
+    * `discard` - The number of initial samples to discard as burn-in.
 
     # Returns
 
-    A vector containing the samples (as vectors of state vectors) from each chain,
-    with burn-in discarded.
+    A vector of matrices, one matrix per chain. Each matrix has
+    shape `(n_steps - discard) × (dimension of S)`.
     */
     pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
-                println!("Warning: could not get number of threads; defaulting to 1.");
+                eprintln!("Warning: could not get number of threads; defaulting to 1.");
                 1
             }
         };
@@ -223,24 +228,27 @@ where
     Runs the sampler with a visual progress bar for each chain.
 
     This method uses the [`indicatif`] crate to display a progress bar for each chain
-    while sampling. It otherwise behaves similarly to [`run`], returning the samples with
-    burn-in discarded.
+    while sampling. It otherwise behaves similarly to [`run`], returning a
+    [`Vec<na::DMatrix<S>>`] where each `DMatrix` corresponds to one chain.
+
+    - **`nrows()`** for each chain's matrix = `n_steps - discard`.
+    - **`ncols()`** = the dimensionality of each state.
 
     # Arguments
 
-    * `n_steps` - The total number of steps to run for each chain.
-    * `discard` - The number of initial samples (burn-in) to discard.
+    * `n_steps` - The total number of steps (samples) to collect per chain.
+    * `discard` - The number of initial samples to discard as burn-in.
 
     # Returns
 
-    A vector containing the samples (as vectors of state vectors) from each chain,
-    with burn-in discarded.
+    A vector of matrices, one matrix per chain, each with
+    shape `(n_steps - discard) × (dimension of S)`.
     */
     pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
         let num_threads = match std::thread::available_parallelism() {
             Ok(v) => v.get(),
             Err(_) => {
-                println!("Warning: could not get number of threads; defaulting to 1.");
+                eprintln!("Warning: could not get number of threads; defaulting to 1.");
                 1
             }
         };
@@ -275,12 +283,10 @@ where
             })
             .collect();
 
-        println!("Finished collecting from chains!");
         // Copy final states back into each chain
         for (i, (final_state, _)) in res.iter().enumerate() {
             self.chains[i].current_state.clone_from(final_state);
         }
-        println!("Finished cloning from chains!");
 
         // Discard burnin and return the samples from each chain
         res.into_par_iter()
@@ -344,11 +350,13 @@ where
 
     # Arguments
 
-    * `n_steps` - The number of iterations to run the chain.
+    * `n_steps` - The number of iterations (samples) to generate.
 
     # Returns
 
-    A vector containing the state of the chain after each step.
+    An [`nalgebra::DMatrix<S>`] with `nrows() = n_steps` and
+    `ncols() = dimension of the state`. Each row corresponds to the chain’s state
+    at that iteration.
     */
     pub fn run(&mut self, n_steps: usize) -> na::DMatrix<S> {
         // let mut out = Vec::with_capacity(n_steps);
@@ -362,17 +370,16 @@ where
     /**
     Runs the Markov chain for a given number of steps while updating a progress bar.
 
-    This method uses the provided [`ProgressBar`] to indicate progress. The progress bar is
-    updated approximately every 500 milliseconds.
-
     # Arguments
 
-    * `n_steps` - The number of iterations to run the chain.
-    * `pb` - A reference to a progress bar to update during the run.
+    * `n_steps` - The number of iterations (samples) to run.
+    * `pb` - A reference to a progress bar to update periodically.
 
     # Returns
 
-    A vector containing the state of the chain after each step.
+    An [`nalgebra::DMatrix<S>`] with `nrows() = n_steps` and
+    `ncols() = dimension of the state`. Each row corresponds to the chain’s state
+    at that iteration. The progress bar is updated approximately every 500 ms.
     */
     pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> na::DMatrix<S> {
         let mut out = na::DMatrix::<S>::zeros(n_steps, self.current_state.len());
@@ -403,19 +410,15 @@ where
     }
 
     /**
-    Performs one update step of the Metropolis-Hastings algorithm.
+    Performs one Metropolis-Hastings update step (a proposal and possible acceptance).
 
-    Proposes a new state using the proposal distribution, computes the acceptance probability
-    based on the target and proposal densities, and updates the chain's current state if the
-    proposal is accepted.
-
-    # Arguments
-
-    * `rng` - A mutable reference to a random number generator.
+    The new state of the chain is returned as a `Vec<S>` of the same length as
+    `current_state`.
 
     # Returns
 
-    The new state of the chain after the update step.
+    A copy of the chain's current state **after** attempting to move (i.e., either
+    the newly proposed state if accepted or the old state if rejected).
 
     # Examples
 
@@ -705,5 +708,25 @@ mod tests {
                 "Means differ more than expected on dimension 1"
             );
         }
+    }
+
+    #[test]
+    fn readme_test() {
+        let target = Gaussian2D {
+            mean: [0.0, 0.0].into(),
+            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+        };
+        let proposal = IsotropicGaussian::new(1.0);
+        let initial_state = [0.0, 0.0];
+
+        // Create a MH sampler with 4 parallel chains
+        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
+
+        // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
+        let samples = mh.run(1000, 100);
+
+        // We should have 900 * 4 = 3600 samples
+        assert_eq!(samples.len(), 4);
+        assert_eq!(samples[0].nrows(), 900);
     }
 }

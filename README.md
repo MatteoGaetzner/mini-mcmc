@@ -24,20 +24,22 @@ use mini_mcmc::metrohast::MetropolisHastings;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
 fn main() {
-    let target = Gaussian2D {
-        mean: [0.0, 0.0].into(),
-        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-    };
-    let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = vec![0.0, 0.0];
+            let target = Gaussian2D {
+            mean: [0.0, 0.0].into(),
+            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+        };
+        let proposal = IsotropicGaussian::new(1.0);
+        let initial_state = [0.0, 0.0];
 
-    // Create a MH sampler
-    let mut mh = MetropolisHastings::new(target, proposal, initial_state, 1);
+        // Create a MH sampler with 4 parallel chains
+        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
 
-    // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
-    let samples = mh.run(1000, 100);
+        // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
+        let samples = mh.run(1000, 100);
 
-    println!("Number of post-burn-in samples: {}", samples[0].len());
+        // We should have 900 * 4 = 3600 samples
+        assert_eq!(samples.len(), 4);
+        assert_eq!(samples[0].nrows(), 900); // samples[0] is a nalgebra::DMatrix
 }
 ```
 
