@@ -24,7 +24,7 @@ use mini_mcmc::metrohast::MetropolisHastings;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
 fn main() {
-            let target = Gaussian2D {
+        let target = Gaussian2D {
             mean: [0.0, 0.0].into(),
             cov: [[1.0, 0.0], [0.0, 1.0]].into(),
         };
