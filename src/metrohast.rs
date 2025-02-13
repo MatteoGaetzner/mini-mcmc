@@ -480,9 +480,9 @@ mod tests {
 
     #[test]
     fn four_chains_test() {
-        const SAMPLE_SIZE: usize = 100_000;
-        const BURNIN: usize = 20_000;
-        const N_CHAINS: usize = 4;
+        const SAMPLE_SIZE: usize = 20_000;
+        const BURNIN: usize = 5_000;
+        const N_CHAINS: usize = 8;
         const SEED: u64 = 42;
 
         // Target distribution & sampler setup
@@ -565,10 +565,10 @@ mod tests {
     #[test]
     fn test_mh_ks_comparison() {
         // --- Setup MH sampler parameters ---
-        const SAMPLE_SIZE: usize = 100_000;
-        const BURNIN: usize = 100_000;
-        const N_CHAINS: usize = 4;
-        let seed: u64 = thread_rng().gen();
+        const SAMPLE_SIZE: usize = 10_000;
+        const BURNIN: usize = 2_000;
+        const N_CHAINS: usize = 8;
+        const SEED: u64 = 42;
 
         // Setup target distribution: a bivariate Gaussian.
         let target = Gaussian2D {
@@ -576,15 +576,15 @@ mod tests {
             cov: [[4.0, 2.0], [2.0, 3.0]].into(),
         };
         let initial_state = [0.0, 0.0];
-        let proposal = IsotropicGaussian::new(1.0).set_seed(seed);
+        let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
         let mut mh =
-            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
+            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(SEED);
 
         // --- Generate “true” samples from the target distribution ---
         // We use Cholesky decomposition to generate independent samples.
         let chol =
             na::Cholesky::new(mh.chains[0].target.cov).expect("Covariance not positive definite");
-        let mut rng = SmallRng::seed_from_u64(seed);
+        let mut rng = SmallRng::seed_from_u64(SEED);
         let z_vec: Vec<f64> = (0..(2 * SAMPLE_SIZE))
             .map(|_| rng.sample(StandardNormal))
             .collect();

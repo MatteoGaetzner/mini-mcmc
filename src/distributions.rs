@@ -300,18 +300,20 @@ impl<T: Float> Categorical<T> {
 impl<T> DiscreteDistribution<T> for Categorical<T>
 where
     rand_distr::Standard: rand_distr::Distribution<T>,
-    T: Float + std::ops::AddAssign,
+    T: Float + std::ops::AddAssign + std::fmt::Debug,
 {
     fn sample(&mut self) -> usize {
         let r: T = self.rng.gen();
         let mut cum: T = T::zero();
+        let mut k = self.probs.len() - 1;
         for (i, &p) in self.probs.iter().enumerate() {
             cum += p;
-            if r < cum {
-                return i;
+            if r <= cum {
+                k = i;
+                break;
             }
         }
-        self.probs.len() - 1
+        k
     }
 
     fn log_prob(&self, index: usize) -> T {
@@ -324,7 +326,7 @@ where
 }
 
 #[cfg(test)]
-mod distributions_tests {
+mod continuous_tests {
     use super::*;
 
     /**
@@ -536,5 +538,20 @@ mod categorical_tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_categorical_sample_single_value() {
+        let mut cat = Categorical {
+            probs: vec![1.0_f64],
+            rng: rand::rngs::SmallRng::from_seed(Default::default()),
+        };
+
+        let sampled_index = cat.sample();
+
+        assert_eq!(
+            sampled_index, 0,
+            "Should return the last index (0) for a single-element vector"
+        );
     }
 }

@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod discrete_tests {
+mod tests {
     use mini_mcmc::distributions::{ProposalDistribution, TargetDistribution};
     use mini_mcmc::metrohast::MetropolisHastings;
     use rand::prelude::*;

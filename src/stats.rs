@@ -36,13 +36,18 @@ pub fn cov(data: &na::DMatrix<f64>) -> Result<na::DMatrix<f64>, String> {
     Ok(cov)
 }
 
-#[test]
-fn test_cov_single_row() {
-    let data = na::DMatrix::<f64>::from_row_slice(1, 3, &[1_f64, 2_f64, 3_f64]);
-    let res = cov(&data);
-    assert!(
-        res.is_err(),
-        "Expected cov(...) with a 1-row matrix to return an error, got {:?}.",
-        res
-    );
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_cov_single_row() {
+        let data = na::DMatrix::<f64>::from_row_slice(1, 3, &[1_f64, 2_f64, 3_f64]);
+        let res = cov(&data);
+        assert!(
+            res.is_err(),
+            "Expected cov(...) with a 1-row matrix to return an error, got {:?}.",
+            res
+        );
+    }
 }

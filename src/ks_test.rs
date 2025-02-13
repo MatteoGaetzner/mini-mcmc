@@ -17,9 +17,10 @@ The public API consists of:
 The internal functions such as `compute_ks_statistic`, `ks_p_value`, `pks`, and `qks` perform the
 necessary computations based on algorithms found in *Numerical Recipes (Third Edition)*.
 */
+use std::cmp::Ordering;
 
 use rand_distr::num_traits::ToPrimitive;
-use std::cmp::Ordering;
+// use std::cmp::Ordering;
 
 /**
 A wrapper around `f64` that implements a total ordering.
@@ -39,18 +40,8 @@ assert_eq!(values[1].0, 3.0);
 assert!(values[2].0.is_nan());
 ```
 */
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct TotalF64(pub f64);
-
-impl PartialEq for TotalF64 {
-    fn eq(&self, other: &TotalF64) -> bool {
-        if self.0.is_nan() && other.0.is_nan() {
-            true
-        } else {
-            self.0 == other.0
-        }
-    }
-}
 
 impl Eq for TotalF64 {}
 
@@ -158,19 +149,19 @@ the KS test statistic. It asserts that both samples have sizes greater than 7 fo
 
 Returns the p-value as an `f64` if successful.
 
-# Panics
-
-This function panics if either sample size is not greater than 7.
 */
-fn ks_p_value(statistic: f64, n1: usize, n2: usize) -> Result<f64, String> {
-    dbg!(n1, n2);
-    assert!(n1 > 7 && n2 > 7, "Requires sample sizes > 7 for accuracy.");
+pub fn ks_p_value(statistic: f64, n1: usize, n2: usize) -> Result<f64, String> {
+    if n1 <= 7 || n2 <= 7 {
+        return Err(("Requires sample sizes > 7 for accuracy.").to_string());
+    }
+
     let factor = ((n1 as f64 * n2 as f64) / (n1 as f64 + n2 as f64)).sqrt();
     let term = factor * statistic;
 
     // We call `qks` to get the complementary CDF of the KS distribution.
     let p_value = qks(term)?;
     assert!((0.0..=1.0).contains(&p_value));
+
     Ok(p_value)
 }
 
@@ -193,7 +184,7 @@ Returns the KS statistic as an `f64` if both samples are non-empty.
 
 Returns an error if either sample is empty.
 */
-fn compute_ks_statistic<T: Ord + Clone + Copy>(
+pub fn compute_ks_statistic<T: Ord + Clone + Copy>(
     sample_1: &[T],
     sample_2: &[T],
 ) -> Result<f64, String> {
@@ -352,6 +343,18 @@ mod tests {
     use super::*;
 
     use rand::{rngs::SmallRng, Rng, SeedableRng};
+
+    #[test]
+    fn test_ks_p_value_too_few() {
+        let res = ks_p_value(1., 1, 1);
+        assert!(res.is_err(), "Expected to get an Err object");
+    }
+
+    #[test]
+    fn test_ks_p_value_ok() {
+        let res = ks_p_value(1., 8, 8);
+        assert!(res.is_ok(), "Expected to get a Ok object");
+    }
 
     #[test]
     fn test_ks_simple_case() {
@@ -581,6 +584,16 @@ mod tests {
         assert!(
             s[0].0 == 2.0 && s[1].0.is_nan() && s[2].0.is_nan(),
             "Expected sorting [NAN, 2.0, NAN] to give [2.0, NAN, NAN], got {s:?}."
+        );
+    }
+
+    #[test]
+    fn test_cmp_f64_all_nana() {
+        let mut s = [f64::NAN, f64::NAN, f64::NAN].map(TotalF64);
+        s.sort();
+        assert!(
+            s[0].0.is_nan() && s[1].0.is_nan() && s[2].0.is_nan(),
+            "Expected sorting [NAN, NAN, NAN] to give [NAN, NAN, NAN], got {s:?}."
         );
     }
 

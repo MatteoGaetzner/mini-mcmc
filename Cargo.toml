@@ -31,13 +31,13 @@ csv = ["dep:csv"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet"]
 
+[[example]]       
+name = "demo" 
+
 [dev-dependencies]
 plotters = "0.3"
 kolmogorov_smirnov = "1.1.0"
 tempfile = "3.16"
-
-[[example]]       
-name = "demo" 
 
 [profile.dev]
 debug = true

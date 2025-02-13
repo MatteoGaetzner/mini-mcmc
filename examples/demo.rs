@@ -115,15 +115,18 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn test_main() {
-    main().expect("Expected main to not return an error.");
-    assert!(
-        std::path::Path::new("scatter_plot.png").exists(),
-        "Expected scatter_plot.png to exist."
-    );
-    assert!(
-        std::path::Path::new("samples.parquet").exists(),
-        "Expected sample.parquet to exist."
-    );
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn test_main() {
+        main().expect("Expected main to not return an error.");
+        assert!(
+            std::path::Path::new("scatter_plot.png").exists(),
+            "Expected scatter_plot.png to exist."
+        );
+        assert!(
+            std::path::Path::new("samples.parquet").exists(),
+            "Expected sample.parquet to exist."
+        );
+    }
 }

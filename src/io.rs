@@ -644,6 +644,28 @@ chain,sample,dim_0,dim_1
         );
     }
 
+    /// Test that save_arrow returns an error when one chain has a different number of samples.
+    #[test]
+    fn test_save_arrow_inconsistent_chain_rows() {
+        // Create two chains:
+        // chain0 has 2 samples (rows) and 2 dimensions (columns)
+        let chain0 = na::DMatrix::<f64>::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        // chain1 has 1 sample (row) and 2 dimensions (columns)
+        let chain1 = na::DMatrix::<f64>::from_row_slice(1, 2, &[5.0, 6.0]);
+        let data = vec![chain0, chain1];
+
+        let file = NamedTempFile::new().expect("Failed to create temp file");
+        let filename = file.path().to_str().unwrap();
+        let result = save_arrow(&data, filename);
+        assert!(
+            result.is_err(),
+            "Expected error due to inconsistent number of samples among chains"
+        );
+
+        let err_msg = result.err().unwrap().to_string();
+        assert_eq!(err_msg, "Inconsistent number of samples among chains");
+    }
+
     /// Test saving empty data to Parquet (zero chains).
     #[test]
     fn test_save_parquet_empty_data() -> Result<(), Box<dyn Error>> {
@@ -825,5 +847,27 @@ chain,sample,dim_0,dim_1
             result.is_err(),
             "Expected an error due to inconsistent dimension lengths"
         );
+    }
+
+    /// Test that save_parquet returns an error when one chain has a different number of samples.
+    #[test]
+    fn test_save_parquet_inconsistent_chain_rows() {
+        // Create two chains:
+        // chain0 has 2 samples (rows) and 2 dimensions (columns)
+        let chain0 = na::DMatrix::<f64>::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
+        // chain1 has 1 sample (row) and 2 dimensions (columns)
+        let chain1 = na::DMatrix::<f64>::from_row_slice(1, 2, &[5.0, 6.0]);
+        let data = vec![chain0, chain1];
+
+        let file = NamedTempFile::new().expect("Failed to create temp file");
+        let filename = file.path().to_str().unwrap();
+        let result = save_parquet(&data, filename);
+        assert!(
+            result.is_err(),
+            "Expected error due to inconsistent number of samples among chains"
+        );
+
+        let err_msg = result.err().unwrap().to_string();
+        assert_eq!(err_msg, "Inconsistent number of samples among chains");
     }
 }
