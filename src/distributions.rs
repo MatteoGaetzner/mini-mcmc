@@ -87,7 +87,7 @@ pub trait Normalized<S, T: Float> {
 
  let logp = cat.log_prob(sample);
  println!("Log-probability of sampled category: {}", logp);
- ```
+```
 */
 pub trait Discrete<T: Float> {
     /// Samples an index from the distribution.
@@ -336,6 +336,12 @@ where
     }
 }
 
+/**
+A trait for conditional distributions.
+
+This trait specifies how to sample a single coordinate of a state given the entire current state.
+It is primarily used in Gibbs sampling to update one coordinate at a time.
+*/
 pub trait Conditional<S> {
     fn sample(&self, index: usize, given: &[S]) -> S;
 }
@@ -568,5 +574,45 @@ mod categorical_tests {
             sampled_index, 0,
             "Should return the last index (0) for a single-element vector"
         );
+    }
+
+    #[cfg(test)]
+    mod target_tests {
+        use super::*;
+        use crate::distributions::Target;
+        use std::f64;
+
+        #[test]
+        fn test_target_for_categorical_in_range() {
+            // Create a categorical distribution with known probabilities.
+            let probs = vec![0.2_f64, 0.3, 0.5];
+            let cat = Categorical::new(probs.clone());
+            // Call unnorm_log_prob with a valid index (say, index 1).
+            let logp = cat.unnorm_log_prob(&[1]);
+            // The expected log probability is ln(0.3).
+            let expected = 0.3_f64.ln();
+            let tol = 1e-7;
+            assert!(
+                (logp - expected).abs() < tol,
+                "For index 1, expected ln(0.3) ~ {}, got {}",
+                expected,
+                logp
+            );
+        }
+
+        #[test]
+        fn test_target_for_categorical_out_of_range() {
+            let probs = vec![0.2_f64, 0.3, 0.5];
+            let cat = Categorical::new(probs);
+            // Calling unnorm_log_prob with an index that's out of bounds (e.g., 3)
+            // should return negative infinity.
+            let logp = cat.unnorm_log_prob(&[3]);
+            assert_eq!(
+                logp,
+                f64::NEG_INFINITY,
+                "Expected negative infinity for out-of-range index, got {}",
+                logp
+            );
+        }
     }
 }

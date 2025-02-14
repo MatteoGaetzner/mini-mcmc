@@ -1,3 +1,18 @@
+/*!
+# Gibbs Sampling
+
+This module implements Gibbs sampling for MCMC. In this context, the target distribution
+is specified via a trait [`Conditional`], which provides the full conditional distribution for
+each coordinate of the state. The module defines:
+
+- **`GibbsMarkovChain<S, D>`**: A single chain that performs a full Gibbs sweep (updating each coordinate in turn).
+- **`GibbsSampler<S, D>`**: A sampler that maintains multiple parallel Gibbs chains, each initialized with
+  the same starting state. A global seed is provided and each chain is assigned a unique seed.
+
+The [`MarkovChain`] trait is implemented for `GibbsMarkovChain` so that generic chain-running
+functions (e.g. via the [`ChainRunner`] extension) work with Gibbs chains.
+*/
+
 use num_traits::Zero;
 use rand::rngs::SmallRng;
 use rand::{thread_rng, Rng, SeedableRng};
@@ -7,20 +22,27 @@ use nalgebra::Scalar;
 use crate::core::{HasChains, MarkovChain};
 use crate::distributions::Conditional;
 
+/// A single Gibbs sampling chain.
+///
+/// This chain updates its state by performing a full Gibbs sweep: for each coordinate `i` in  
+/// the state vector, it samples a new value from the conditional distribution given the current  
+/// values of all other coordinates. The conditional distribution is provided by the target  
+/// via the [`Conditional`] trait.
+///
+/// # Type Parameters
+/// - `S`: The type of each element in the state (typically a floating-point type).
+/// - `D`: The type of the conditional distribution; must implement [`Conditional<S>`].
 pub struct GibbsMarkovChain<S, D>
 where
     D: Conditional<S>,
 {
-    /// The distribution that provides conditional samples.
+    /// The conditional distribution that provides samples for each coordinate.
     pub target: D,
-
-    /// Current state of the Markov chain.
+    /// The current state of the chain.
     pub current_state: Vec<S>,
-
-    /// Random seed for reproducibility.
+    /// The random seed used for reproducibility.
     pub seed: u64,
-
-    /// RNG for this chain.
+    /// The chain-specific random number generator.
     pub rng: SmallRng,
 }
 
@@ -29,7 +51,30 @@ where
     D: Conditional<S> + Clone,
     S: Scalar + Zero,
 {
-    /// Creates a new chain with a given target distribution and initial state.
+    /// Creates a new Gibbs sampling chain.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - The conditional distribution that provides samples for each coordinate.
+    /// * `initial_state` - The initial state vector.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mini_mcmc::gibbs::GibbsMarkovChain;
+    /// use mini_mcmc::distributions::Conditional;
+    /// use nalgebra::Scalar;
+    ///
+    /// // For example, a dummy conditional that always returns 1.0:
+    /// #[derive(Clone)]
+    /// struct OneConditional;
+    /// impl Conditional<f64> for OneConditional {
+    ///     fn sample(&self, _i: usize, _given: &[f64]) -> f64 { 1.0 }
+    /// }
+    ///
+    /// let chain = GibbsMarkovChain::new(OneConditional, &[0.0, 0.0]);
+    /// assert_eq!(chain.current_state, vec![0.0, 0.0]);
+    /// ```
     pub fn new(target: D, initial_state: &[S]) -> Self {
         let seed = rand::thread_rng().gen::<u64>();
         Self {
@@ -42,23 +87,38 @@ where
 }
 
 impl<S, D: Conditional<S>> MarkovChain<S> for GibbsMarkovChain<S, D> {
-    /// Performs one full Gibbs sweep:
-    ///   For each coordinate i in [0..dim), sample coordinate i
-    ///   conditional on the others.
-    fn step(&mut self) -> &std::vec::Vec<S> {
+    /// Performs one full Gibbs sweep.
+    ///
+    /// For each coordinate `i` in `0..current_state.len()`, a new value is sampled from  
+    /// the conditional distribution (provided by `target.sample(i, &current_state)`) and  
+    /// the state is updated. Returns a reference to the updated state.
+    fn step(&mut self) -> &Vec<S> {
         (0..self.current_state.len())
             .for_each(|i| self.current_state[i] = self.target.sample(i, &self.current_state));
         &self.current_state
     }
 
+    /// Returns a reference to the current state of the chain.
     fn current_state(&self) -> &Vec<S> {
         &self.current_state
     }
 }
 
+/// A Gibbs sampler that runs multiple parallel chains.
+///
+/// The sampler creates several independent Gibbs chains (of type [`GibbsMarkovChain`]),  
+/// all initialized with the same starting state. A global seed is used for reproducibility,  
+/// and each chain is assigned a unique seed by adding its index to the global seed.
+///
+/// # Type Parameters
+/// - `S`: The type of each element in the state (typically a floating-point type).
+/// - `D`: The type of the conditional distribution; must implement [`Conditional<S>`].
 pub struct GibbsSampler<S, D: Conditional<S>> {
+    /// The conditional distribution used by all chains.
     pub target: D,
+    /// The vector of Gibbs chains.
     pub chains: Vec<GibbsMarkovChain<S, D>>,
+    /// The global seed for the sampler.
     pub seed: u64,
 }
 
@@ -67,8 +127,32 @@ where
     D: Conditional<S> + Clone + Send + Sync,
     S: Clone + Send + 'static + std::fmt::Debug + std::cmp::PartialEq + num_traits::Zero,
 {
-    /// Creates a new Gibbs sampler with `n_chains` parallel chains,
-    /// all starting from `initial_state`.
+    /// Creates a new Gibbs sampler with a specified number of parallel chains.
+    ///
+    /// All chains are initialized with the same `initial_state` and the provided conditional  
+    /// distribution.
+    ///
+    /// # Arguments
+    ///
+    /// * `target` - The conditional distribution that specifies the full conditionals for each coordinate.
+    /// * `initial_state` - The starting state vector for every chain.
+    /// * `n_chains` - The number of chains to run in parallel.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mini_mcmc::gibbs::GibbsSampler;
+    /// use mini_mcmc::distributions::Conditional;
+    ///
+    /// #[derive(Clone)]
+    /// struct DummyConditional;
+    /// impl Conditional<f64> for DummyConditional {
+    ///     fn sample(&self, _i: usize, _given: &[f64]) -> f64 { 0.0 }
+    /// }
+    ///
+    /// let sampler = GibbsSampler::new(DummyConditional, &[0.0, 0.0], 4);
+    /// assert_eq!(sampler.chains.len(), 4);
+    /// ```
     pub fn new(target: D, initial_state: &[S], n_chains: usize) -> Self {
         let seed = thread_rng().gen::<u64>();
         let chains = (0..n_chains)
@@ -82,7 +166,13 @@ where
         }
     }
 
-    /// Sets a new seed, and updates the chains accordingly.
+    /// Sets a new seed for the sampler and updates the seed for each chain.
+    ///
+    /// Each chain's seed is updated to `seed + i`, where `i` is the chain index.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The new global seed.
     pub fn set_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
         for (i, chain) in self.chains.iter_mut().enumerate() {
@@ -99,9 +189,13 @@ where
     D: Conditional<S> + Clone + Send + Sync,
     S: std::marker::Send,
 {
-    // Define the concrete type of `Chain`:
+    /// The concrete chain type used by this sampler.
     type Chain = GibbsMarkovChain<S, D>;
 
+    /// Returns a mutable reference to the internal vector of Gibbs chains.
+    ///
+    /// This method is used by generic chain-running utilities (such as those in [`ChainRunner`])
+    /// to access and manage the sampler's chains.
     fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
         &mut self.chains
     }

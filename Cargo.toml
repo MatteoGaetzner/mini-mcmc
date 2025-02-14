@@ -1,6 +1,6 @@
 [package]
 name = "mini-mcmc"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
 license = "Apache-2.0" 
@@ -32,10 +32,16 @@ arrow = ["dep:arrow"]
 parquet = ["dep:parquet"]
 
 [[example]]
-name = "metropolis_hastings"
+name = "minimal_mh"
 
 [[example]]
-name = "gibbs"
+name = "gauss_mh"
+
+[[example]]
+name = "poisson_mh"
+
+[[example]]
+name = "mixture_gibbs"
 
 [dev-dependencies]
 plotters = "0.3"

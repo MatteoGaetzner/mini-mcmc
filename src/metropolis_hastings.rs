@@ -1,5 +1,44 @@
-//! An implementation of the Metropolis-Hastings sampler, built around a generic
-//! target distribution `D` and proposal distribution `Q`.
+//! # Metropolis–Hastings Sampler
+//!
+//! This module implements a generic Metropolis–Hastings sampler that can work with any  
+//! target distribution `D` and proposal distribution `Q` that implement the corresponding  
+//! traits [`Target`] and [`Proposal`]. The sampler runs multiple independent Markov chains in parallel,  
+//! each initialized with the same starting state. A global seed is used to ensure reproducibility,  
+//! and each chain gets a unique seed by adding its index to the global seed.
+//!
+//! ## Overview
+//!
+//! - **Target Distribution (`D`)**: Provides the (unnormalized) log-density for states via the [`Target`] trait.
+//! - **Proposal Distribution (`Q`)**: Generates candidate states and computes the proposal density via the [`Proposal`] trait.
+//! - **Parallel Chains**: The sampler maintains a vector of [`MHMarkovChain`] instances, each evolving independently.
+//! - **Reproducibility**: The method `set_seed` assigns a unique seed to each chain based on a given global seed.
+//!
+//! ## Example Usage
+//!
+//! ```rust
+//! use mini_mcmc::metropolis_hastings::MetropolisHastings;
+//! use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+//!
+//! // Define a 2D Gaussian target distribution with full covariance
+//! let target = Gaussian2D {
+//!     mean: [0.0, 0.0].into(),
+//!     cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+//! };
+//!
+//! // Define an isotropic Gaussian proposal distribution (for any dimension)
+//! let proposal = IsotropicGaussian::new(1.0);
+//!
+//! // Starting state for all chains
+//! let initial_state = [0.0, 0.0];
+//!
+//! // Create a sampler with 1 chain
+//! let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+//!
+//! // Check that one chain was created
+//! assert_eq!(mh.chains.len(), 1);
+//! ```
+//!
+//! See also the documentation for [`MHMarkovChain`] and the methods below.
 
 use nalgebra as na;
 use num_traits::Float;
@@ -9,73 +48,62 @@ use std::marker::{PhantomData, Send};
 use crate::core::{HasChains, MarkovChain};
 use crate::distributions::{Proposal, Target};
 
-/**
-The Metropolis-Hastings sampler, parameterized by:
-- `D`: the target distribution,
-- `Q`: the proposal distribution.
-
-This sampler maintains multiple parallel Markov chains (one per independent
-chain) and a global random seed. It delegates the per-chain work to the
-[`MHMarkovChain`] type.
-
-# Examples
-
-```rust
-// Note: This example assumes that your crate is named `mini_mcmc`
-// and that the types `Gaussian2D` and `IsotropicGaussian` are defined in
-// `mini_mcmc::distributions`.
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-
-let target = Gaussian2D {
-    mean: [0.0, 0.0].into(),
-    cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-};
-let proposal = IsotropicGaussian::new(1.0);
-let initial_state = [0.0, 0.0];
-let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
-
-// The sampler should have one chain.
-assert_eq!(mh.chains.len(), 1);
-```
-*/
+/// The Metropolis–Hastings sampler generates samples from a target distribution by  
+/// using a proposal distribution to propose candidate moves and then accepting or rejecting  
+/// these moves using the Metropolis–Hastings acceptance criterion.
+///
+/// # Type Parameters
+/// - `S`: The element type for the state (typically a floating-point type).
+/// - `T`: The floating-point type (e.g. `f32` or `f64`).
+/// - `D`: The target distribution type. Must implement [`Target`].
+/// - `Q`: The proposal distribution type. Must implement [`Proposal`].
+///
+/// The sampler maintains multiple independent Markov chains (each represented by [`MHMarkovChain`])
+/// that are run in parallel. A global random seed is provided, and each chain’s RNG is seeded by  
+/// adding the chain’s index to the global seed, ensuring reproducibility.
+///
+/// # Examples
+///
+/// ```rust
+/// use mini_mcmc::metropolis_hastings::MetropolisHastings;
+/// use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+///
+/// let target = Gaussian2D {
+///     mean: [0.0, 0.0].into(),
+///     cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+/// };
+/// let proposal = IsotropicGaussian::new(1.0);
+/// let initial_state = [0.0, 0.0];
+/// let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+/// assert_eq!(mh.chains.len(), 1);
+/// ```
 pub struct MetropolisHastings<S: Clone, T: Float, D: Clone, Q: Clone> {
     /// The target distribution we want to sample from.
     pub target: D,
-
     /// The proposal distribution used to generate candidate states.
     pub proposal: Q,
-
-    /// The set of independent Markov chains.
+    /// The vector of independent Markov chains.
     pub chains: Vec<MHMarkovChain<S, T, D, Q>>,
-
-    /// Global random seed.
+    /// The global random seed.
     pub seed: u64,
 }
 
 #[derive(Clone)]
-/**
-A single Markov chain for the Metropolis-Hastings algorithm.
-
-Each chain holds its own copy of the target and proposal distributions,
-its current state, and a chain-specific random seed.
-*/
+/// A single Markov chain for the Metropolis–Hastings algorithm.
+///
+/// Each chain stores its own copy of the target and proposal distributions,  
+/// maintains its current state, and uses a chain-specific random number generator.
 pub struct MHMarkovChain<S, T, D, Q> {
-    /// The target distribution we want to sample from.
+    /// The target distribution to sample from.
     pub target: D,
-
     /// The proposal distribution used to generate candidate states.
     pub proposal: Q,
-
-    /// The current state of the Markov chain.
+    /// The current state of the chain.
     pub current_state: Vec<S>,
-
-    /// Random seed.
+    /// The chain-specific random seed.
     pub seed: u64,
-
-    /// Random number generator.
+    /// The random number generator for this chain.
     pub rng: SmallRng,
-
     phantom: PhantomData<T>,
 }
 
@@ -128,41 +156,38 @@ where
         }
     }
 
-    /**
-    Sets a new seed for the sampler and updates each chain's seed accordingly.
-
-    This method allows you to control randomness and reproduce results. Each chain
-    is given a unique seed by adding its index to the provided seed.
-
-    # Arguments
-
-    * `seed` - The new seed value.
-
-    # Examples
-
-    ```rust
-    use mini_mcmc::metropolis_hastings::MetropolisHastings;
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-
-    let target = Gaussian2D {
-        mean: [0.0, 0.0].into(),
-        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-    };
-    let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = [0.0, 0.0];
-    let mh = MetropolisHastings::new(target, proposal, &initial_state, 2).set_seed(42);
-    // Each chain's seed should be 42 and 43, respectively.
-    assert_eq!(mh.seed, 42);
-    assert_eq!(mh.chains[0].seed, 42);
-    assert_eq!(mh.chains[1].seed, 43);
-    ```
-    */
+    /// Sets a new global seed and updates the seed for each chain accordingly.
+    ///
+    /// Each chain receives a unique seed calculated as `seed + i`, where `i` is the chain index.
+    /// This method ensures reproducibility across runs and parallel chains.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The new global seed value.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mini_mcmc::metropolis_hastings::MetropolisHastings;
+    /// use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    ///
+    /// let target = Gaussian2D {
+    ///     mean: [0.0, 0.0].into(),
+    ///     cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    /// };
+    /// let proposal = IsotropicGaussian::new(1.0);
+    /// let initial_state = [0.0, 0.0];
+    /// let mh = MetropolisHastings::new(target, proposal, &initial_state, 2)
+    ///     .set_seed(42);
+    /// assert_eq!(mh.chains[0].seed, 42);
+    /// assert_eq!(mh.chains[1].seed, 43);
+    /// ```
     pub fn set_seed(mut self, seed: u64) -> Self {
         self.seed = seed;
-        // Update each chain's seed so that they differ (if desired)
         for (i, chain) in self.chains.iter_mut().enumerate() {
-            chain.seed = seed + i as u64;
-            chain.rng = SmallRng::seed_from_u64(seed + i as u64)
+            let chain_seed = seed + i as u64;
+            chain.seed = chain_seed;
+            chain.rng = SmallRng::seed_from_u64(chain_seed)
         }
         self
     }
@@ -176,9 +201,13 @@ where
     S: Clone + PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    // Define the concrete type of `Chain`:
+    /// The concrete chain type used by the sampler.
     type Chain = MHMarkovChain<S, T, D, Q>;
 
+    /// Returns a mutable reference to the internal vector of chains.
+    ///
+    /// This method allows external code to access and, if needed, modify the vector of  
+    /// chains. For example, you may inspect or update individual chains using this reference.
     fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
         &mut self.chains
     }
@@ -192,34 +221,27 @@ where
     T: Float,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    /**
-    Creates a new Markov chain for the Metropolis-Hastings sampler.
-
-    # Arguments
-
-    * `target` - The target distribution from which to sample.
-    * `proposal` - The proposal distribution used for generating candidate states.
-    * `initial_state` - The initial state of the chain.
-
-    # Returns
-
-    A new instance of `MHMarkovChain`.
-
-    # Examples
-
-    ```rust
-    use mini_mcmc::metropolis_hastings::MHMarkovChain;
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-
-    let target = Gaussian2D {
-        mean: [0.0, 0.0].into(),
-        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-    };
-    let proposal = IsotropicGaussian::new(1.0);
-    let chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
-    assert_eq!(chain.current_state, vec![0.0, 0.0]);
-    ```
-    */
+    /// Creates a new Metropolis–Hastings chain.
+    ///
+    /// # Arguments
+    /// * `target` - The target distribution.
+    /// * `proposal` - The proposal distribution.
+    /// * `initial_state` - The starting state for the chain.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mini_mcmc::metropolis_hastings::MHMarkovChain;
+    /// use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    ///
+    /// let target = Gaussian2D {
+    ///     mean: [0.0, 0.0].into(),
+    ///     cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    /// };
+    /// let proposal = IsotropicGaussian::new(1.0);
+    /// let chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
+    /// assert_eq!(chain.current_state, vec![0.0, 0.0]);
+    /// ```
     pub fn new(target: D, proposal: Q, initial_state: &[S]) -> Self {
         let seed = thread_rng().gen::<u64>();
         Self {
@@ -237,59 +259,50 @@ impl<S, T, D, Q> MarkovChain<S> for MHMarkovChain<S, T, D, Q>
 where
     D: Target<S, T> + Clone,
     Q: Proposal<S, T> + Clone,
-    S: Clone + std::cmp::PartialEq + na::Scalar + num_traits::Zero,
+    S: Clone + PartialEq + na::Scalar + num_traits::Zero,
     T: Float,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    /**
-    Performs one Metropolis-Hastings update step (a proposal and possible acceptance).
-
-    The new state of the chain is returned as a `Vec<S>` of the same length as
-    `current_state`.
-
-    # Returns
-
-    A copy of the chain's current state **after** attempting to move (i.e., either
-    the newly proposed state if accepted or the old state if rejected).
-
-    # Examples
-
-    ```rust
-    use mini_mcmc::metropolis_hastings::MHMarkovChain;
-    use mini_mcmc::core::{ChainRunner, MarkovChain};
-    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-    use rand::rngs::SmallRng;
-    use rand::SeedableRng;
-
-    let target = Gaussian2D {
-        mean: [0.0, 0.0].into(),
-        cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-    };
-    let proposal = IsotropicGaussian::new(1.0);
-    let mut chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
-
-    let new_state = chain.step();
-    // The state should have the same dimensionality as the initial state.
-    assert_eq!(new_state.len(), 2);
-    ```
-    */
+    /// Performs one Metropolis–Hastings update step.
+    ///
+    /// A new candidate state is proposed using the proposal distribution.  
+    /// The unnormalized log-density of the current and proposed states is computed,  
+    /// along with the corresponding proposal densities. The acceptance ratio in log-space  
+    /// is calculated as:
+    ///
+    /// \[
+    /// \log \alpha = \left[\log p(\text{proposed}) + \log q(\text{current} \mid \text{proposed})\right]
+    ///               - \left[\log p(\text{current}) + \log q(\text{proposed} \mid \text{current})\right]
+    /// \]
+    ///
+    /// A uniform random number is drawn, and if \(\log(\text{Uniform}(0,1))\) is less than  
+    /// \(\log \alpha\), the proposed state is accepted. Otherwise, the current state is retained.
+    ///
+    /// The method returns a reference to the updated state.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use mini_mcmc::metropolis_hastings::MHMarkovChain;
+    /// use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    /// use mini_mcmc::core::MarkovChain;
+    ///
+    /// let target = Gaussian2D {
+    ///     mean: [0.0, 0.0].into(),
+    ///     cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+    /// };
+    /// let proposal = IsotropicGaussian::new(1.0);
+    /// let mut chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
+    /// let new_state = chain.step();
+    /// assert_eq!(new_state.len(), 2);
+    /// ```
     fn step(&mut self) -> &Vec<S> {
-        // Propose a new state based on the current state.
         let proposed: Vec<S> = self.proposal.sample(&self.current_state);
-
-        // Compute log probabilities under the target distribution.
         let current_lp = self.target.unnorm_log_prob(&self.current_state);
         let proposed_lp = self.target.unnorm_log_prob(&proposed);
-
-        // Compute log probabilities under the proposal distribution.
         let log_q_forward = self.proposal.log_prob(&self.current_state, &proposed);
         let log_q_backward = self.proposal.log_prob(&proposed, &self.current_state);
-
-        // Calculate the acceptance ratio in log-space:
-        //   (log p(proposed) + log q(current|proposed)) - (log p(current) + log q(proposed|current))
         let log_accept_ratio = (proposed_lp + log_q_backward) - (current_lp + log_q_forward);
-
-        // Accept or reject based on a uniform(0,1) draw.
         let u: T = self.rng.gen();
         if log_accept_ratio > u.ln() {
             self.current_state = proposed;
@@ -297,6 +310,7 @@ where
         &self.current_state
     }
 
+    /// Returns a reference to the current state of the chain.
     fn current_state(&self) -> &Vec<S> {
         &self.current_state
     }
