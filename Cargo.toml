@@ -32,10 +32,10 @@ arrow = ["dep:arrow"]
 parquet = ["dep:parquet"]
 
 [[example]]
-name = "two_d_gaussian"
+name = "metropolis_hastings"
 
 [[example]]
-name = "two_component_gibbs"
+name = "gibbs"
 
 [dev-dependencies]
 plotters = "0.3"

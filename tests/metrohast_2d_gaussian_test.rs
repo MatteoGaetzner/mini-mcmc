@@ -4,7 +4,7 @@
 
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-use mini_mcmc::metrohast::MetropolisHastings;
+use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use nalgebra as na;
 
 #[cfg(test)]

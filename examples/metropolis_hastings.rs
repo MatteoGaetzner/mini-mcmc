@@ -3,7 +3,7 @@
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
 use mini_mcmc::io::save_parquet;
-use mini_mcmc::metrohast::MetropolisHastings;
+use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use nalgebra as na;
 
 use plotters::chart::ChartBuilder;

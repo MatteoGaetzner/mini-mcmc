@@ -2,7 +2,7 @@
 mod tests {
     use mini_mcmc::core::ChainRunner;
     use mini_mcmc::distributions::{Proposal, Target};
-    use mini_mcmc::metrohast::MetropolisHastings;
+    use mini_mcmc::metropolis_hastings::MetropolisHastings;
     use rand::prelude::*;
     use rand::rngs::SmallRng;
     use std::collections::HashMap;

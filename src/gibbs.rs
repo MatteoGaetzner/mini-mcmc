@@ -392,4 +392,96 @@ mod tests {
             theo_var
         );
     }
+
+    #[test]
+    fn test_chain_step_return_value() {
+        // Use the constant conditional so we know exactly what each coordinate updates to.
+        let conditional = ConstantConditional { c: 42.0 };
+        // 3D initial state
+        let initial_state = [0.0, 0.0, 0.0];
+        let mut chain = GibbsMarkovChain::new(conditional, &initial_state);
+
+        // Call step() and capture the return value
+        let returned_ref = chain.step();
+
+        // 1) Check that all coordinates have been updated to 42.0.
+        for &val in returned_ref.iter() {
+            assert!(
+                (val - 42.0).abs() < f64::EPSILON,
+                "Expected 42.0 after step, got {}",
+                val
+            );
+        }
+
+        // 2) Check that step() returns the same reference as chain.current_state().
+        assert!(
+            std::ptr::eq(returned_ref, chain.current_state()),
+            "step() should return a reference to the chain's internal state"
+        );
+    }
+
+    #[test]
+    fn test_chain_current_state_return_value() {
+        // Use a different constant for clarity
+        let conditional = ConstantConditional { c: 13.0 };
+        let initial_state = [1.0, 2.0, 3.0];
+        let chain = GibbsMarkovChain::new(conditional, &initial_state);
+
+        // Call current_state() and ensure it matches the chain's internal state.
+        let state_ref = chain.current_state();
+
+        // 1) Check length
+        assert_eq!(
+            state_ref.len(),
+            initial_state.len(),
+            "Expected the current_state() to have length {}",
+            initial_state.len()
+        );
+
+        // 2) Check each coordinate
+        for (i, &val) in state_ref.iter().enumerate() {
+            assert!(
+                (val - initial_state[i]).abs() < f64::EPSILON,
+                "Expected coordinate {} to be {}, got {}",
+                i,
+                initial_state[i],
+                val
+            );
+        }
+    }
+
+    #[test]
+    fn test_has_chains_for_gibbs_sampler() {
+        // Create a GibbsSampler with a constant conditional.
+        let conditional = ConstantConditional { c: 42.0 };
+        let initial_state = [0.0, 0.0];
+        let mut sampler = GibbsSampler::new(conditional.clone(), &initial_state, 3);
+        let original_len = sampler.chains.len();
+
+        // Use chains_mut() to get a mutable reference to the internal chains.
+        {
+            let chains_mut = sampler.chains_mut();
+            // Modify the first chain's first coordinate.
+            if let Some(first_chain) = chains_mut.first_mut() {
+                first_chain.current_state[0] = 100.0;
+            }
+        }
+        // Now, check that the modification is visible via sampler.chains.
+        assert_eq!(
+            sampler.chains[0].current_state[0], 100.0,
+            "Expected the first coordinate of the first chain to be updated to 100.0"
+        );
+
+        // Use chains_mut() again to push a new chain.
+        {
+            let chains_mut = sampler.chains_mut();
+            chains_mut.push(GibbsMarkovChain::new(conditional, &initial_state));
+        }
+        // The new length should be original_len + 1.
+        assert_eq!(
+            sampler.chains.len(),
+            original_len + 1,
+            "Expected chains length to increase by 1"
+        );
+    }
 }

@@ -20,7 +20,7 @@ Then you can `use mini_mcmc` in your Rust code.
 ## Quick Example
 
 ```rust
-use mini_mcmc::metrohast::MetropolisHastings;
+use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
 fn main() {
@@ -63,7 +63,8 @@ This library provides:
 
 - **`src/lib.rs`**: The main library entry point—exports MCMC functionality.
 - **`src/distributions.rs`**: Target distributions (e.g., multivariate Gaussians) and proposal distributions.
-- **`src/metrohast.rs`**: The Metropolis-Hastings algorithm implementation.
+- **`src/metropolis_hastings.rs`**: The Metropolis-Hastings algorithm implementation.
+- **`src/gibbs.rs`**: The Gibbs sampling algorithm implementation.
 - **`examples/demo.rs`**: Example usage demonstrating 2D Gaussian sampling and plotting.
 
 ## Usage (Local)

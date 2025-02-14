@@ -24,7 +24,7 @@ chain) and a global random seed. It delegates the per-chain work to the
 // Note: This example assumes that your crate is named `mini_mcmc`
 // and that the types `Gaussian2D` and `IsotropicGaussian` are defined in
 // `mini_mcmc::distributions`.
-use mini_mcmc::metrohast::MetropolisHastings;
+use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
 let target = Gaussian2D {
@@ -101,7 +101,7 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::metrohast::MetropolisHastings;
+    use mini_mcmc::metropolis_hastings::MetropolisHastings;
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
     let target = Gaussian2D {
@@ -141,7 +141,7 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::metrohast::MetropolisHastings;
+    use mini_mcmc::metropolis_hastings::MetropolisHastings;
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
     let target = Gaussian2D {
@@ -208,7 +208,7 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::metrohast::MHMarkovChain;
+    use mini_mcmc::metropolis_hastings::MHMarkovChain;
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 
     let target = Gaussian2D {
@@ -255,7 +255,7 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::metrohast::MHMarkovChain;
+    use mini_mcmc::metropolis_hastings::MHMarkovChain;
     use mini_mcmc::core::{ChainRunner, MarkovChain};
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
     use rand::rngs::SmallRng;
