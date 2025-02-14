@@ -31,8 +31,11 @@ csv = ["dep:csv"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet"]
 
-[[example]]       
-name = "demo" 
+[[example]]
+name = "two_d_gaussian"
+
+[[example]]
+name = "two_component_gibbs"
 
 [dev-dependencies]
 plotters = "0.3"

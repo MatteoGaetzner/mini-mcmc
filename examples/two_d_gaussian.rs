@@ -1,6 +1,7 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Gaussian, then plotting the samples.
 
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, ProposalDistribution};
+use mini_mcmc::core::ChainRunner;
+use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
 use mini_mcmc::io::save_parquet;
 use mini_mcmc::metrohast::MetropolisHastings;
 use nalgebra as na;

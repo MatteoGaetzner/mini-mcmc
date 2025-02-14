@@ -5,10 +5,10 @@ can be used in any dimension, and a **categorical** (discrete) distribution.
 
 This module is generic over the floating-point precision (e.g. `f32` or `f64`)
 using [`num_traits::Float`]. It also defines several traits:
-- [`TargetDistribution`] for densities we want to sample from,
-- [`ProposalDistribution`] for proposal mechanisms,
+- [`Target`] for densities we want to sample from,
+- [`Proposal`] for proposal mechanisms,
 - [`Normalized`] for distributions that can compute a fully normalized log-prob,
-- [`DiscreteDistribution`] for distributions over finite sets.
+- [`Discrete`] for distributions over finite sets.
 
 # Examples
 
@@ -16,8 +16,8 @@ using [`num_traits::Float`]. It also defines several traits:
 
 ```rust
 use mini_mcmc::distributions::{
-    Gaussian2D, IsotropicGaussian, ProposalDistribution,
-    TargetDistribution, Normalized
+    Gaussian2D, IsotropicGaussian, Proposal,
+    Target, Normalized
 };
 use nalgebra::{Vector2, Matrix2};
 
@@ -52,7 +52,7 @@ use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
 
 /// A trait for generating proposals in Metropolis–Hastings or similar algorithms.
 /// The state type `S` is typically a vector of continuous values.
-pub trait ProposalDistribution<S, T: Float> {
+pub trait Proposal<S, T: Float> {
     /// Samples a new point from q(x' | x).
     fn sample(&mut self, current: &[S]) -> Vec<S>;
 
@@ -65,7 +65,7 @@ pub trait ProposalDistribution<S, T: Float> {
 
 /// A trait for continuous target distributions from which we want to sample.
 /// The state type `S` is typically a vector of continuous values.
-pub trait TargetDistribution<S, T: Float> {
+pub trait Target<S, T: Float> {
     /// Returns the log of the unnormalized density for state `theta`.
     fn unnorm_log_prob(&self, theta: &[S]) -> T;
 }
@@ -78,7 +78,7 @@ pub trait Normalized<S, T: Float> {
 
 /** A trait for discrete distributions whose state is represented as an index.
  ```rust
- use mini_mcmc::distributions::{Categorical, DiscreteDistribution};
+ use mini_mcmc::distributions::{Categorical, Discrete};
 
  // Create a categorical distribution over three categories.
  let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
@@ -89,7 +89,7 @@ pub trait Normalized<S, T: Float> {
  println!("Log-probability of sampled category: {}", logp);
  ```
 */
-pub trait DiscreteDistribution<T: Float> {
+pub trait Discrete<T: Float> {
     /// Samples an index from the distribution.
     fn sample(&mut self) -> usize;
     /// Evaluates the log-probability of the given index.
@@ -100,7 +100,7 @@ pub trait DiscreteDistribution<T: Float> {
 A 2D Gaussian distribution parameterized by a mean vector and a 2×2 covariance matrix.
 
 - The generic type `T` is typically `f32` or `f64`.
-- Implements both [`TargetDistribution`] (for unnormalized log-prob) and
+- Implements both [`Target`] (for unnormalized log-prob) and
   [`Normalized`] (for fully normalized log-prob).
 
 # Example
@@ -149,7 +149,7 @@ where
     }
 }
 
-impl<T> TargetDistribution<T, T> for Gaussian2D<T>
+impl<T> Target<T, T> for Gaussian2D<T>
 where
     T: Float
         + std::fmt::Debug
@@ -180,16 +180,16 @@ An *isotropic* Gaussian distribution usable as either a target or a proposal
 in MCMC. It works for **any dimension** because it applies independent
 Gaussian noise (`mean = 0`, `std = self.std`) to each coordinate.
 
-- Implements [`ProposalDistribution`] so it can propose new states
+- Implements [`Proposal`] so it can propose new states
   from a current state.
-- Also implements [`TargetDistribution`] for an unnormalized log-prob,
+- Also implements [`Target`] for an unnormalized log-prob,
   which might be useful if you want to treat it as a target distribution
   in simplified scenarios.
 
 # Examples
 
 ```rust
-use mini_mcmc::distributions::{IsotropicGaussian, ProposalDistribution};
+use mini_mcmc::distributions::{IsotropicGaussian, Proposal};
 
 let mut proposal: IsotropicGaussian<f64> = IsotropicGaussian::new(1.0);
 let current = vec![0.0, 0.0, 0.0]; // dimension = 3
@@ -217,7 +217,7 @@ impl<T: Float> IsotropicGaussian<T> {
     }
 }
 
-impl<T: Float + std::ops::AddAssign> ProposalDistribution<T, T> for IsotropicGaussian<T>
+impl<T: Float + std::ops::AddAssign> Proposal<T, T> for IsotropicGaussian<T>
 where
     rand_distr::StandardNormal: rand_distr::Distribution<T>,
 {
@@ -251,7 +251,7 @@ where
     }
 }
 
-impl<T: Float> TargetDistribution<T, T> for IsotropicGaussian<T> {
+impl<T: Float> Target<T, T> for IsotropicGaussian<T> {
     fn unnorm_log_prob(&self, theta: &[T]) -> T {
         let mut sum = T::zero();
         for &x in theta.iter() {
@@ -269,7 +269,7 @@ The probabilities in `probs` should sum to 1 (or they will be normalized automat
 # Examples
 
 ```rust
-use mini_mcmc::distributions::{Categorical, DiscreteDistribution};
+use mini_mcmc::distributions::{Categorical, Discrete};
 
 let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
 let sample = cat.sample();
@@ -279,12 +279,15 @@ println!("Log probability of category {}: {}", sample, logp);
 ```
 */
 #[derive(Clone)]
-pub struct Categorical<T: Float> {
+pub struct Categorical<T>
+where
+    T: Float + std::ops::AddAssign,
+{
     pub probs: Vec<T>,
     rng: SmallRng,
 }
 
-impl<T: Float> Categorical<T> {
+impl<T: Float + std::ops::AddAssign> Categorical<T> {
     /// Creates a new categorical distribution from a vector of probabilities.
     /// The probabilities will be normalized so that they sum to 1.
     pub fn new(probs: Vec<T>) -> Self {
@@ -297,10 +300,9 @@ impl<T: Float> Categorical<T> {
     }
 }
 
-impl<T> DiscreteDistribution<T> for Categorical<T>
+impl<T: Float + std::ops::AddAssign> Discrete<T> for Categorical<T>
 where
     rand_distr::Standard: rand_distr::Distribution<T>,
-    T: Float + std::ops::AddAssign + std::fmt::Debug,
 {
     fn sample(&mut self) -> usize {
         let r: T = self.rng.gen();
@@ -323,6 +325,19 @@ where
             T::neg_infinity()
         }
     }
+}
+
+impl<T: Float + AddAssign> Target<usize, T> for Categorical<T>
+where
+    rand_distr::Standard: rand_distr::Distribution<T>,
+{
+    fn unnorm_log_prob(&self, theta: &[usize]) -> T {
+        <Self as Discrete<T>>::log_prob(self, theta[0])
+    }
+}
+
+pub trait Conditional<S> {
+    fn sample(&self, index: usize, given: &[S]) -> S;
 }
 
 #[cfg(test)]

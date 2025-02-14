@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use mini_mcmc::distributions::{ProposalDistribution, TargetDistribution};
+    use mini_mcmc::core::ChainRunner;
+    use mini_mcmc::distributions::{Proposal, Target};
     use mini_mcmc::metrohast::MetropolisHastings;
     use rand::prelude::*;
     use rand::rngs::SmallRng;
@@ -19,7 +20,7 @@ mod tests {
         lambda: f64,
     }
 
-    impl TargetDistribution<i32, f64> for PoissonDist {
+    impl Target<i32, f64> for PoissonDist {
         fn unnorm_log_prob(&self, k: &[i32]) -> f64 {
             if k[0] < 0 {
                 // Probability zero if k < 0
@@ -59,7 +60,7 @@ mod tests {
         }
     }
 
-    impl ProposalDistribution<i32, f64> for PoissonRandomWalk {
+    impl Proposal<i32, f64> for PoissonRandomWalk {
         fn sample(&mut self, current: &[i32]) -> Vec<i32> {
             // Move +1 or -1 with 50% chance, but disallow going below 0.
             let step = if self.rng.gen_bool(0.5) { 1 } else { -1 };
@@ -160,7 +161,7 @@ mod tests {
         p: f64, // e.g. 0.3
     }
 
-    impl TargetDistribution<i32, f64> for BinomialDist {
+    impl Target<i32, f64> for BinomialDist {
         fn unnorm_log_prob(&self, k: &[i32]) -> f64 {
             if k[0] < 0 || k[0] > self.n {
                 return f64::NEG_INFINITY;
@@ -192,7 +193,7 @@ mod tests {
         }
     }
 
-    impl ProposalDistribution<i32, f64> for BinomialRandomWalk {
+    impl Proposal<i32, f64> for BinomialRandomWalk {
         fn sample(&mut self, current: &[i32]) -> Vec<i32> {
             // ±1 random walk, clamped to [0..n]
             let step = if self.rng.gen_bool(0.5) { 1 } else { -1 };

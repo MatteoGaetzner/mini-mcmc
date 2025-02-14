@@ -1,17 +1,13 @@
 //! An implementation of the Metropolis-Hastings sampler, built around a generic
 //! target distribution `D` and proposal distribution `Q`.
 
-use std::time::{Duration, Instant};
-
-use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use nalgebra as na;
 use num_traits::Float;
 use rand::prelude::*;
-use rayon::iter::IntoParallelIterator;
-use rayon::iter::{IndexedParallelIterator, IntoParallelRefMutIterator, ParallelIterator};
-use std::marker::PhantomData;
+use std::marker::{PhantomData, Send};
 
-use crate::distributions::{ProposalDistribution, TargetDistribution};
+use crate::core::{HasChains, MarkovChain};
+use crate::distributions::{Proposal, Target};
 
 /**
 The Metropolis-Hastings sampler, parameterized by:
@@ -85,8 +81,8 @@ pub struct MHMarkovChain<S, T, D, Q> {
 
 impl<S, T, D, Q> MetropolisHastings<S, T, D, Q>
 where
-    D: TargetDistribution<S, T> + std::clone::Clone + std::marker::Send,
-    Q: ProposalDistribution<S, T> + std::clone::Clone + std::marker::Send,
+    D: Target<S, T> + std::clone::Clone + Send,
+    Q: Proposal<S, T> + std::clone::Clone + Send,
     T: Float + Send,
     S: Clone + std::cmp::PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
     rand_distr::Standard: rand_distr::Distribution<T>,
@@ -170,141 +166,32 @@ where
         }
         self
     }
+}
 
-    /**
-    Runs the sampler for a total of `n_steps` per chain, discarding the first `discard`
-    samples (burn-in).
+impl<S, T, D, Q> HasChains<S> for MetropolisHastings<S, T, D, Q>
+where
+    D: Target<S, T> + Clone + Send,
+    Q: Proposal<S, T> + Clone + Send,
+    T: Float + Send,
+    S: Clone + PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
+    rand_distr::Standard: rand_distr::Distribution<T>,
+{
+    // Define the concrete type of `Chain`:
+    type Chain = MHMarkovChain<S, T, D, Q>;
 
-    This method runs the sampler in parallel over all chains and returns
-    a [`Vec<na::DMatrix<S>>`], where each `DMatrix` corresponds to one chain.
-    For each chain's matrix:
-
-    - **`nrows()`** = `n_steps - discard` (the number of kept samples),
-    - **`ncols()`** = the dimensionality of the state
-      (i.e., the length of the chain's current state vector).
-
-    # Arguments
-
-    * `n_steps` - The total number of steps (samples) to collect per chain.
-    * `discard` - The number of initial samples to discard as burn-in.
-
-    # Returns
-
-    A vector of matrices, one matrix per chain. Each matrix has
-    shape `(n_steps - discard) × (dimension of S)`.
-    */
-    pub fn run(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
-        let num_threads = match std::thread::available_parallelism() {
-            Ok(v) => v.get(),
-            Err(_) => {
-                eprintln!("Warning: could not get number of threads; defaulting to 1.");
-                1
-            }
-        };
-
-        // Collect results from each chain
-        let res: Vec<(Vec<S>, na::DMatrix<S>)> = self
-            .chains
-            .par_iter_mut()
-            .with_max_len(num_threads)
-            .map(|chain| {
-                let samples = chain.run(n_steps);
-                (chain.current_state.clone(), samples)
-            })
-            .collect();
-
-        // Copy final states back into each chain
-        for (i, (final_state, _)) in res.iter().enumerate() {
-            self.chains[i].current_state.clone_from(final_state);
-        }
-
-        // Discard burnin and return the samples from each chain
-        res.into_par_iter()
-            .map(|(_, samples)| samples.rows(discard, samples.nrows() - discard).into())
-            .collect()
-    }
-
-    /**
-    Runs the sampler with a visual progress bar for each chain.
-
-    This method uses the [`indicatif`] crate to display a progress bar for each chain
-    while sampling. It otherwise behaves similarly to [`run`], returning a
-    [`Vec<na::DMatrix<S>>`] where each `DMatrix` corresponds to one chain.
-
-    - **`nrows()`** for each chain's matrix = `n_steps - discard`.
-    - **`ncols()`** = the dimensionality of each state.
-
-    # Arguments
-
-    * `n_steps` - The total number of steps (samples) to collect per chain.
-    * `discard` - The number of initial samples to discard as burn-in.
-
-    # Returns
-
-    A vector of matrices, one matrix per chain, each with
-    shape `(n_steps - discard) × (dimension of S)`.
-    */
-    pub fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
-        let num_threads = match std::thread::available_parallelism() {
-            Ok(v) => v.get(),
-            Err(_) => {
-                eprintln!("Warning: could not get number of threads; defaulting to 1.");
-                1
-            }
-        };
-
-        // Create a MultiProgress to manage multiple progress bars
-        let multi = MultiProgress::new();
-        let pb_style = ProgressStyle::default_bar()
-            .template("{prefix} [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("##-");
-
-        // Collect results from each chain
-        let res: Vec<(Vec<S>, na::DMatrix<S>)> = self
-            .chains
-            .par_iter_mut()
-            .with_max_len(num_threads)
-            .enumerate()
-            .map(|(i, chain)| {
-                // For each chain, add a new progress bar to the MultiProgress
-                let pb = multi.add(indicatif::ProgressBar::new(n_steps as u64));
-                pb.set_prefix(format!("Chain {i}"));
-                pb.set_style(pb_style.clone());
-
-                // Run the chain, passing in the progress bar
-                let samples = chain.run_with_progress(n_steps, &pb);
-
-                // When done, finalize this bar
-                pb.finish_with_message("Done!");
-
-                // Return final state + samples
-                (chain.current_state.clone(), samples)
-            })
-            .collect();
-
-        // Copy final states back into each chain
-        for (i, (final_state, _)) in res.iter().enumerate() {
-            self.chains[i].current_state.clone_from(final_state);
-        }
-
-        // Discard burnin and return the samples from each chain
-        res.into_par_iter()
-            .map(|(_, samples)| samples.rows(discard, samples.nrows() - discard).into())
-            .collect()
+    fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
+        &mut self.chains
     }
 }
 
 impl<S, T, D, Q> MHMarkovChain<S, T, D, Q>
 where
-    D: TargetDistribution<S, T> + Clone,
-    Q: ProposalDistribution<S, T> + Clone,
+    D: Target<S, T> + Clone,
+    Q: Proposal<S, T> + Clone,
     S: Clone + std::cmp::PartialEq + na::Scalar + num_traits::Zero,
     T: Float,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    const UPDATE_INTERVAL: Duration = Duration::from_millis(500);
-
     /**
     Creates a new Markov chain for the Metropolis-Hastings sampler.
 
@@ -344,71 +231,16 @@ where
             phantom: PhantomData,
         }
     }
+}
 
-    /**
-    Runs the Markov chain for a given number of steps.
-
-    # Arguments
-
-    * `n_steps` - The number of iterations (samples) to generate.
-
-    # Returns
-
-    An [`nalgebra::DMatrix<S>`] with `nrows() = n_steps` and
-    `ncols() = dimension of the state`. Each row corresponds to the chain’s state
-    at that iteration.
-    */
-    pub fn run(&mut self, n_steps: usize) -> na::DMatrix<S> {
-        // let mut out = Vec::with_capacity(n_steps);
-        let mut out = na::DMatrix::<S>::zeros(n_steps, self.current_state.len());
-        (0..n_steps).for_each(|i| {
-            out.row_mut(i).copy_from_slice(&self.step());
-        });
-        out
-    }
-
-    /**
-    Runs the Markov chain for a given number of steps while updating a progress bar.
-
-    # Arguments
-
-    * `n_steps` - The number of iterations (samples) to run.
-    * `pb` - A reference to a progress bar to update periodically.
-
-    # Returns
-
-    An [`nalgebra::DMatrix<S>`] with `nrows() = n_steps` and
-    `ncols() = dimension of the state`. Each row corresponds to the chain’s state
-    at that iteration. The progress bar is updated approximately every 500 ms.
-    */
-    pub fn run_with_progress(&mut self, n_steps: usize, pb: &ProgressBar) -> na::DMatrix<S> {
-        let mut out = na::DMatrix::<S>::zeros(n_steps, self.current_state.len());
-        let mut accept_count = 0_usize;
-        let mut last_update = Instant::now();
-
-        pb.set_length(n_steps as u64);
-
-        for step_idx in 0..n_steps {
-            let old_state = self.current_state.clone();
-            let new_state = self.step();
-            if new_state != old_state {
-                accept_count += 1;
-            }
-
-            out.row_mut(step_idx).copy_from_slice(&new_state);
-
-            // Update progress bar if enough time has passed or if this is the last iteration
-            if last_update.elapsed() >= Self::UPDATE_INTERVAL || step_idx + 1 == n_steps {
-                let accept_rate = accept_count as f64 / (step_idx + 1) as f64;
-                pb.set_position(step_idx as u64 + 1);
-                pb.set_message(format!("AcceptRate={:.3}", accept_rate));
-                last_update = Instant::now();
-            }
-        }
-
-        out
-    }
-
+impl<S, T, D, Q> MarkovChain<S> for MHMarkovChain<S, T, D, Q>
+where
+    D: Target<S, T> + Clone,
+    Q: Proposal<S, T> + Clone,
+    S: Clone + std::cmp::PartialEq + na::Scalar + num_traits::Zero,
+    T: Float,
+    rand_distr::Standard: rand_distr::Distribution<T>,
+{
     /**
     Performs one Metropolis-Hastings update step (a proposal and possible acceptance).
 
@@ -424,6 +256,7 @@ where
 
     ```rust
     use mini_mcmc::metrohast::MHMarkovChain;
+    use mini_mcmc::core::{ChainRunner, MarkovChain};
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
     use rand::rngs::SmallRng;
     use rand::SeedableRng;
@@ -440,7 +273,7 @@ where
     assert_eq!(new_state.len(), 2);
     ```
     */
-    pub fn step(&mut self) -> Vec<S> {
+    fn step(&mut self) -> &Vec<S> {
         // Propose a new state based on the current state.
         let proposed: Vec<S> = self.proposal.sample(&self.current_state);
 
@@ -461,13 +294,18 @@ where
         if log_accept_ratio > u.ln() {
             self.current_state = proposed;
         }
-        self.current_state.clone()
+        &self.current_state
+    }
+
+    fn current_state(&self) -> &Vec<S> {
+        &self.current_state
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::ChainRunner;
     use crate::distributions::Normalized;
     use crate::ks_test::TotalF64;
     use rand_distr::StandardNormal;

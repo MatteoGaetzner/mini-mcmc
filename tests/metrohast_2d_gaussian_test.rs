@@ -2,6 +2,7 @@
 //!
 //! Instead of using a KS test, we now compare the sample means and covariance matrices.
 
+use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use mini_mcmc::metrohast::MetropolisHastings;
 use nalgebra as na;
@@ -9,7 +10,7 @@ use nalgebra as na;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mini_mcmc::distributions::ProposalDistribution;
+    use mini_mcmc::distributions::Proposal;
     use mini_mcmc::stats::cov;
 
     /// Checks that the Metropolis-Hastings sampler produces samples whose

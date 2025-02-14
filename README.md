@@ -76,7 +76,7 @@ This library provides:
 
 2. **Run the Demo**:
    ```sh
-   cargo run --release --bin demo
+   cargo run --release --bin 2d_gaussian
    ```
    Prints basic statistics of the MCMC chain (e.g., estimated mean).
    Saves a scatter plot of sampled points in `scatter_plot.png` and a Parquet file `samples.parquet`.
