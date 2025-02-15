@@ -48,7 +48,7 @@ You can also find this example at `examples/minimal_mh.rs`.
 
 ## Example: Sampling From a Custom Distribution
 
-Below we define a custom Poisson distribution for nonnegative integer states (\(\{0,1,2,\dots\}\)) and a simple random-walk proposal. We then run Metropolis–Hastings to sample from this distribution, collecting frequencies of \(k\) after some burn-in:
+Below we define a custom Poisson distribution for nonnegative integer states $\{0,1,2,\dots\}$ and a simple random-walk proposal. We then run Metropolis–Hastings to sample from this distribution, collecting frequencies of $k$ after some burn-in:
 
 ```rust
 use mini_mcmc::core::ChainRunner;
@@ -184,20 +184,18 @@ You can also find this example at `examples/poisson_mh.rs`.
 
 ### Explanation
 
-- **`PoissonTarget`** implements `Target<usize, f64>` for a discrete Poisson(\(\lambda\)) distribution:
-  \[
-  p(k) = e^{-\lambda}\, \frac{\lambda^k}{k!},\quad k=0,1,2,\ldots
-  \]
-  In log form, \(\log p(k) = -\lambda + k \log(\lambda) - \log(k!)\).
+- **`PoissonTarget`** implements `Target<usize, f64>` for a discrete Poisson($\lambda$) distribution:\
+  $$p(k) = e^{-\lambda}\, \frac{\lambda^k}{k!},\quad k=0,1,2,\ldots$$\
+  The log form of it is $\log p(k) = -\lambda + k \log \lambda - \log k!$.
 
-- **`NonnegativeProposal`** provides a random-walk in the set \(\{0,1,2,\dots\}\):
+- **`NonnegativeProposal`** provides a random-walk in the set $\{0,1,2,\dots\}$:
 
-  - If \(x=0\), propose \(1\) with probability 1.
-  - If \(x>0\), propose \(x+1\) or \(x-1\) with probability 0.5 each.
-  - `log_prob` returns \(\ln(0.5)\) for the valid moves, or \(-\infty\) for invalid moves.
+  - If $x=0$, propose $1$ with probability $1$.
+  - If $x>0$, propose $x+1$ or $x-14$ with probability $0.5$ each.
+  - `log_prob` returns $\ln(0.5)$ for the valid moves, or $-\infty$ for invalid moves.
 
 - **Usage**:  
-  We start the chain at \(k=0\), run 10,000 iterations discarding 1,000 as burn-in, and tally the final sample frequencies for \(k=0..20\). They should approximate the Poisson(4.0) distribution (peak around \(k=4\)).
+  We start the chain at $k=0$, run 10,000 iterations discarding 1,000 as burn-in, and tally the final sample frequencies for $k=0 \dots 20$. They should approximate the Poisson(4.0) distribution (peak around $k=4$).
 
 With this example, you can see how to use **mini_mcmc** for **unbounded** discrete distributions via a custom random-walk proposal and a log‐PMF.
 
