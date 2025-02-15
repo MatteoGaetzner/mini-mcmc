@@ -39,7 +39,7 @@ impl MixtureConditional {
 }
 
 impl Conditional<f64> for MixtureConditional {
-    fn sample(&self, i: usize, given: &[f64]) -> f64 {
+    fn sample(&mut self, i: usize, given: &[f64]) -> f64 {
         // Our state is [x, z].
         if i == 0 {
             // Sample x conditionally on z.

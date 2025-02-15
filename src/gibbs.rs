@@ -69,7 +69,7 @@ where
     /// #[derive(Clone)]
     /// struct OneConditional;
     /// impl Conditional<f64> for OneConditional {
-    ///     fn sample(&self, _i: usize, _given: &[f64]) -> f64 { 1.0 }
+    ///     fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 { 1.0 }
     /// }
     ///
     /// let chain = GibbsMarkovChain::new(OneConditional, &[0.0, 0.0]);
@@ -147,7 +147,7 @@ where
     /// #[derive(Clone)]
     /// struct DummyConditional;
     /// impl Conditional<f64> for DummyConditional {
-    ///     fn sample(&self, _i: usize, _given: &[f64]) -> f64 { 0.0 }
+    ///     fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 { 0.0 }
     /// }
     ///
     /// let sampler = GibbsSampler::new(DummyConditional, &[0.0, 0.0], 4);
@@ -205,7 +205,6 @@ where
 mod tests {
     use super::*;
     use crate::core::ChainRunner;
-    use rand::RngCore;
     use rand_distr::Normal;
     use std::f64::consts::PI;
 
@@ -216,7 +215,7 @@ mod tests {
     }
 
     impl Conditional<f64> for ConstantConditional {
-        fn sample(&self, _i: usize, _given: &[f64]) -> f64 {
+        fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 {
             self.c
         }
     }
@@ -235,6 +234,7 @@ mod tests {
         mu1: f64,
         sigma1: f64,
         pi0: f64, // mixing proportion for mode 0 (assume 0 < pi0 < 1, and mode 1 has weight 1 - pi0)
+        rng: SmallRng,
     }
 
     impl MixtureConditional {
@@ -248,7 +248,7 @@ mod tests {
     }
 
     impl Conditional<f64> for MixtureConditional {
-        fn sample(&self, i: usize, given: &[f64]) -> f64 {
+        fn sample(&mut self, i: usize, given: &[f64]) -> f64 {
             // Our state is [x, z], where z is 0.0 or 1.0.
             if i == 0 {
                 // Sample x conditionally on z.
@@ -256,10 +256,10 @@ mod tests {
                 if z < 0.5 {
                     // Use mode 0: N(mu0, sigma0^2)
                     let normal = Normal::new(self.mu0, self.sigma0).unwrap();
-                    thread_rng().sample(normal)
+                    self.rng.sample(normal)
                 } else {
                     let normal = Normal::new(self.mu1, self.sigma1).unwrap();
-                    thread_rng().sample(normal)
+                    self.rng.sample(normal)
                 }
             } else if i == 1 {
                 // Sample z conditionally on x.
@@ -391,6 +391,7 @@ mod tests {
             mu1,
             sigma1,
             pi0,
+            rng: SmallRng::seed_from_u64(seed),
         };
         let initial_state = [0.0, 0.0];
         let mut sampler = GibbsSampler::new(conditional, &initial_state, n_chains).set_seed(seed);
@@ -457,15 +458,15 @@ mod tests {
     #[test]
     fn test_gibbs_sampler_mixture_2() {
         let (theo_mean, theo_var, sample_mean, sample_var) = run_mixture_simulation(
-            -42.0,                   // mu0
-            69.0,                    // sigma0
-            1.0,                     // mu1
-            2.0,                     // sigma1
-            0.123,                   // pi0
-            3,                       // n_chains
-            50000,                   // n_steps
-            5000,                    // burn_in
-            thread_rng().next_u64(), // seed
+            -42.0, // mu0
+            69.0,  // sigma0
+            1.0,   // mu1
+            2.0,   // sigma1
+            0.123, // pi0
+            3,     // n_chains
+            50000, // n_steps
+            5000,  // burn_in
+            42,    // seed
         );
         println!("Mixture 2:");
         println!("Theoretical mean: {}", theo_mean);

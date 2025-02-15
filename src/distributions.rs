@@ -343,7 +343,7 @@ This trait specifies how to sample a single coordinate of a state given the enti
 It is primarily used in Gibbs sampling to update one coordinate at a time.
 */
 pub trait Conditional<S> {
-    fn sample(&self, index: usize, given: &[S]) -> S;
+    fn sample(&mut self, index: usize, given: &[S]) -> S;
 }
 
 #[cfg(test)]
