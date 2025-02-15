@@ -1,4 +1,4 @@
-# Mini MCMC Library
+# Mini MCMC
 
 ![tests](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/general.yml/badge.svg)
 ![security](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/audit.yml/badge.svg)
@@ -12,7 +12,7 @@ Once published on crates.io, add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mini-mcmc = "0.1.1"
+mini-mcmc = "0.2.0"
 ```
 
 Then you can `use mini_mcmc` in your Rust code.

@@ -1,3 +1,95 @@
+/*!
+# I/O Utilities for MCMC Data
+
+This module provides functions to save MCMC sample data to various file formats:
+
+- **CSV**: Save sample data as CSV files (enabled via the `csv` feature).
+- **Arrow (IPC)**: Save sample data as an Apache Arrow IPC file (enabled via the `arrow` feature).
+- **Parquet**: Save sample data as a Parquet file (enabled via the `parquet` feature).
+
+## Data Format
+
+MCMC sample data is expected as a slice of [`nalgebra::DMatrix<T>`] objects, where:
+- Each matrix represents one chain.
+- **Rows** correspond to individual samples.
+- **Columns** correspond to the dimensions of the state.
+
+For CSV output, the file will include a header with columns:
+- `"chain"`: the chain index,
+- `"sample"`: the sample index,
+- `"dim_0"`, `"dim_1"`, etc. for each dimension.
+
+For Arrow and Parquet, the data is converted into Arrow arrays following a consistent schema:
+- Columns: `chain` (UInt32), `sample` (UInt32), followed by one column per dimension (Float64).
+
+## Features
+
+- `csv`: Enables CSV I/O for sample data.
+- `arrow`: Enables saving sample data as Apache Arrow IPC files.
+- `parquet`: Enables saving sample data as Parquet files (using Arrow as an intermediary).
+
+## Error Handling
+
+All saving functions validate that:
+- All chains have the same number of samples (rows).
+- All samples have the same number of dimensions (columns).
+
+If there is any inconsistency, an error is returned.
+
+## Examples
+
+### Saving as CSV
+
+```rust
+use mini_mcmc::io::save_csv;
+use nalgebra as na;
+
+// A single chain with 2 samples and 4 dimensions.
+let data = vec![na::DMatrix::from_row_slice(2, 4, &[
+    1, 2, 3, 4,
+    5, 6, 7, 8
+])];
+save_csv(&data, "/tmp/output.csv")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+### Saving as Arrow
+
+```rust
+use mini_mcmc::io::save_arrow;
+use nalgebra as na;
+
+// 2 chains, each with 2 samples and 3 dimensions.
+let chain0 = na::DMatrix::from_row_slice(2, 3, &[
+    1.0, 2.0, 3.0,
+    4.0, 5.0, 6.0
+]);
+let chain1 = na::DMatrix::from_row_slice(2, 3, &[
+    10.0, 20.0, 30.0,
+    40.0, 50.0, 60.0
+]);
+let data = vec![chain0, chain1];
+save_arrow(&data, "/tmp/output.arrow")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+### Saving as Parquet
+
+```rust
+use mini_mcmc::io::save_parquet;
+use nalgebra as na;
+
+// A single chain with 2 samples and 3 dimensions.
+let single_chain = na::DMatrix::from_row_slice(2, 3, &[
+    1.0, 2.0, 3.0,
+    4.0, 5.0, 6.0
+]);
+let data = vec![single_chain];
+save_parquet(&data, "/tmp/output.parquet")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+*/
+
 use nalgebra as na;
 use std::error::Error;
 use std::fs::File;
@@ -58,8 +150,8 @@ use nalgebra as na;
 // This matrix has 2 rows (samples) and 4 columns (dimensions).
 let data = vec![na::DMatrix::from_row_slice(2, 4, &[1, 2, 3, 4,
                                                    5, 6, 7, 8])];
-save_csv(&data, "/tmp/output.csv")?;
-Ok::<(), Box<dyn std::error::Error>>(())
+save_csv(&data, "/tmp/output.csv").expect("Expecting saving data to succeed");
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_csv<T: std::fmt::Display>(
@@ -134,7 +226,7 @@ let chain1 = na::DMatrix::from_row_slice(2, 3, &[10.0, 20.0, 30.0,
 let data = vec![chain0, chain1];
 
 save_arrow(&data, "/tmp/output.arrow")?;
-Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_arrow<T: Into<f64> + Copy>(
@@ -261,7 +353,7 @@ let single_chain = na::DMatrix::from_row_slice(2, 3, &[1.0, 2.0, 3.0,
 let data = vec![single_chain];
 
 save_parquet(&data, "/tmp/output.parquet")?;
-Ok::<(), Box<dyn std::error::Error>>(())
+# Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_parquet<T: Into<f64> + Copy>(
