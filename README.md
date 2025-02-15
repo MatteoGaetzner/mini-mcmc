@@ -8,14 +8,14 @@ A small (and growing) Rust library for **Markov Chain Monte Carlo (MCMC)** metho
 
 ## Installation
 
-Once published on crates.io, add the following to your `Cargo.toml`:
+Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
 mini-mcmc = "0.2.0"
 ```
 
-Then you can `use mini_mcmc` in your Rust code.
+Then `use mini_mcmc` in your Rust code.
 
 ## Example: Sampling From a 2D Gaussian
 
