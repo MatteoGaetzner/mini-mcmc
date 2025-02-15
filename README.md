@@ -185,7 +185,7 @@ You can also find this example at `examples/poisson_mh.rs`.
 ### Explanation
 
 - **`PoissonTarget`** implements `Target<usize, f64>` for a discrete Poisson($\lambda$) distribution:\
-  $$p(k) = e^{-\lambda}\, \frac{\lambda^k}{k!},\quad k=0,1,2,\ldots$$\
+  $$p(k) = e^{-\lambda} \frac{\lambda^k}{k!},\quad k=0,1,2,\ldots$$\
   The log form of it is $\log p(k) = -\lambda + k \log \lambda - \log k!$.
 
 - **`NonnegativeProposal`** provides a random-walk in the set $\{0,1,2,\dots\}$:
