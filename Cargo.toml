@@ -1,6 +1,6 @@
 [package]
 name = "mini-mcmc"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
 license = "Apache-2.0" 
@@ -39,6 +39,9 @@ name = "gauss_mh"
 
 [[example]]
 name = "poisson_mh"
+
+[[example]]
+name = "rosenbrock_mh"
 
 [[example]]
 name = "mixture_gibbs"
