@@ -3,5 +3,6 @@ target/
 *.arrow
 *.parquet
 *.csv
+*.svg
 out
 tarpaulin-report.html

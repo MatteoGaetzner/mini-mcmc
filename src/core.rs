@@ -18,6 +18,7 @@ use indicatif::{MultiProgress, ProgressStyle};
 use nalgebra as na;
 use num_traits::Zero;
 use rayon::prelude::*;
+use std::collections::VecDeque;
 
 /// A trait that abstracts a single MCMC chain.
 ///
@@ -89,13 +90,46 @@ where
     let mut out = na::DMatrix::<S>::zeros(n_steps, dim);
 
     pb.set_length(n_steps as u64);
+    let mut n_accept = 0;
+    let mut accept_q = VecDeque::<bool>::new();
+    let mut last_state = chain.current_state().clone();
+    let mut pbar_update_mod: usize = 0;
 
     for i in 0..n_steps {
-        let state = chain.step();
-        out.row_mut(i).copy_from_slice(state);
+        let current_state = chain.step();
+        if last_state != *current_state {
+            n_accept += 1;
+            accept_q.push_front(true)
+        } else {
+            accept_q.push_front(false)
+        }
+        if i >= 50 {
+            if accept_q
+                .pop_back()
+                .expect("Expected popping back to yield something")
+            {
+                n_accept -= 1;
+            }
+
+            if pbar_update_mod == 0 {
+                // updates_per_sec = iter_per_sec / pbar_update_mod
+                // <=> pbar_update_mod = iter_per_sec / updates_per_sec
+                // pbar_update_mod =
+                let iter_per_sec = (i as f32) / (pb.elapsed().as_secs() as f32);
+                pbar_update_mod = (iter_per_sec / 10.0).ceil() as usize;
+            }
+
+            if i % pbar_update_mod == 0 {
+                let p_accept = n_accept as f32 / 50.0;
+                pb.set_message(format!("p(accept) ≈ {p_accept}"));
+            }
+        }
+
+        out.row_mut(i).copy_from_slice(current_state);
 
         // Update progress bar
         pb.inc(1);
+        last_state.clone_from(chain.current_state());
     }
 
     out
@@ -180,7 +214,7 @@ where
     fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
         let multi = MultiProgress::new();
         let pb_style = ProgressStyle::default_bar()
-            .template("{prefix} [{elapsed_precise}] {bar:40.cyan/blue} {pos}/{len} {msg}")
+            .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.cyan/blue} {pos}/{len} {msg}")
             .unwrap()
             .progress_chars("##-");
 
