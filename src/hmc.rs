@@ -3,11 +3,14 @@
 //! This is modeled similarly to your Metropolis–Hastings approach but uses gradient-based proposals.
 
 use burn::prelude::Backend;
+use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::Numeric;
 use burn::tensor::Tensor;
 use num_traits::Float;
 use rand::prelude::*;
-use rand::rngs::SmallRng;
+use rand::Rng;
+use rand_distr::StandardNormal;
 use std::marker::PhantomData;
 
 use crate::core::{HasChains, MarkovChain};
@@ -142,7 +145,7 @@ where
 
         // Current log-prob
         let current_pos_tensor: Tensor<B, 1> =
-            Tensor::<B, 1>::from_floats(self.current_pos.as_slice(), &B::Device::default());
+            Tensor::<B, 1>::from_data(self.current_pos.as_slice(), &B::Device::default());
 
         let logp_current: T = *self
             .target
@@ -168,19 +171,9 @@ where
             ),
             |(pos, mom, _), _| {
                 let (new_pos, new_mom, new_logp) = self.leapfrog(pos, mom);
-                // println!(
-                //     "  {:?}, log p(x) = {:?}",
-                //     new_pos.to_data().as_slice::<f32>().unwrap(),
-                //     self.target
-                //         .log_prob_tensor(&new_pos)
-                //         .to_data()
-                //         .as_slice::<f32>()
-                //         .unwrap()
-                // );
                 (new_pos, new_mom, new_logp)
             },
         );
-        // println!("End traj");
 
         // Proposed kinetic
         let ke_proposed =
@@ -272,5 +265,186 @@ where
 
     fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
         &mut self.chains
+    }
+}
+
+// -- 1) A batched target trait (see above) --
+pub trait BatchGradientTarget<T: Float, B: AutodiffBackend> {
+    fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1>;
+}
+
+// -- 2) The data-parallel HMC struct --
+pub struct DataParallelHMC<T, B, GTarget>
+where
+    B: Backend,
+{
+    pub target: GTarget,
+    pub step_size: T,
+    pub n_leapfrog: usize,
+    /// Positions for all chains, shape `[n_chains, D]`.
+    pub positions: Tensor<B, 2>,
+    /// A random-number generator for sampling momenta & accept tests.
+    pub rng: SmallRng,
+    phantom: PhantomData<(T, B)>,
+}
+
+impl<T, B, GTarget> DataParallelHMC<T, B, GTarget>
+where
+    T: Float
+        + burn::tensor::ElementConversion
+        + burn::tensor::Element
+        + rand_distr::uniform::SampleUniform,
+    B: AutodiffBackend + Backend,
+    GTarget: BatchGradientTarget<T, B>,
+    StandardNormal: rand::distributions::Distribution<T>,
+    rand_distr::Standard: rand_distr::Distribution<T>,
+{
+    /// Create a new data-parallel HMC, using `[n_chains, D]` initial positions.
+    ///
+    /// `initial_positions`: a `Vec<Vec<T>>` of shape `[n_chains][D]`.
+    pub fn new(
+        target: GTarget,
+        initial_positions: Vec<Vec<T>>,
+        step_size: T,
+        n_leapfrog: usize,
+        seed: u64,
+    ) -> Self {
+        let n_chains = initial_positions.len();
+        let dim = initial_positions[0].len();
+
+        // Flatten into one big Vec of length n_chains * dim
+        let mut flat = Vec::with_capacity(n_chains * dim);
+        for chain_pos in initial_positions.iter() {
+            flat.extend_from_slice(chain_pos);
+        }
+
+        // Build a [n_chains, D] tensor
+        let positions = Tensor::<B, 2>::from_floats(flat.as_slice(), &B::Device::default());
+
+        let rng = SmallRng::seed_from_u64(seed);
+
+        Self {
+            target,
+            step_size,
+            n_leapfrog,
+            positions,
+            rng,
+            phantom: PhantomData,
+        }
+    }
+
+    /// Perform one *batched* HMC update for all chains in parallel:
+    /// 1) Sample momenta from N(0, I).
+    /// 2) Run leapfrog steps in batch.
+    /// 3) Accept/reject per chain.
+    pub fn step(&mut self) {
+        let shape = self.positions.shape();
+        let (n_chains, dim) = (shape.dims[0], shape.dims[1]);
+
+        // 1) Sample momenta: shape [n_chains, D]
+        let momentum_0 = Tensor::<B, 2>::random(
+            [n_chains, dim].into(),
+            burn::tensor::Distribution::Normal(0., 1.),
+            &B::Device::default(),
+        );
+
+        // Current log-prob, shape [n_chains]
+        let logp_current = self.target.log_prob_batch(&self.positions);
+
+        // Kinetic energy: 0.5 * sum_{d} (p^2) per chain => shape [n_chains]
+        let ke_current = momentum_0
+            .powf_scalar(2.0)
+            .sum_dim(1) // sum over dimension=1 => shape [n_chains]
+            .squeeze(1)
+            .mul_scalar(T::from(0.5).unwrap());
+
+        // "Hamiltonian" = -logp + KE, shape [n_chains]
+        let h_current: Tensor<B, 1> = -logp_current + ke_current;
+
+        // 2) Run leapfrog integrator
+        let (proposed_positions, proposed_momenta, logp_proposed) =
+            self.leapfrog(self.positions, momentum_0);
+
+        // Proposed kinetic
+        let ke_proposed = proposed_momenta
+            .powf_scalar(2.0)
+            .sum_dim(1)
+            .squeeze(1)
+            .mul_scalar(T::from(0.5).unwrap());
+
+        let h_proposed = -logp_proposed + ke_proposed;
+
+        // 3) Accept/Reject per chain
+        //    accept_logp = -(h_proposed - h_current) = h_current - h_proposed
+        let accept_logp = h_current.sub(h_proposed);
+        // We draw uniform(0,1) for each chain => shape [n_chains]
+        let mut uniform_data = Vec::with_capacity(n_chains);
+        for _i in 0..n_chains {
+            uniform_data.push(self.rng.gen::<T>());
+        }
+        let uniform = Tensor::<B, 1>::random(
+            Shape::new([n_chains]),
+            burn::tensor::Distribution::Default,
+            &B::Device::default(),
+        );
+
+        // Condition: accept_logp >= ln(u)
+        let ln_u = uniform.log(); // shape [n_chains]
+        let accept_mask = accept_logp.greater_equal(ln_u); // Boolean mask: shape [n_chains]
+
+        // Merge old & new positions
+        // burn::tensor::Tensor has .where_cond(cond, x, y)
+        // in recent versions. If not, you can do
+        // accept_mask * proposed_positions + (1 - accept_mask) * self.positions
+        // but that requires a cast to numeric (0/1). Let’s try .where_cond:
+        let new_positions = accept_mask.where_cond(&proposed_positions, &self.positions);
+        self.positions = new_positions;
+    }
+
+    /// A batched leapfrog step (one iteration). Usually you do `n_leapfrog` steps in a loop.
+    /// We’ll do `n_leapfrog` inside here for simplicity.
+    ///
+    /// Returns `(positions, momenta, logp)` all shape `[n_chains, D]` or `[n_chains]`.
+    fn leapfrog(
+        &mut self,
+        mut pos: Tensor<B, 2>,
+        mut mom: Tensor<B, 2>,
+    ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
+        let half = T::from(0.5).unwrap();
+        for _step_i in 0..self.n_leapfrog {
+            // Make sure pos is AD-enabled
+            pos = pos.clone().require_grad();
+
+            // Compute gradient of log_prob wrt pos (all chains in parallel!)
+            let logp = self.target.log_prob_batch(&pos); // shape [n_chains]
+            let grads = {
+                let _tape = logp.backward(); // gather grads
+                                             // gradient wrt pos => shape [n_chains, D]
+                let grad_pos_data = pos.grad(&_tape).unwrap().to_data();
+                Tensor::<B, 2>::from_data(grad_pos_data, pos.shape(), &pos.device())
+            };
+
+            // First half-step for momentum
+            mom = mom.add(grads.mul_scalar(self.step_size * half));
+
+            // Full step in position
+            pos = pos
+                .add(mom.clone().mul_scalar(self.step_size))
+                .detach() // remove old gradient info
+                .require_grad(); // but we still want to track new gradients
+                                 // Second half-step for momentum
+            let logp2 = self.target.log_prob_batch(&pos);
+            let grads2 = {
+                let _tape = logp2.backward();
+                let grad_pos_data2 = pos.grad(&_tape).unwrap().to_data();
+                Tensor::<B, 2>::from_data(grad_pos_data2, pos.shape(), &pos.device())
+            };
+            mom = mom.add(grads2.mul_scalar(self.step_size * half));
+        }
+
+        // Final logp for these positions
+        let logp_final = self.target.log_prob_batch(&pos);
+
+        (pos, mom, logp_final)
     }
 }

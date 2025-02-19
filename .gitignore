@@ -6,3 +6,4 @@ target/
 *.svg
 out
 tarpaulin-report.html
+perf.data

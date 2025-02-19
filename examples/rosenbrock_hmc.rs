@@ -135,7 +135,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         HamiltonianSampler::new(target, initial_pos, 0.01, 10, 4).set_seed(42);
 
     // Run the sampler for 1,000 iterations, discarding the first 100 as burn-in.
-    let samples = sampler.run_with_progress(200, 20);
+    let samples = sampler.run_with_progress(20, 4);
 
     plot_samples(&samples)?;
 
