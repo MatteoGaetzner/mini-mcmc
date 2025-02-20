@@ -1,11 +1,11 @@
 //! A simple Hamiltonian (Hybrid) Monte Carlo sampler using the `burn` crate for autodiff.
 //!
-//! This is modeled similarly to your Metropolis–Hastings approach but uses gradient-based proposals.
+//! This is modeled similarly to your Metropolis–Hastings approach but uses gradient-based
+//! proposals.
 
 use burn::prelude::Backend;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::Numeric;
 use burn::tensor::Tensor;
 use num_traits::Float;
 use rand::prelude::*;
@@ -30,7 +30,8 @@ pub trait GradientTarget<T: Float, B: AutodiffBackend> {
 /// - `target` must implement `GradientTarget` so we can compute log-probs and gradients.
 /// - `step_size`: The step size used for leapfrog integration.
 /// - `n_leapfrog`: The number of leapfrog steps.
-/// - `current_pos`: The current position in parameter space (as a `[D]` 1D vector). We store it as a 2D tensor `[1, D]` for convenience.
+/// - `current_pos`: The current position in parameter space (as a `[D]` 1D vector).
+///    We store it as a 2D tensor `[1, D]` for convenience.
 /// - `rng`: A chain-specific RNG.
 pub struct HMCMarkovChain<T, B, GTarget> {
     pub target: GTarget,
@@ -270,7 +271,7 @@ where
 
 // -- 1) A batched target trait (see above) --
 pub trait BatchGradientTarget<T: Float, B: AutodiffBackend> {
-    fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1>;
+    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
 // -- 2) The data-parallel HMC struct --
@@ -309,17 +310,14 @@ where
         n_leapfrog: usize,
         seed: u64,
     ) -> Self {
-        let n_chains = initial_positions.len();
-        let dim = initial_positions[0].len();
-
-        // Flatten into one big Vec of length n_chains * dim
-        let mut flat = Vec::with_capacity(n_chains * dim);
-        for chain_pos in initial_positions.iter() {
-            flat.extend_from_slice(chain_pos);
-        }
-
         // Build a [n_chains, D] tensor
-        let positions = Tensor::<B, 2>::from_floats(flat.as_slice(), &B::Device::default());
+        let (n_chains, dim) = (initial_positions.len(), initial_positions[0].len());
+        let td: TensorData = TensorData::new(
+            initial_positions.into_iter().flatten().collect(),
+            [n_chains, dim],
+        );
+        // dbg!(&td.as_bytes());
+        let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
 
         let rng = SmallRng::seed_from_u64(seed);
 
@@ -343,16 +341,17 @@ where
 
         // 1) Sample momenta: shape [n_chains, D]
         let momentum_0 = Tensor::<B, 2>::random(
-            [n_chains, dim].into(),
+            Shape::new([n_chains, dim]),
             burn::tensor::Distribution::Normal(0., 1.),
             &B::Device::default(),
         );
 
         // Current log-prob, shape [n_chains]
-        let logp_current = self.target.log_prob_batch(&self.positions);
+        let logp_current = self.target.log_prob_batch(self.positions.clone());
 
         // Kinetic energy: 0.5 * sum_{d} (p^2) per chain => shape [n_chains]
         let ke_current = momentum_0
+            .clone()
             .powf_scalar(2.0)
             .sum_dim(1) // sum over dimension=1 => shape [n_chains]
             .squeeze(1)
@@ -363,7 +362,7 @@ where
 
         // 2) Run leapfrog integrator
         let (proposed_positions, proposed_momenta, logp_proposed) =
-            self.leapfrog(self.positions, momentum_0);
+            self.leapfrog(self.positions.clone(), momentum_0);
 
         // Proposed kinetic
         let ke_proposed = proposed_momenta
@@ -391,14 +390,16 @@ where
         // Condition: accept_logp >= ln(u)
         let ln_u = uniform.log(); // shape [n_chains]
         let accept_mask = accept_logp.greater_equal(ln_u); // Boolean mask: shape [n_chains]
+        let mut accept_mask_big: Tensor<B, 2, Bool> = accept_mask.clone().unsqueeze_dim(1);
+        accept_mask_big = accept_mask_big.expand([n_chains, dim]);
 
-        // Merge old & new positions
-        // burn::tensor::Tensor has .where_cond(cond, x, y)
-        // in recent versions. If not, you can do
-        // accept_mask * proposed_positions + (1 - accept_mask) * self.positions
-        // but that requires a cast to numeric (0/1). Let’s try .where_cond:
-        let new_positions = accept_mask.where_cond(&proposed_positions, &self.positions);
-        self.positions = new_positions;
+        self.positions.clone_from(
+            &self
+                .positions
+                .clone()
+                .mask_where(accept_mask_big, proposed_positions)
+                .detach(),
+        );
     }
 
     /// A batched leapfrog step (one iteration). Usually you do `n_leapfrog` steps in a loop.
@@ -413,15 +414,15 @@ where
         let half = T::from(0.5).unwrap();
         for _step_i in 0..self.n_leapfrog {
             // Make sure pos is AD-enabled
-            pos = pos.clone().require_grad();
+            pos = pos.detach().clone().require_grad();
 
             // Compute gradient of log_prob wrt pos (all chains in parallel!)
-            let logp = self.target.log_prob_batch(&pos); // shape [n_chains]
+            let logp = self.target.log_prob_batch(pos.clone()); // shape [n_chains]
             let grads = {
                 let _tape = logp.backward(); // gather grads
                                              // gradient wrt pos => shape [n_chains, D]
                 let grad_pos_data = pos.grad(&_tape).unwrap().to_data();
-                Tensor::<B, 2>::from_data(grad_pos_data, pos.shape(), &pos.device())
+                Tensor::<B, 2>::from_data(grad_pos_data, &pos.device())
             };
 
             // First half-step for momentum
@@ -433,18 +434,220 @@ where
                 .detach() // remove old gradient info
                 .require_grad(); // but we still want to track new gradients
                                  // Second half-step for momentum
-            let logp2 = self.target.log_prob_batch(&pos);
+            let logp2 = self.target.log_prob_batch(pos.clone());
             let grads2 = {
                 let _tape = logp2.backward();
                 let grad_pos_data2 = pos.grad(&_tape).unwrap().to_data();
-                Tensor::<B, 2>::from_data(grad_pos_data2, pos.shape(), &pos.device())
+                Tensor::<B, 2>::from_data(grad_pos_data2, &pos.device())
             };
             mom = mom.add(grads2.mul_scalar(self.step_size * half));
         }
 
         // Final logp for these positions
-        let logp_final = self.target.log_prob_batch(&pos);
+        let logp_final = self.target.log_prob_batch(pos.clone());
 
-        (pos, mom, logp_final)
+        (pos.detach(), mom.detach(), logp_final.detach())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::io::save_parquet;
+    use nalgebra as na;
+
+    use super::*;
+    use burn::{
+        backend::{Autodiff, NdArray},
+        tensor::{Element, Tensor},
+    };
+    use num_traits::Float;
+    use std::time::Instant;
+
+    // Define the Rosenbrock distribution.
+    #[derive(Clone, Copy)]
+    struct Rosenbrock<T: Float> {
+        a: T,
+        b: T,
+    }
+
+    // For the batched version we need to implement BatchGradientTarget.
+    impl<T, B> BatchGradientTarget<T, B> for Rosenbrock<T>
+    where
+        T: Float + std::fmt::Debug + Element,
+        B: burn::tensor::backend::AutodiffBackend,
+    {
+        fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+            // Assume `positions` is a Tensor<B, 2> with shape [n, 2].
+            let n = positions.dims()[0] as i64;
+            // dbg!(&positions);
+            let x = positions.clone().slice([(0, n), (0, 1)]); // shape: [n, 1]
+            let y = positions.slice([(0, n), (1, 2)]); // shape: [n, 1]
+                                                       // dbg!(&x);
+                                                       // dbg!(&y);
+
+            // Compute (a - x)^2 vectorized:
+            let term1 = (-x.clone()).add_scalar(self.a).powi_scalar(2.0);
+
+            // Compute (y - x^2)^2 vectorized:
+            let term2 = y.sub(x.clone().mul(x)).powi_scalar(2.0).mul_scalar(self.b);
+
+            // Return the negative sum as a 2D tensor [n, 1] (optionally flatten it to [n]):
+            -(term1 + term2).flatten(0, 1)
+        }
+    }
+
+    /// Test that runs the data-parallel HMC sampler, collects all chain samples, and saves them to a Parquet file.
+    #[test]
+    fn test_collect_hmc_samples_and_save_parquet() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<NdArray>;
+
+        // Create the Rosenbrock target (a = 1, b = 100)
+        let target = Rosenbrock {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // Define initial positions for 4 chains, each 2-dimensional.
+        let initial_positions = vec![
+            vec![0.0_f32, 0.0],
+            vec![1.0, 1.0],
+            vec![-1.0, 1.0],
+            vec![1.0, -1.0],
+        ];
+        let n_chains = initial_positions.len();
+        let dim = initial_positions[0].len();
+        let n_steps = 1000;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
+            target,
+            initial_positions,
+            0.01, // step size
+            10,   // number of leapfrog steps per update
+            42,   // RNG seed
+        );
+
+        // Prepare a history container: one Vec<f32> per chain.
+        // Each chain's sample (a [dim] vector) will be appended consecutively.
+        let mut history: Vec<Vec<f32>> = vec![Vec::with_capacity(n_steps * dim); n_chains];
+
+        let start = Instant::now();
+        // Run HMC for n_steps, collecting samples.
+        for step in 0..n_steps {
+            let start_step = Instant::now();
+            // Run HMC for n_steps, collecting samples.
+            sampler.step();
+            if step % 100 == 0 {
+                println!("Step: {step}");
+                println!("Step runtime: {:?}", start_step.elapsed());
+            }
+
+            // sampler.positions has shape [n_chains, dim]
+            let start_store = Instant::now();
+            let flat: Vec<f32> = sampler.positions.to_data().to_vec::<f32>().unwrap();
+            (0..n_chains).for_each(|chain_idx| {
+                let start_idx = chain_idx * dim;
+                let end_idx = start_idx + dim;
+                history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
+            });
+            if step % 100 == 0 {
+                println!("Store runtime: {:?}", start_store.elapsed());
+            }
+        }
+        let duration = start.elapsed();
+        println!("HMC sampler: {} steps took {:?}", n_steps, duration);
+
+        // Convert each chain's history (a Vec<f32>) into a DMatrix.
+        // Each chain's matrix will have shape [n_steps, dim].
+        let mut matrices = Vec::with_capacity(n_chains);
+        for chain_data in history.iter() {
+            let matrix = na::DMatrix::from_row_slice(n_steps, dim, chain_data);
+            matrices.push(matrix);
+        }
+        println!(
+            "Number of samples: {}",
+            matrices.len() * matrices[0].nrows()
+        );
+
+        // Save the collected samples to a Parquet file using the provided I/O utility.
+        save_parquet(&matrices, "rosenbrock_hmc.parquet").unwrap();
+    }
+
+    #[test]
+    fn test_collect_hmc_samples_and_save_parquet_1000_chains() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<NdArray>;
+
+        // Create the Rosenbrock target (a = 1, b = 100)
+        let target = Rosenbrock {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // We'll define 1000 chains all initialized to (1.0, 2.0).
+        let mut initial_positions = Vec::with_capacity(1000);
+        for _ in 0..1000 {
+            initial_positions.push(vec![1.0_f32, 2.0_f32]);
+        }
+        let n_chains = initial_positions.len(); // 1000
+        let dim = initial_positions[0].len(); // 2
+        let n_steps = 100;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
+            target,
+            initial_positions,
+            0.01, // step size
+            10,   // number of leapfrog steps per update
+            42,   // RNG seed
+        );
+
+        // Prepare a history container: one Vec<f32> per chain.
+        // Each chain's sample (a [dim] vector) will be appended consecutively.
+        let mut history: Vec<Vec<f32>> = vec![Vec::with_capacity(n_steps * dim); n_chains];
+
+        let start = Instant::now();
+        // Run HMC for n_steps, collecting samples.
+        for step in 0..n_steps {
+            let start_step = Instant::now();
+            sampler.step();
+            if step % 10 == 0 {
+                println!("Step: {step}");
+                println!("Step runtime: {:?}", start_step.elapsed());
+            }
+
+            // `positions` has shape [n_chains, dim]
+            let start_store = Instant::now();
+            let flat: Vec<f32> = sampler.positions.to_data().to_vec::<f32>().unwrap();
+            (0..n_chains).for_each(|chain_idx| {
+                let start_idx = chain_idx * dim;
+                let end_idx = start_idx + dim;
+                history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
+            });
+            if step % 10 == 0 {
+                println!("Store runtime: {:?}", start_store.elapsed());
+            }
+        }
+        let duration = start.elapsed();
+        println!("HMC sampler: {} steps took {:?}", n_steps, duration);
+
+        // Convert each chain's history (a Vec<f32>) into an nalgebra DMatrix.
+        // Each chain's matrix will have shape [n_steps, dim].
+        let mut matrices = Vec::with_capacity(n_chains);
+        for chain_data in &history {
+            let matrix = na::DMatrix::from_row_slice(n_steps, dim, chain_data);
+            matrices.push(matrix);
+        }
+        println!(
+            "Number of samples: {} ({} chains × {} steps)",
+            matrices.len() * matrices[0].nrows(),
+            n_chains,
+            n_steps
+        );
+
+        // Save the collected samples to a Parquet file (assuming you have `save_parquet`).
+        // You can change the filename as desired.
+        save_parquet(&matrices, "rosenbrock_hmc_1000.parquet").unwrap();
     }
 }

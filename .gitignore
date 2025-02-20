@@ -5,5 +5,7 @@ target/
 *.csv
 *.svg
 out
-tarpaulin-report.html
+*.html
+*.py
 perf.data
+
