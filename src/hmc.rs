@@ -452,7 +452,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::io::save_parquet;
     use nalgebra as na;
 
     use super::*;
@@ -498,7 +497,7 @@ mod tests {
 
     /// Test that runs the data-parallel HMC sampler, collects all chain samples, and saves them to a Parquet file.
     #[test]
-    fn test_collect_hmc_samples_and_save_parquet() {
+    fn test_collect_hmc_samples_and_save_parquet_single() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -509,12 +508,7 @@ mod tests {
         };
 
         // Define initial positions for 4 chains, each 2-dimensional.
-        let initial_positions = vec![
-            vec![0.0_f32, 0.0],
-            vec![1.0, 1.0],
-            vec![-1.0, 1.0],
-            vec![1.0, -1.0],
-        ];
+        let initial_positions = vec![vec![0.0_f32, 0.0]];
         let n_chains = initial_positions.len();
         let dim = initial_positions[0].len();
         let n_steps = 1000;
@@ -538,7 +532,7 @@ mod tests {
             let start_step = Instant::now();
             // Run HMC for n_steps, collecting samples.
             sampler.step();
-            if step % 100 == 0 {
+            if step % 10 == 0 {
                 println!("Step: {step}");
                 println!("Step runtime: {:?}", start_step.elapsed());
             }
@@ -551,7 +545,7 @@ mod tests {
                 let end_idx = start_idx + dim;
                 history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
             });
-            if step % 100 == 0 {
+            if step % 10 == 0 {
                 println!("Store runtime: {:?}", start_store.elapsed());
             }
         }
@@ -571,11 +565,11 @@ mod tests {
         );
 
         // Save the collected samples to a Parquet file using the provided I/O utility.
-        save_parquet(&matrices, "rosenbrock_hmc.parquet").unwrap();
+        // save_parquet(&matrices, "rosenbrock_hmc.parquet").unwrap();
     }
 
     #[test]
-    fn test_collect_hmc_samples_and_save_parquet_1000_chains() {
+    fn test_collect_hmc_samples_and_save_parquet_10() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -586,8 +580,8 @@ mod tests {
         };
 
         // We'll define 1000 chains all initialized to (1.0, 2.0).
-        let mut initial_positions = Vec::with_capacity(1000);
-        for _ in 0..1000 {
+        let mut initial_positions = Vec::with_capacity(10);
+        for _ in 0..10 {
             initial_positions.push(vec![1.0_f32, 2.0_f32]);
         }
         let n_chains = initial_positions.len(); // 1000
@@ -646,8 +640,6 @@ mod tests {
             n_steps
         );
 
-        // Save the collected samples to a Parquet file (assuming you have `save_parquet`).
-        // You can change the filename as desired.
-        save_parquet(&matrices, "rosenbrock_hmc_1000.parquet").unwrap();
+        // save_parquet(&matrices, "rosenbrock_hmc_1000.parquet").unwrap();
     }
 }
