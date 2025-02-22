@@ -3153,6 +3153,7 @@ dependencies = [
  "kolmogorov_smirnov",
  "nalgebra",
  "num-traits",
+ "once_cell",
  "parquet",
  "plotters",
  "rand 0.8.5",

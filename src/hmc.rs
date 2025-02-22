@@ -14,6 +14,7 @@ use rand_distr::StandardNormal;
 use std::marker::PhantomData;
 
 use crate::core::{HasChains, MarkovChain};
+use crate::dev_tools::Timer;
 
 /// Trait for distributions that can compute both the unnormalized log-prob *and* its gradient.
 ///
@@ -83,10 +84,12 @@ where
 
         // --- First half-step momentum update ---
         let logp = self.target.log_prob_tensor(&pos);
-        let grads = logp.backward();
+        let mut grads = logp.backward();
         // Here, grad_pos is likely of the inner type. Convert it back into an AD tensor.
-        let grad_pos =
-            Tensor::<B, 1>::from_data(pos.grad(&grads).unwrap().to_data(), &pos.device());
+        let grad_pos = Tensor::<B, 1>::from_data(
+            pos.grad_remove(&mut grads).unwrap().to_data(),
+            &pos.device(),
+        );
 
         // Use Burn’s scalar multiplication and addition methods.
         mom = mom.add(grad_pos.mul_scalar(self.step_size * T::from(0.5).unwrap()));
@@ -100,9 +103,14 @@ where
 
         // --- Second half-step momentum update ---
         let logp2 = self.target.log_prob_tensor(&pos);
-        let grads2 = logp2.backward();
-        let grad_pos2 =
-            Tensor::<B, 1>::from_data(pos.grad(&grads2).unwrap().to_data(), &pos.device());
+
+        let mut grads2 = logp2.backward();
+
+        let grad_pos2 = Tensor::<B, 1>::from_data(
+            pos.grad_remove(&mut grads2).unwrap().to_data(),
+            &pos.device(),
+        );
+
         mom = mom.add(grad_pos2.mul_scalar(self.step_size * T::from(0.5).unwrap()));
 
         // Retrieve the final log-probability for the updated position.
@@ -115,6 +123,7 @@ where
 
         // When you want to save the resulting state, detach it (convert to plain numbers).
         let pos_detached = pos.to_data();
+
         // Optionally, re-wrap it into an AD tensor for the next iteration:
         let pos_for_next =
             Tensor::<B, 1>::from_data(pos_detached.clone(), &pos.device()).require_grad();
@@ -163,7 +172,7 @@ where
         let h_current = -(logp_current) + ke_current; // negative log-prob + kinetic
 
         // --- Run leapfrog integrator for n steps ---
-        // println!("  {:?}", self.current_state().as_slice());
+        // println!("{:?}", self.current_state().as_slice());
         let (proposed_pos, proposed_mom, logp_proposed) = (0..self.n_leapfrog).fold(
             (
                 Tensor::<B, 1>::from_floats(self.current_pos.as_slice(), &B::Device::default()),
@@ -336,6 +345,7 @@ where
     /// 2) Run leapfrog steps in batch.
     /// 3) Accept/reject per chain.
     pub fn step(&mut self) {
+        let mut timer = Timer::new();
         let shape = self.positions.shape();
         let (n_chains, dim) = (shape.dims[0], shape.dims[1]);
 
@@ -346,8 +356,11 @@ where
             &B::Device::default(),
         );
 
+        timer.log("Momentum 0");
+
         // Current log-prob, shape [n_chains]
         let logp_current = self.target.log_prob_batch(self.positions.clone());
+        timer.log("logp_current");
 
         // Kinetic energy: 0.5 * sum_{d} (p^2) per chain => shape [n_chains]
         let ke_current = momentum_0
@@ -356,13 +369,16 @@ where
             .sum_dim(1) // sum over dimension=1 => shape [n_chains]
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
+        timer.log("ke_current");
 
         // "Hamiltonian" = -logp + KE, shape [n_chains]
         let h_current: Tensor<B, 1> = -logp_current + ke_current;
+        timer.log("h_current");
 
         // 2) Run leapfrog integrator
         let (proposed_positions, proposed_momenta, logp_proposed) =
             self.leapfrog(self.positions.clone(), momentum_0);
+        timer.log("leapfrog");
 
         // Proposed kinetic
         let ke_proposed = proposed_momenta
@@ -370,28 +386,35 @@ where
             .sum_dim(1)
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
+        timer.log("ke_proposed");
 
         let h_proposed = -logp_proposed + ke_proposed;
+        timer.log("h_proposed");
 
         // 3) Accept/Reject per chain
         //    accept_logp = -(h_proposed - h_current) = h_current - h_proposed
         let accept_logp = h_current.sub(h_proposed);
+        timer.log("accept_logp");
+
         // We draw uniform(0,1) for each chain => shape [n_chains]
         let mut uniform_data = Vec::with_capacity(n_chains);
         for _i in 0..n_chains {
             uniform_data.push(self.rng.gen::<T>());
         }
+        timer.log("uniform_data");
         let uniform = Tensor::<B, 1>::random(
             Shape::new([n_chains]),
             burn::tensor::Distribution::Default,
             &B::Device::default(),
         );
+        timer.log("random");
 
         // Condition: accept_logp >= ln(u)
         let ln_u = uniform.log(); // shape [n_chains]
         let accept_mask = accept_logp.greater_equal(ln_u); // Boolean mask: shape [n_chains]
         let mut accept_mask_big: Tensor<B, 2, Bool> = accept_mask.clone().unsqueeze_dim(1);
         accept_mask_big = accept_mask_big.expand([n_chains, dim]);
+        timer.log("accept_mask_big");
 
         self.positions.clone_from(
             &self
@@ -400,6 +423,7 @@ where
                 .mask_where(accept_mask_big, proposed_positions)
                 .detach(),
         );
+        timer.log("clone to positions");
     }
 
     /// A batched leapfrog step (one iteration). Usually you do `n_leapfrog` steps in a loop.
@@ -411,40 +435,56 @@ where
         mut pos: Tensor<B, 2>,
         mut mom: Tensor<B, 2>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
+        let mut timer = Timer::new();
         let half = T::from(0.5).unwrap();
         for _step_i in 0..self.n_leapfrog {
             // Make sure pos is AD-enabled
-            pos = pos.detach().clone().require_grad();
+            pos = pos.detach().require_grad();
+            timer.log("pos 1");
 
             // Compute gradient of log_prob wrt pos (all chains in parallel!)
             let logp = self.target.log_prob_batch(pos.clone()); // shape [n_chains]
+            timer.log("logp");
             let grads = {
-                let _tape = logp.backward(); // gather grads
-                                             // gradient wrt pos => shape [n_chains, D]
-                let grad_pos_data = pos.grad(&_tape).unwrap().to_data();
-                Tensor::<B, 2>::from_data(grad_pos_data, &pos.device())
+                let mut _tape = logp.backward(); // gather grads
+                                                 // gradient wrt pos => shape [n_chains, D]
+                timer.log("backward 1");
+                let grad_pos_data = pos.grad_remove(&mut _tape).unwrap().to_data();
+
+                timer.log("to data 1");
+                let out = Tensor::<B, 2>::from_data(grad_pos_data, &pos.device());
+                timer.log("to tensor");
+                out
             };
+            timer.log("grads");
 
             // First half-step for momentum
             mom = mom.add(grads.mul_scalar(self.step_size * half));
+            timer.log("mom 1");
 
             // Full step in position
             pos = pos
                 .add(mom.clone().mul_scalar(self.step_size))
-                .detach() // remove old gradient info
-                .require_grad(); // but we still want to track new gradients
-                                 // Second half-step for momentum
+                .detach()
+                .require_grad();
+
+            timer.log("pos update");
+            // Second half-step for momentum
             let logp2 = self.target.log_prob_batch(pos.clone());
+            timer.log("logp2");
             let grads2 = {
-                let _tape = logp2.backward();
-                let grad_pos_data2 = pos.grad(&_tape).unwrap().to_data();
+                let mut _tape = logp2.backward();
+                let grad_pos_data2 = pos.grad_remove(&mut _tape).unwrap().to_data();
                 Tensor::<B, 2>::from_data(grad_pos_data2, &pos.device())
             };
+            timer.log("grads2");
             mom = mom.add(grads2.mul_scalar(self.step_size * half));
+            timer.log("mom 2");
         }
 
         // Final logp for these positions
         let logp_final = self.target.log_prob_batch(pos.clone());
+        timer.log("prep out leapfrog");
 
         (pos.detach(), mom.detach(), logp_final.detach())
     }
@@ -511,14 +551,14 @@ mod tests {
         let initial_positions = vec![vec![0.0_f32, 0.0]];
         let n_chains = initial_positions.len();
         let dim = initial_positions[0].len();
-        let n_steps = 1000;
+        let n_steps = 3;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
-            10,   // number of leapfrog steps per update
+            2,    // number of leapfrog steps per update
             42,   // RNG seed
         );
 
@@ -579,14 +619,14 @@ mod tests {
             b: 100.0_f32,
         };
 
-        // We'll define 1000 chains all initialized to (1.0, 2.0).
+        // We'll define 10 chains all initialized to (1.0, 2.0).
         let mut initial_positions = Vec::with_capacity(10);
         for _ in 0..10 {
             initial_positions.push(vec![1.0_f32, 2.0_f32]);
         }
         let n_chains = initial_positions.len(); // 1000
         let dim = initial_positions[0].len(); // 2
-        let n_steps = 100;
+        let n_steps = 1000;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
@@ -641,5 +681,53 @@ mod tests {
         );
 
         // save_parquet(&matrices, "rosenbrock_hmc_1000.parquet").unwrap();
+    }
+
+    #[test]
+    fn test_collect_hmc_samples_benchmark() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<NdArray>;
+
+        // Create the Rosenbrock target (a = 1, b = 100)
+        let target = Rosenbrock {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let mut initial_positions = Vec::with_capacity(6);
+        for _ in 0..6 {
+            initial_positions.push(vec![1.0_f32, 2.0_f32]);
+        }
+        let n_chains = initial_positions.len();
+        let dim = initial_positions[0].len();
+        let n_steps = 5000;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
+            target,
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+            42,   // RNG seed
+        );
+
+        // Prepare a history container: one Vec<f32> per chain.
+        // Each chain's sample (a [dim] vector) will be appended consecutively.
+        let mut history: Vec<Vec<f32>> = vec![Vec::with_capacity(n_steps * dim); n_chains];
+
+        let start = Instant::now();
+        // Run HMC for n_steps, collecting samples.
+        for _ in 0..n_steps {
+            sampler.step();
+            let flat: Vec<f32> = sampler.positions.to_data().to_vec::<f32>().unwrap();
+            (0..n_chains).for_each(|chain_idx| {
+                let start_idx = chain_idx * dim;
+                let end_idx = start_idx + dim;
+                history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
+            });
+        }
+        let duration = start.elapsed();
+        println!("HMC sampler: {} steps took {:?}", n_steps, duration);
     }
 }

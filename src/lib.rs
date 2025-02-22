@@ -1,4 +1,5 @@
 pub mod core;
+mod dev_tools;
 pub mod distributions;
 pub mod gibbs;
 pub mod hmc;
