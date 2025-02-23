@@ -18,6 +18,6 @@ impl Timer {
         // let elapsed = now.duration_since(self.last);
         // self.last = now;
         // using dbg! style output:
-        // dbg!(elapsed, msg);
+        // println!("[{:?}] {:?}", elapsed, msg);
     }
 }
