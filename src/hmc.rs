@@ -184,22 +184,27 @@ where
             let grads = pos.grad(&logp.backward()).unwrap();
 
             // First half-step for momentum
-            let mom_inner = mom
-                .clone()
-                .inner()
-                .add(grads.mul_scalar(self.step_size * half));
+            mom.inplace(|_mom| {
+                _mom.add(Tensor::<B, 2>::from_inner(
+                    grads.mul_scalar(self.step_size * half),
+                ))
+            });
 
             // Full step in position
-            pos = Tensor::<B, 2>::from_inner(pos.inner().add(mom_inner.mul_scalar(self.step_size)))
-                .detach()
-                .require_grad();
+            pos.inplace(|_pos| {
+                _pos.add(mom.clone().mul_scalar(self.step_size))
+                    .detach()
+                    .require_grad()
+            });
 
             // Second half-step for momentum
             let logp2 = self.target.log_prob_batch(&pos);
             let grads2 = pos.grad(&logp2.backward()).unwrap();
-            mom = Tensor::<B, 2>::from_inner(
-                mom.inner().add(grads2.mul_scalar(self.step_size * half)),
-            );
+            mom.inplace(|_mom| {
+                _mom.add(Tensor::<B, 2>::from_inner(
+                    grads2.mul_scalar(self.step_size * half),
+                ))
+            });
         }
 
         // Final logp for these positions
