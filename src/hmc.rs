@@ -10,7 +10,6 @@ use num_traits::Float;
 use rand::prelude::*;
 use rand::Rng;
 use rand_distr::StandardNormal;
-use std::marker::PhantomData;
 
 // -- 1) A batched target trait (see above) --
 pub trait GradientTarget<T: Float, B: AutodiffBackend> {
@@ -18,6 +17,7 @@ pub trait GradientTarget<T: Float, B: AutodiffBackend> {
 }
 
 // -- 2) The data-parallel HMC struct --
+#[derive(Debug, Clone)]
 pub struct HMC<T, B, GTarget>
 where
     B: AutodiffBackend,
@@ -29,7 +29,6 @@ where
     pub positions: Tensor<B, 2>,
     /// A random-number generator for sampling momenta & accept tests.
     pub rng: SmallRng,
-    phantom: PhantomData<(T, B)>,
 }
 
 impl<T, B, GTarget> HMC<T, B, GTarget>
@@ -39,7 +38,7 @@ where
         + burn::tensor::Element
         + rand_distr::uniform::SampleUniform,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B>,
+    GTarget: GradientTarget<T, B> + std::marker::Sync,
     StandardNormal: rand::distributions::Distribution<T>,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
@@ -70,7 +69,6 @@ where
             n_leapfrog,
             positions,
             rng,
-            phantom: PhantomData,
         }
     }
 
@@ -222,14 +220,14 @@ mod tests {
     use num_traits::Float;
 
     // Define the Rosenbrock distribution.
-    #[derive(Clone, Copy)]
-    struct Rosenbrock<T: Float> {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct Rosenbrock2D<T: Float> {
         a: T,
         b: T,
     }
 
     // For the batched version we need to implement BatchGradientTarget.
-    impl<T, B> GradientTarget<T, B> for Rosenbrock<T>
+    impl<T, B> GradientTarget<T, B> for Rosenbrock2D<T>
     where
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
@@ -250,13 +248,37 @@ mod tests {
         }
     }
 
+    // Define the Rosenbrock distribution.
+    // From: https://arxiv.org/pdf/1903.09556.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    struct RosenbrockND {}
+
+    // For the batched version we need to implement BatchGradientTarget.
+    impl<T, B> GradientTarget<T, B> for RosenbrockND
+    where
+        T: Float + std::fmt::Debug + Element,
+        B: burn::tensor::backend::AutodiffBackend,
+    {
+        fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1> {
+            let k = positions.dims()[0] as i64;
+            let n = positions.dims()[1] as i64;
+            let low = positions.clone().slice([(0, k), (0, (n - 1))]);
+            let high = positions.clone().slice([(0, k), (1, n)]);
+            let term_1 = (high - low.clone().powi_scalar(2))
+                .powi_scalar(2)
+                .mul_scalar(100);
+            let term_2 = low.neg().add_scalar(1).powi_scalar(2);
+            -(term_1 + term_2).sum_dim(1).squeeze(1)
+        }
+    }
+
     #[test]
     fn test_collect_hmc_samples_single() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
         // Create the Rosenbrock target (a = 1, b = 100)
-        let target = Rosenbrock {
+        let target = Rosenbrock2D {
             a: 1.0_f32,
             b: 100.0_f32,
         };
@@ -266,7 +288,7 @@ mod tests {
         let n_steps = 3;
 
         // Create the HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
@@ -289,7 +311,7 @@ mod tests {
         type BackendType = Autodiff<NdArray>;
 
         // Create the Rosenbrock target (a = 1, b = 100)
-        let target = Rosenbrock {
+        let target = Rosenbrock2D {
             a: 1.0_f32,
             b: 100.0_f32,
         };
@@ -299,7 +321,7 @@ mod tests {
         let n_steps = 1000;
 
         // Create the HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
@@ -317,12 +339,13 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
     fn test_collect_hmc_samples_benchmark() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<burn::backend::NdArray>;
 
         // Create the Rosenbrock target (a = 1, b = 100)
-        let target = Rosenbrock {
+        let target = Rosenbrock2D {
             a: 1.0_f32,
             b: 100.0_f32,
         };
@@ -332,12 +355,45 @@ mod tests {
         let n_steps = 5000;
 
         // Create the data-parallel HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
             50,   // number of leapfrog steps per update
             42,   // RNG seed
+        );
+
+        // Run HMC for n_steps, collecting samples.
+        let mut timer = Timer::new();
+        let samples = sampler.run(n_steps, 0);
+        timer.log(format!(
+            "HMC sampler: generated {} samples.",
+            samples.dims()[0..2].iter().product::<usize>()
+        ))
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_benchmark_10000d() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<burn::backend::Wgpu>;
+
+        let seed = 42;
+        let d = 10000;
+
+        let rng = SmallRng::seed_from_u64(seed);
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let initial_positions: Vec<Vec<f32>> =
+            vec![rng.sample_iter(StandardNormal).take(d).collect(); 6];
+        let n_steps = 500;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
+            RosenbrockND {},
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+            seed, // RNG seed
         );
 
         // Run HMC for n_steps, collecting samples.

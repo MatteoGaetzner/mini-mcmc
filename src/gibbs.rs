@@ -32,6 +32,7 @@ use crate::distributions::Conditional;
 /// # Type Parameters
 /// - `S`: The type of each element in the state (typically a floating-point type).
 /// - `D`: The type of the conditional distribution; must implement [`Conditional<S>`].
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GibbsMarkovChain<S, D>
 where
     D: Conditional<S>,

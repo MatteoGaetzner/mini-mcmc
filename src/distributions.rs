@@ -118,7 +118,7 @@ let lp = gauss.log_prob(&vec![0.5, -0.5]);
 println!("Normalized log probability: {}", lp);
 ```
 */
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gaussian2D<T: Float> {
     pub mean: Vector2<T>,
     pub cov: Matrix2<T>,
@@ -201,7 +201,7 @@ let logq = proposal.log_prob(&current, &candidate);
 println!("Log of the proposal density: {}", logq);
 ```
 */
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IsotropicGaussian<T: Float> {
     pub std: T,
     rng: SmallRng,
@@ -278,7 +278,7 @@ let logp = cat.log_prob(sample);
 println!("Log probability of category {}: {}", sample, logp);
 ```
 */
-#[derive(Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Categorical<T>
 where
     T: Float + std::ops::AddAssign,

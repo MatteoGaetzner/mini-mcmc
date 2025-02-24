@@ -11,7 +11,7 @@ documentation = "https://docs.rs/mini-mcmc"
 homepage = "https://github.com/MatteoGaetzner/mini-mcmc"
 
 exclude = [
-  "target/*",
+  "target/*"
 ]
 
 [dependencies]
@@ -24,8 +24,7 @@ num-traits = "0.2"
 csv = {version="1.3", optional=true}
 arrow = {version="54.1", optional=true}
 parquet = {version="54.1", optional=true}
-burn = { version = "0.16.0", features = ["autodiff", "ndarray"] }
-once_cell = "1.20.3"
+burn = { version = "0.16.0", features = ["autodiff", "ndarray", "wgpu"] }
 ndarray = { version = "0.16.1" }
 
 [features]
@@ -33,7 +32,6 @@ default = ["csv", "arrow", "parquet"]
 csv = ["dep:csv"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet"]
-logging = []
 
 [[example]]
 name = "minimal_mh"

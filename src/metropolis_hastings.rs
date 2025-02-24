@@ -77,6 +77,7 @@ use crate::distributions::{Proposal, Target};
 /// let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
 /// assert_eq!(mh.chains.len(), 1);
 /// ```
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetropolisHastings<S: Clone, T: Float, D: Clone, Q: Clone> {
     /// The target distribution we want to sample from.
     pub target: D,
@@ -88,11 +89,11 @@ pub struct MetropolisHastings<S: Clone, T: Float, D: Clone, Q: Clone> {
     pub seed: u64,
 }
 
-#[derive(Clone)]
 /// A single Markov chain for the Metropolis–Hastings algorithm.
 ///
 /// Each chain stores its own copy of the target and proposal distributions,  
 /// maintains its current state, and uses a chain-specific random number generator.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MHMarkovChain<S, T, D, Q> {
     /// The target distribution to sample from.
     pub target: D,

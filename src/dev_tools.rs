@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Timer {
     last: Instant,
 }
