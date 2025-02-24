@@ -3152,6 +3152,7 @@ dependencies = [
  "indicatif",
  "kolmogorov_smirnov",
  "nalgebra",
+ "ndarray 0.16.1",
  "num-traits",
  "once_cell",
  "parquet",

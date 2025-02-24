@@ -269,7 +269,7 @@ mod tests {
                     (1.0 - self.pi0) * MixtureConditional::normal_pdf(x, self.mu1, self.sigma1);
                 let total = p0 + p1;
                 let prob_z1 = if total > 0.0 { p1 / total } else { 0.5 };
-                if thread_rng().gen::<f64>() < prob_z1 {
+                if self.rng.gen::<f64>() < prob_z1 {
                     1.0
                 } else {
                     0.0
@@ -458,15 +458,15 @@ mod tests {
     #[test]
     fn test_gibbs_sampler_mixture_2() {
         let (theo_mean, theo_var, sample_mean, sample_var) = run_mixture_simulation(
-            -42.0, // mu0
-            69.0,  // sigma0
-            1.0,   // mu1
-            2.0,   // sigma1
-            0.123, // pi0
-            3,     // n_chains
-            50000, // n_steps
-            5000,  // burn_in
-            42,    // seed
+            -42.0,  // mu0
+            69.0,   // sigma0
+            1.0,    // mu1
+            2.0,    // sigma1
+            0.123,  // pi0
+            3,      // n_chains
+            100000, // n_steps
+            10000,  // burn_in
+            42,     // seed
         );
         println!("Mixture 2:");
         println!("Theoretical mean: {}", theo_mean);

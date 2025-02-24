@@ -12,15 +12,13 @@ use rand::Rng;
 use rand_distr::StandardNormal;
 use std::marker::PhantomData;
 
-use crate::dev_tools::Timer;
-
 // -- 1) A batched target trait (see above) --
-pub trait BatchGradientTarget<T: Float, B: AutodiffBackend> {
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
+pub trait GradientTarget<T: Float, B: AutodiffBackend> {
+    fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
 // -- 2) The data-parallel HMC struct --
-pub struct DataParallelHMC<T, B, GTarget>
+pub struct HMC<T, B, GTarget>
 where
     B: AutodiffBackend,
 {
@@ -34,14 +32,14 @@ where
     phantom: PhantomData<(T, B)>,
 }
 
-impl<T, B, GTarget> DataParallelHMC<T, B, GTarget>
+impl<T, B, GTarget> HMC<T, B, GTarget>
 where
     T: Float
         + burn::tensor::ElementConversion
         + burn::tensor::Element
         + rand_distr::uniform::SampleUniform,
     B: AutodiffBackend,
-    GTarget: BatchGradientTarget<T, B>,
+    GTarget: GradientTarget<T, B>,
     StandardNormal: rand::distributions::Distribution<T>,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
@@ -76,12 +74,34 @@ where
         }
     }
 
+    pub fn run(&mut self, n_steps: usize, discard: usize) -> Tensor<B, 3> {
+        let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
+        let mut out = Tensor::<B, 3>::empty(
+            [n_steps, n_chains, self.positions.dims()[1]],
+            &B::Device::default(),
+        );
+
+        // Discard first `discard` positions
+        (0..discard).for_each(|_| self.step());
+
+        // Collect samples
+        for step in 1..(n_steps + 1) {
+            self.step();
+            out.inplace(|x| {
+                x.slice_assign(
+                    [step - 1..step, 0..n_chains, 0..dim],
+                    self.positions.clone().unsqueeze_dim(0),
+                )
+            });
+        }
+        out
+    }
+
     /// Perform one *batched* HMC update for all chains in parallel:
     /// 1) Sample momenta from N(0, I).
     /// 2) Run leapfrog steps in batch.
     /// 3) Accept/reject per chain.
     pub fn step(&mut self) {
-        let mut timer = Timer::new();
         let shape = self.positions.shape();
         let (n_chains, dim) = (shape.dims[0], shape.dims[1]);
 
@@ -92,11 +112,8 @@ where
             &B::Device::default(),
         );
 
-        timer.log("Momentum 0");
-
         // Current log-prob, shape [n_chains]
-        let logp_current = self.target.log_prob_batch(self.positions.clone());
-        timer.log("logp_current");
+        let logp_current = self.target.log_prob_batch(&self.positions);
 
         // Kinetic energy: 0.5 * sum_{d} (p^2) per chain => shape [n_chains]
         let ke_current = momentum_0
@@ -105,16 +122,13 @@ where
             .sum_dim(1) // sum over dimension=1 => shape [n_chains]
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
-        timer.log("ke_current");
 
         // "Hamiltonian" = -logp + KE, shape [n_chains]
         let h_current: Tensor<B, 1> = -logp_current + ke_current;
-        timer.log("h_current");
 
         // 2) Run leapfrog integrator
         let (proposed_positions, proposed_momenta, logp_proposed) =
             self.leapfrog(self.positions.clone(), momentum_0);
-        timer.log("leapfrog");
 
         // Proposed kinetic
         let ke_proposed = proposed_momenta
@@ -122,44 +136,35 @@ where
             .sum_dim(1)
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
-        timer.log("ke_proposed");
 
         let h_proposed = -logp_proposed + ke_proposed;
-        timer.log("h_proposed");
 
         // 3) Accept/Reject per chain
         //    accept_logp = -(h_proposed - h_current) = h_current - h_proposed
         let accept_logp = h_current.sub(h_proposed);
-        timer.log("accept_logp");
 
         // We draw uniform(0,1) for each chain => shape [n_chains]
         let mut uniform_data = Vec::with_capacity(n_chains);
         for _i in 0..n_chains {
             uniform_data.push(self.rng.gen::<T>());
         }
-        timer.log("uniform_data");
         let uniform = Tensor::<B, 1>::random(
             Shape::new([n_chains]),
             burn::tensor::Distribution::Default,
             &B::Device::default(),
         );
-        timer.log("random");
 
         // Condition: accept_logp >= ln(u)
         let ln_u = uniform.log(); // shape [n_chains]
         let accept_mask = accept_logp.greater_equal(ln_u); // Boolean mask: shape [n_chains]
         let mut accept_mask_big: Tensor<B, 2, Bool> = accept_mask.clone().unsqueeze_dim(1);
         accept_mask_big = accept_mask_big.expand([n_chains, dim]);
-        timer.log("accept_mask_big");
 
-        self.positions.clone_from(
-            &self
-                .positions
-                .clone()
+        self.positions.inplace(|x| {
+            x.clone()
                 .mask_where(accept_mask_big, proposed_positions)
-                .detach(),
-        );
-        timer.log("clone to positions");
+                .detach()
+        });
     }
 
     /// A batched leapfrog step (one iteration). Usually you do `n_leapfrog` steps in a loop.
@@ -171,54 +176,43 @@ where
         mut pos: Tensor<B, 2>,
         mut mom: Tensor<B, 2>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
-        let mut timer = Timer::new();
         let half = T::from(0.5).unwrap();
         for _step_i in 0..self.n_leapfrog {
             // Make sure pos is AD-enabled
             pos = pos.detach().require_grad();
-            timer.log("pos 1");
 
             // Compute gradient of log_prob wrt pos (all chains in parallel!)
-            let logp = self.target.log_prob_batch(pos.clone()); // shape [n_chains]
-            timer.log("logp");
+            let logp = self.target.log_prob_batch(&pos); // shape [n_chains]
             let grads = pos.grad(&logp.backward()).unwrap();
-            timer.log("grads");
 
             // First half-step for momentum
             let mom_inner = mom
                 .clone()
                 .inner()
                 .add(grads.mul_scalar(self.step_size * half));
-            timer.log("mom 1");
 
             // Full step in position
             pos = Tensor::<B, 2>::from_inner(pos.inner().add(mom_inner.mul_scalar(self.step_size)))
                 .detach()
                 .require_grad();
 
-            timer.log("pos update");
             // Second half-step for momentum
-            let logp2 = self.target.log_prob_batch(pos.clone());
-            timer.log("logp2");
+            let logp2 = self.target.log_prob_batch(&pos);
             let grads2 = pos.grad(&logp2.backward()).unwrap();
-            timer.log("grads2");
             mom = Tensor::<B, 2>::from_inner(
                 mom.inner().add(grads2.mul_scalar(self.step_size * half)),
             );
-            timer.log("mom 2");
         }
 
         // Final logp for these positions
-        let logp_final = self.target.log_prob_batch(pos.clone());
-        timer.log("prep out leapfrog");
-        // println!("\n");
+        let logp_final = self.target.log_prob_batch(&pos);
         (pos.detach(), mom.detach(), logp_final.detach())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use nalgebra as na;
+    use crate::dev_tools::Timer;
 
     use super::*;
     use burn::{
@@ -226,7 +220,6 @@ mod tests {
         tensor::{Element, Tensor},
     };
     use num_traits::Float;
-    use std::time::Instant;
 
     // Define the Rosenbrock distribution.
     #[derive(Clone, Copy)]
@@ -236,34 +229,29 @@ mod tests {
     }
 
     // For the batched version we need to implement BatchGradientTarget.
-    impl<T, B> BatchGradientTarget<T, B> for Rosenbrock<T>
+    impl<T, B> GradientTarget<T, B> for Rosenbrock<T>
     where
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
-            // Assume `positions` is a Tensor<B, 2> with shape [n, 2].
+        fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1> {
             let n = positions.dims()[0] as i64;
-            // dbg!(&positions);
-            let x = positions.clone().slice([(0, n), (0, 1)]); // shape: [n, 1]
-            let y = positions.slice([(0, n), (1, 2)]); // shape: [n, 1]
-                                                       // dbg!(&x);
-                                                       // dbg!(&y);
+            let x = positions.clone().slice([(0, n), (0, 1)]);
+            let y = positions.clone().slice([(0, n), (1, 2)]);
 
-            // Compute (a - x)^2 vectorized:
-            let term1 = (-x.clone()).add_scalar(self.a).powi_scalar(2.0);
+            // Compute (a - x)^2 in place.
+            let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
 
-            // Compute (y - x^2)^2 vectorized:
-            let term2 = y.sub(x.clone().mul(x)).powi_scalar(2.0).mul_scalar(self.b);
+            // Compute (y - x^2)^2 in place.
+            let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
 
-            // Return the negative sum as a 2D tensor [n, 1] (optionally flatten it to [n]):
-            -(term1 + term2).flatten(0, 1)
+            // Return the negative sum as a flattened 1D tensor.
+            -(term_1 + term_2).flatten(0, 1)
         }
     }
 
-    /// Test that runs the data-parallel HMC sampler, collects all chain samples, and saves them to a Parquet file.
     #[test]
-    fn test_collect_hmc_samples_and_save_parquet_single() {
+    fn test_collect_hmc_samples_single() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -273,14 +261,12 @@ mod tests {
             b: 100.0_f32,
         };
 
-        // Define initial positions for 4 chains, each 2-dimensional.
+        // Define initial positions for a single chain (2-dimensional).
         let initial_positions = vec![vec![0.0_f32, 0.0]];
-        let n_chains = initial_positions.len();
-        let dim = initial_positions[0].len();
         let n_steps = 3;
 
-        // Create the data-parallel HMC sampler.
-        let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
+        // Create the HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
@@ -288,54 +274,17 @@ mod tests {
             42,   // RNG seed
         );
 
-        // Prepare a history container: one Vec<f32> per chain.
-        // Each chain's sample (a [dim] vector) will be appended consecutively.
-        let mut history: Vec<Vec<f32>> = vec![Vec::with_capacity(n_steps * dim); n_chains];
-
-        let start = Instant::now();
-        // Run HMC for n_steps, collecting samples.
-        for step in 0..n_steps {
-            let start_step = Instant::now();
-            // Run HMC for n_steps, collecting samples.
-            sampler.step();
-            if step % 10 == 0 {
-                println!("Step: {step}");
-                println!("Step runtime: {:?}", start_step.elapsed());
-            }
-
-            // sampler.positions has shape [n_chains, dim]
-            let start_store = Instant::now();
-            let flat: Vec<f32> = sampler.positions.to_data().to_vec::<f32>().unwrap();
-            (0..n_chains).for_each(|chain_idx| {
-                let start_idx = chain_idx * dim;
-                let end_idx = start_idx + dim;
-                history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
-            });
-            if step % 10 == 0 {
-                println!("Store runtime: {:?}", start_store.elapsed());
-            }
-        }
-        let duration = start.elapsed();
-        println!("HMC sampler: {} steps took {:?}", n_steps, duration);
-
-        // Convert each chain's history (a Vec<f32>) into a DMatrix.
-        // Each chain's matrix will have shape [n_steps, dim].
-        let mut matrices = Vec::with_capacity(n_chains);
-        for chain_data in history.iter() {
-            let matrix = na::DMatrix::from_row_slice(n_steps, dim, chain_data);
-            matrices.push(matrix);
-        }
-        println!(
-            "Number of samples: {}",
-            matrices.len() * matrices[0].nrows()
-        );
-
-        // Save the collected samples to a Parquet file using the provided I/O utility.
-        // save_parquet(&matrices, "rosenbrock_hmc.parquet").unwrap();
+        // Run the sampler for n_steps with no discard.
+        let mut timer = Timer::new();
+        let samples: Tensor<BackendType, 3> = sampler.run(n_steps, 0);
+        timer.log(format!(
+            "Collected samples (10 chains) with shape: {:?}",
+            samples.dims()
+        ))
     }
 
     #[test]
-    fn test_collect_hmc_samples_and_save_parquet_10() {
+    fn test_collect_hmc_samples_10_chains() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -345,17 +294,12 @@ mod tests {
             b: 100.0_f32,
         };
 
-        // We'll define 10 chains all initialized to (1.0, 2.0).
-        let mut initial_positions = Vec::with_capacity(10);
-        for _ in 0..10 {
-            initial_positions.push(vec![1.0_f32, 2.0_f32]);
-        }
-        let n_chains = initial_positions.len(); // 1000
-        let dim = initial_positions[0].len(); // 2
+        // Define 10 chains all initialized to (1.0, 2.0).
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 10];
         let n_steps = 1000;
 
-        // Create the data-parallel HMC sampler.
-        let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
+        // Create the HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
@@ -363,50 +307,13 @@ mod tests {
             42,   // RNG seed
         );
 
-        // Prepare a history container: one Vec<f32> per chain.
-        // Each chain's sample (a [dim] vector) will be appended consecutively.
-        let mut history: Vec<Vec<f32>> = vec![Vec::with_capacity(n_steps * dim); n_chains];
-
-        let start = Instant::now();
-        // Run HMC for n_steps, collecting samples.
-        for step in 0..n_steps {
-            let start_step = Instant::now();
-            sampler.step();
-            if step % 10 == 0 {
-                println!("Step: {step}");
-                println!("Step runtime: {:?}", start_step.elapsed());
-            }
-
-            // `positions` has shape [n_chains, dim]
-            let start_store = Instant::now();
-            let flat: Vec<f32> = sampler.positions.to_data().to_vec::<f32>().unwrap();
-            (0..n_chains).for_each(|chain_idx| {
-                let start_idx = chain_idx * dim;
-                let end_idx = start_idx + dim;
-                history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
-            });
-            if step % 10 == 0 {
-                println!("Store runtime: {:?}", start_store.elapsed());
-            }
-        }
-        let duration = start.elapsed();
-        println!("HMC sampler: {} steps took {:?}", n_steps, duration);
-
-        // Convert each chain's history (a Vec<f32>) into an nalgebra DMatrix.
-        // Each chain's matrix will have shape [n_steps, dim].
-        let mut matrices = Vec::with_capacity(n_chains);
-        for chain_data in &history {
-            let matrix = na::DMatrix::from_row_slice(n_steps, dim, chain_data);
-            matrices.push(matrix);
-        }
-        println!(
-            "Number of samples: {} ({} chains × {} steps)",
-            matrices.len() * matrices[0].nrows(),
-            n_chains,
-            n_steps
-        );
-
-        // save_parquet(&matrices, "rosenbrock_hmc_1000.parquet").unwrap();
+        // Run the sampler for n_steps with no discard.
+        let mut timer = Timer::new();
+        let samples: Tensor<BackendType, 3> = sampler.run(n_steps, 0);
+        timer.log(format!(
+            "Collected samples (10 chains) with shape: {:?}",
+            samples.dims()
+        ))
     }
 
     #[test]
@@ -421,16 +328,11 @@ mod tests {
         };
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
-        let mut initial_positions = Vec::with_capacity(6);
-        for _ in 0..6 {
-            initial_positions.push(vec![1.0_f32, 2.0_f32]);
-        }
-        let n_chains = initial_positions.len();
-        let dim = initial_positions[0].len();
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
         let n_steps = 5000;
 
         // Create the data-parallel HMC sampler.
-        let mut sampler = DataParallelHMC::<f32, BackendType, Rosenbrock<f32>>::new(
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
@@ -438,22 +340,12 @@ mod tests {
             42,   // RNG seed
         );
 
-        // Prepare a history container: one Vec<f32> per chain.
-        // Each chain's sample (a [dim] vector) will be appended consecutively.
-        let mut history: Vec<Vec<f32>> = vec![Vec::with_capacity(n_steps * dim); n_chains];
-
-        let start = Instant::now();
         // Run HMC for n_steps, collecting samples.
-        for _ in 0..n_steps {
-            sampler.step();
-            let flat: Vec<f32> = sampler.positions.to_data().to_vec::<f32>().unwrap();
-            (0..n_chains).for_each(|chain_idx| {
-                let start_idx = chain_idx * dim;
-                let end_idx = start_idx + dim;
-                history[chain_idx].extend_from_slice(&flat[start_idx..end_idx]);
-            });
-        }
-        let duration = start.elapsed();
-        println!("HMC sampler: {} steps took {:?}", n_steps, duration);
+        let mut timer = Timer::new();
+        let samples = sampler.run(n_steps, 0);
+        timer.log(format!(
+            "HMC sampler: generated {} samples.",
+            samples.dims()[0..2].iter().product::<usize>()
+        ))
     }
 }
