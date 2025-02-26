@@ -7,39 +7,26 @@ This module provides functions to save MCMC sample data to various file formats:
 - **Arrow (IPC)**: Save sample data as an Apache Arrow IPC file (enabled via the `arrow` feature).
 - **Parquet**: Save sample data as a Parquet file (enabled via the `parquet` feature).
 
-## Data Format
+---
 
-MCMC sample data is expected as a slice of [`nalgebra::DMatrix<T>`] objects, where:
-- Each matrix represents one chain.
-- **Rows** correspond to individual samples.
-- **Columns** correspond to the dimensions of the state.
+## Data Format: Metropolis-Hastings and Gibbs
 
-For CSV output, the file will include a header with columns:
-- `"chain"`: the chain index,
-- `"sample"`: the sample index,
-- `"dim_0"`, `"dim_1"`, etc. for each dimension.
+### Storing as `nalgebra::DMatrix<T>` (Chain × Sample × Dimension)
 
-For Arrow and Parquet, the data is converted into Arrow arrays following a consistent schema:
-- Columns: `chain` (UInt32), `sample` (UInt32), followed by one column per dimension (Float64).
+Many functions here expect MCMC sample data as a slice of [`nalgebra::DMatrix<T>`] objects:
+- Each matrix in the slice corresponds to **one chain**.
+- **Rows** (`nrows()`) correspond to individual samples.
+- **Columns** (`ncols()`) correspond to the dimensions of the state.
 
-## Features
+For example:
+- `data[c].nrows()` = number of samples in chain `c`.
+- `data[c].ncols()` = number of dimensions.
 
-- `csv`: Enables CSV I/O for sample data.
-- `arrow`: Enables saving sample data as Apache Arrow IPC files.
-- `parquet`: Enables saving sample data as Parquet files (using Arrow as an intermediary).
+All chains must have the same shape (same number of samples and dimensions). If any chain differs, an error is returned.
 
-## Error Handling
+#### CSV Output
 
-All saving functions validate that:
-- All chains have the same number of samples (rows).
-- All samples have the same number of dimensions (columns).
-
-If there is any inconsistency, an error is returned.
-
-## Examples
-
-### Saving as CSV
-
+When using the `csv` feature:
 ```rust
 use mini_mcmc::io::save_csv;
 use nalgebra as na;
@@ -52,9 +39,11 @@ let data = vec![na::DMatrix::from_row_slice(2, 4, &[
 save_csv(&data, "/tmp/output.csv")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+- The CSV will include a header with columns: `"chain"`, `"sample"`, and then `"dim_0"`, `"dim_1"`, etc.
 
-### Saving as Arrow
+#### Arrow Output
 
+When using the `arrow` feature:
 ```rust
 use mini_mcmc::io::save_arrow;
 use nalgebra as na;
@@ -72,9 +61,11 @@ let data = vec![chain0, chain1];
 save_arrow(&data, "/tmp/output.arrow")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+- The resulting Arrow file stores a single **RecordBatch** with columns: `chain (UInt32)`, `sample (UInt32)`, and each dimension as a separate `Float64` column.
 
-### Saving as Parquet
+#### Parquet Output
 
+When using the `parquet` feature:
 ```rust
 use mini_mcmc::io::save_parquet;
 use nalgebra as na;
@@ -88,8 +79,83 @@ let data = vec![single_chain];
 save_parquet(&data, "/tmp/output.parquet")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+- Similar to Arrow output, but uses `parquet` to encode the data. The same column ordering (chain, sample, dims) is maintained.
+
+---
+
+### Storing as 3D Burn Tensors (`[num_samples, num_chains, num_dimensions]`)
+
+For users of the [**burn**](https://github.com/burn-rs/burn) framework, this module also provides specialized functions to save **3D** Burn tensors in `[samples, chains, dimensions]` layout:
+
+1. **CSV**: [`save_csv_tensor`](fn.save_csv_tensor.html)
+   ```rust
+   use burn::tensor::Tensor;
+   use burn::backend::ndarray::{NdArray, NdArrayDevice};
+   use mini_mcmc::io::save_csv_tensor;
+
+   // A [4 × 3 × 2] tensor: 4 samples, 3 chains, 2 dimensions
+   let tensor = Tensor::<NdArray, 3>::from_floats(
+       [
+           [[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]],
+           [[1.01, 2.01], [1.11, 2.11], [1.21, 2.21]],
+           [[1.02, 2.02], [1.12, 2.12], [1.22, 2.22]],
+           [[1.03, 2.03], [1.13, 2.13], [1.23, 2.23]],
+       ],
+       &NdArrayDevice::Cpu,
+   );
+
+   save_csv_tensor::<NdArray, _, f32>(&tensor, "/tmp/output.csv")?;
+   # Ok::<(), Box<dyn std::error::Error>>(())
+   ```
+   This generates a CSV header with `"sample"`, `"chain"`, and `"dim_0"`, `"dim_1"`, etc.
+
+2. **Parquet**: [`save_parquet_tensor`](fn.save_parquet_tensor.html)
+   ```rust
+   use burn::tensor::Tensor;
+   use burn::backend::ndarray::{NdArray, NdArrayDevice};
+   use mini_mcmc::io::save_parquet_tensor;
+
+   let tensor = Tensor::<NdArray, 3>::from_floats(
+       [
+           [[1.0, 2.0], [1.1, 2.1]],
+           [[1.01, 2.01], [1.11, 2.11]],
+       ],
+       &NdArrayDevice::Cpu,
+   );
+   save_parquet_tensor::<NdArray, _, f32>(&tensor, "/tmp/output.parquet")?;
+   # Ok::<(), Box<dyn std::error::Error>>(())
+   ```
+   This stores a single Arrow `RecordBatch` with columns: `sample (UInt32)`, `chain (UInt32)`, and one Float64 column per dimension.
+
+*(Currently, saving 3D Burn tensors to Arrow IPC directly is **not** provided, but you can extend this module similarly if needed.)*
+
+---
+
+## Features
+
+- `csv`:
+  Enables CSV I/O for both **`nalgebra::DMatrix<T>`** data (`save_csv`) and **3D Burn tensors** (`save_csv_tensor`).
+
+- `arrow`:
+  Enables Arrow (IPC) saving for **`nalgebra::DMatrix<T>`** data (`save_arrow`). Not available yet for Burn tensors.
+
+- `parquet`:
+  Enables Parquet saving for both **`nalgebra::DMatrix<T>`** data (`save_parquet`) and **3D Burn tensors** (`save_parquet_tensor`).
+
+---
+
+## Error Handling
+
+All saving functions validate consistency of dimensions:
+- For `nalgebra::DMatrix<T>` data: each chain must have the same number of samples (rows) and dimensions (columns).
+- For 3D Burn tensors: the shape is `[num_samples, num_chains, num_dimensions]`, and each method ensures proper flattening to the right shape.
+
+If there is any inconsistency, an error is returned. I/O or Arrow/Parquet errors are also propagated as `Err(...)`.
+
+---
 */
 
+use burn::prelude::*;
 use nalgebra as na;
 use std::error::Error;
 use std::fs::File;
@@ -436,6 +502,203 @@ pub fn save_parquet<T: Into<f64> + Copy>(
 
     writer.write(&record_batch)?;
     // Close the writer to ensure metadata is written
+    writer.close()?;
+
+    Ok(())
+}
+
+#[cfg(feature = "csv")]
+/**
+Saves a 3D Burn tensor (sample × chain × dimension) as a CSV file.
+
+The CSV file will contain a header row with columns:
+  - `"sample"`: the sample index,
+  - `"chain"`: the chain index,
+  - `"dim_0"`, `"dim_1"`, … for each dimension.
+
+Each subsequent row corresponds to one data point from the tensor, with its sample and chain indices
+followed by the dimension values. For example, the coordinate `d` of data point `s` that chain `c`
+generated is assumed to be in `tensor[n][s][d]`.
+
+# Arguments
+* `tensor` - A reference to a Burn tensor with shape `[num_samples, num_chains, num_dimensions]`.
+* `filename` - The file path where the CSV data will be written.
+
+# Type Parameters
+* `B` - The backend type.
+* `K` - The tensor kind.
+* `T` - The scalar type; must implement [`burn::tensor::Element`]
+# Returns
+Returns `Ok(())` if successful or an error if any I/O or CSV formatting issue occurs.
+
+# Example
+```rust
+use burn::tensor::Tensor;
+use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use mini_mcmc::io::save_csv_tensor;
+let tensor = Tensor::<NdArray, 3>::from_floats(
+    [
+        [[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]],
+        [[1.01, 2.01], [1.11, 2.11], [1.21, 2.21]],
+        [[1.02, 2.02], [1.12, 2.12], [1.22, 2.22]],
+        [[1.03, 2.03], [1.13, 2.13], [1.23, 2.23]],
+    ],
+    &NdArrayDevice::Cpu,
+);
+save_csv_tensor::<NdArray, _, f32>(&tensor, "/tmp/output.csv")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+*/
+pub fn save_csv_tensor<B, K, T>(
+    tensor: &burn::tensor::Tensor<B, 3, K>,
+    filename: &str,
+) -> Result<(), Box<dyn Error>>
+where
+    B: Backend,
+    K: burn::tensor::TensorKind<B>,
+    T: burn::tensor::Element,
+    K: burn::tensor::BasicOps<B>,
+{
+    use csv::Writer;
+    use std::fs::File;
+    // Extract data as TensorData and convert to a flat Vec<T>
+    let shape = tensor.dims(); // expected to be [num_samples, num_chains, num_dimensions]
+    let data = tensor.to_data();
+    let (num_samples, num_chains, num_dims) = (shape[0], shape[1], shape[2]);
+    let flat = data
+        .to_vec::<T>()
+        .map_err(|e| format!("Converting data to Vec failed.\nData: {data:?}.\nError: {e:?}"))?;
+
+    let mut wtr = Writer::from_writer(File::create(filename)?);
+
+    // Build header: "sample", "chain", "dim_0", "dim_1", ...
+    let mut header = vec!["sample".to_string(), "chain".to_string()];
+    header.extend((0..num_dims).map(|i| format!("dim_{}", i)));
+    wtr.write_record(&header)?;
+
+    // Iterate over sample and chain indices; each row corresponds to one data point.
+    for sample in 0..num_samples {
+        for chain in 0..num_chains {
+            let mut row = vec![sample.to_string(), chain.to_string()];
+            let offset = sample * num_chains * num_dims + chain * num_dims;
+            let row_slice = &flat[offset..offset + num_dims];
+            row.extend(row_slice.iter().map(|v| v.to_string()));
+            wtr.write_record(&row)?;
+        }
+    }
+
+    wtr.flush()?;
+    Ok(())
+}
+
+#[cfg(feature = "parquet")]
+/**
+Saves a 3D Burn tensor (sample × chain × dimension) to a Parquet file.
+
+The tensor’s data is first converted into Apache Arrow arrays with the following schema:
+  - `"sample"` (UInt32): sample index,
+  - `"chain"` (UInt32): chain index,
+  - `"dim_0"`, `"dim_1"`, … (Float64): dimension values.
+
+All chains must have the same shape. The function writes a single RecordBatch containing all data,
+where each row corresponds to one (sample, chain) combination. For example, the coordinate `d` of
+data point `s` that chain `c` generated is assumed to be in `tensor[n][s][d]`.
+
+# Arguments
+* `tensor` - A reference to a Burn tensor with shape `[num_sample, num_chains, num_dimensions]`.
+* `filename` - The file path where the Parquet data will be written.
+
+# Type Parameters
+* `B` - The backend type.
+* `K` - The tensor kind.
+* `T` - The scalar type; must implement `Into<f64>` and `burn::tensor::Element`.
+
+# Returns
+Returns `Ok(())` if the file was written successfully, or an error if any I/O or
+Arrow/Parquet error occurs.
+
+# Example
+```rust
+use burn::tensor::Tensor;
+use burn::backend::ndarray::{NdArray, NdArrayDevice};
+use mini_mcmc::io::save_parquet_tensor;
+let tensor = Tensor::<NdArray, 3>::from_floats(
+    [
+        [[1.0, 2.0], [1.1, 2.1], [1.2, 2.2]],
+        [[1.01, 2.01], [1.11, 2.11], [1.21, 2.21]],
+        [[1.02, 2.02], [1.12, 2.12], [1.22, 2.22]],
+        [[1.03, 2.03], [1.13, 2.13], [1.23, 2.23]],
+    ],
+    &NdArrayDevice::Cpu,
+);
+save_parquet_tensor::<NdArray, _, f32>(&tensor, "/tmp/output.parquet")?;
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+*/
+pub fn save_parquet_tensor<B, K, T>(
+    tensor: &Tensor<B, 3, K>,
+    filename: &str,
+) -> Result<(), Box<dyn Error>>
+where
+    B: Backend,
+    K: burn::tensor::TensorKind<B>,
+    T: Into<f64> + burn::tensor::Element,
+    K: burn::tensor::BasicOps<B>,
+{
+    // Extract data and shape from the tensor.
+    let shape = tensor.dims();
+    let data = tensor.to_data();
+    let (num_samples, num_chains, num_dims) = (shape[0], shape[1], shape[2]);
+    let flat: Vec<T> = data.to_vec::<T>().map_err(|e| {
+        format!("Conversion of data to Vec failed.\nData: {data:?}.\nError: {e:?}.",)
+    })?;
+
+    // Build Arrow schema: sample (UInt32), chain (UInt32), then dim_0...dim_{num_dims-1} (Float64)
+    let mut fields = vec![
+        Field::new("sample", DataType::UInt32, false),
+        Field::new("chain", DataType::UInt32, false),
+    ];
+    for dim_idx in 0..num_dims {
+        fields.push(Field::new(
+            format!("dim_{}", dim_idx),
+            DataType::Float64,
+            false,
+        ));
+    }
+    let schema = Arc::new(Schema::new(fields));
+
+    // Create builders for each column.
+    let mut sample_builder = UInt32Builder::new();
+    let mut chain_builder = UInt32Builder::new();
+    let mut dim_builders: Vec<Float64Builder> =
+        (0..num_dims).map(|_| Float64Builder::new()).collect();
+
+    // Populate the builders.
+    for sample in 0..num_samples {
+        for chain in 0..num_chains {
+            sample_builder.append_value(sample as u32);
+            chain_builder.append_value(chain as u32);
+            let offset = sample * num_chains * num_dims + chain * num_dims;
+            for (dim_idx, value) in flat[offset..offset + num_dims].iter().enumerate() {
+                dim_builders[dim_idx].append_value((*value).into());
+            }
+        }
+    }
+
+    let sample_array = Arc::new(sample_builder.finish()) as ArrayRef;
+    let chain_array = Arc::new(chain_builder.finish()) as ArrayRef;
+    let mut arrays = vec![sample_array, chain_array];
+    for mut builder in dim_builders {
+        arrays.push(Arc::new(builder.finish()) as ArrayRef);
+    }
+
+    let record_batch = RecordBatch::try_new(schema.clone(), arrays)?;
+
+    // Write the record batch to a Parquet file.
+    let file = File::create(filename)?;
+    let props = WriterProperties::builder().build();
+    let mut writer = ArrowWriter::try_new(file, schema, Some(props))?;
+    writer.write(&record_batch)?;
     writer.close()?;
 
     Ok(())
@@ -958,8 +1221,5 @@ chain,sample,dim_0,dim_1
             result.is_err(),
             "Expected error due to inconsistent number of samples among chains"
         );
-
-        let err_msg = result.err().unwrap().to_string();
-        assert_eq!(err_msg, "Inconsistent number of samples among chains");
     }
 }

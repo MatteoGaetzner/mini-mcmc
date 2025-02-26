@@ -85,8 +85,8 @@ where
         // Collect samples
         for step in 1..(n_steps + 1) {
             self.step();
-            out.inplace(|x| {
-                x.slice_assign(
+            out.inplace(|_out| {
+                _out.slice_assign(
                     [step - 1..step, 0..n_chains, 0..dim],
                     self.positions.clone().unsqueeze_dim(0),
                 )

@@ -7,5 +7,4 @@ target/
 out
 *.html
 *.py
-perf.data
-
+perf.*
