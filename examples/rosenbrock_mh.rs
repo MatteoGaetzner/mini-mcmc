@@ -59,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
 
     // Generate samples
-    let samples = mh.run_with_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN);
+    let samples = mh.run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN);
     let mut pooled = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
     samples.iter().enumerate().for_each(|(i, x)| {
         pooled

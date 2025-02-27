@@ -503,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn test_run_with_progress() {
+    fn test_run_progress() {
         // We'll do a small run to keep the test fast
         const SAMPLE_SIZE: usize = 2000;
         const DISCARD: usize = 500;
@@ -525,8 +525,7 @@ mod tests {
 
         // Run with progress bars
         println!("STARTING RUNNING WITH PROGRESS");
-        let samples_progress =
-            mh_progress.run_with_progress(SAMPLE_SIZE / N_CHAINS + DISCARD, DISCARD);
+        let samples_progress = mh_progress.run_progress(SAMPLE_SIZE / N_CHAINS + DISCARD, DISCARD);
         println!("FINISHED RUNNING WITH PROGRESS");
 
         // Basic checks

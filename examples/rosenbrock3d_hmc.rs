@@ -15,7 +15,6 @@ use std::{error::Error, time::Instant};
 ///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)²
 ///
 /// This implementation generalizes to d dimensions, but here we use it for 3D.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 struct RosenbrockND {}
 
 impl<T, B> GradientTarget<T, B> for RosenbrockND
@@ -135,20 +134,19 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Define 6 chains, each initialized to a 3D point (e.g., [1.0, 2.0, 3.0]).
     let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
-    let n_steps = 500;
+    let n_steps = 1000;
 
     // Create the data-parallel HMC sampler.
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
         target,
         initial_positions,
-        0.01, // step size
-        50,   // number of leapfrog steps per update
-        42,   // RNG seed
+        0.032, // step size
+        50,    // number of leapfrog steps per update
     );
 
     let start = Instant::now();
     // Run HMC for n_steps, collecting samples as a 3D tensor.
-    let samples = sampler.run(n_steps, 0);
+    let samples = sampler.run_progress(n_steps, 100);
     let duration = start.elapsed();
     println!(
         "HMC sampler: generating {} samples took {:?}",

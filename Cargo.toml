@@ -1,6 +1,6 @@
 [package]
 name = "mini-mcmc"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2021"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
 license = "Apache-2.0" 
@@ -26,7 +26,6 @@ arrow = {version="54.1", optional=true}
 parquet = {version="54.1", optional=true}
 burn = { version = "0.16.0", features = ["autodiff", "ndarray", "wgpu"] }
 ndarray = { version = "0.16.1" }
-plotly = "0.12.1"
 
 [features]
 default = ["csv", "arrow", "parquet"]
@@ -34,26 +33,9 @@ csv = ["dep:csv"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet"]
 
-[[example]]
-name = "minimal_mh"
-
-[[example]]
-name = "gauss_mh"
-
-[[example]]
-name = "poisson_mh"
-
-[[example]]
-name = "rosenbrock_mh"
-
-[[example]]
-name = "rosenbrock3d_mh"
-
-[[example]]
-name = "mixture_gibbs"
-
 [dev-dependencies]
 plotters = "0.3"
+plotly = "0.12.1"
 kolmogorov_smirnov = "1.1.0"
 tempfile = "3.16"
 

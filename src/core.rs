@@ -211,21 +211,19 @@ where
     /// # Returns
     ///
     /// A vector of sample matrices (one per chain) containing only the samples after burn-in.
-    fn run_with_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
+    fn run_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
         let multi = MultiProgress::new();
         let pb_style = ProgressStyle::default_bar()
-            .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.cyan/blue} {pos}/{len} {msg}")
+            .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.white} {pos}/{len} {msg}")
             .unwrap()
-            .progress_chars("##-");
+            .progress_chars("=>-");
 
         // Run each chain in parallel
         let results: Vec<(Vec<S>, na::DMatrix<S>)> = self
             .chains_mut()
             .par_iter_mut()
-            .enumerate()
-            .map(|(i, chain)| {
+            .map(|chain| {
                 let pb = multi.add(ProgressBar::new(n_steps as u64));
-                pb.set_prefix(format!("Chain {i}"));
                 pb.set_style(pb_style.clone());
 
                 let samples = run_chain_with_progress(chain, n_steps, &pb);

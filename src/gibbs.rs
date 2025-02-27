@@ -337,15 +337,15 @@ mod tests {
         }
     }
 
-    /// Test the run_with_progress method on the GibbsSampler.
+    /// Test the run_progress method on the GibbsSampler.
     #[test]
-    fn test_gibbs_sampler_run_with_progress() {
+    fn test_gibbs_sampler_run_progress() {
         let constant = 10.0;
         let conditional = ConstantConditional { c: constant };
         let initial_state = [0.0, 0.0];
         let mut sampler = GibbsSampler::new(conditional, &initial_state, 2);
         // Run with progress for 20 steps and discard the first 5.
-        let samples = sampler.run_with_progress(20, 5);
+        let samples = sampler.run_progress(20, 5);
         for (chain_idx, chain_samples) in samples.iter().enumerate() {
             assert_eq!(
                 chain_samples.nrows(),

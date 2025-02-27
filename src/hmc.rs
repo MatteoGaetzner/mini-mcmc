@@ -11,11 +11,14 @@
 
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::cast::ToElement;
 use burn::tensor::Tensor;
+use indicatif::{ProgressBar, ProgressStyle};
 use num_traits::Float;
 use rand::prelude::*;
 use rand::Rng;
 use rand_distr::StandardNormal;
+use std::collections::VecDeque;
 
 /// A batched target trait for computing the unnormalized log probability (and gradients) for a
 /// collection of positions.
@@ -100,7 +103,6 @@ where
         initial_positions: Vec<Vec<T>>,
         step_size: T,
         n_leapfrog: usize,
-        seed: u64,
     ) -> Self {
         // Build a [n_chains, D] tensor from the flattened initial positions.
         let (n_chains, dim) = (initial_positions.len(), initial_positions[0].len());
@@ -109,7 +111,7 @@ where
             [n_chains, dim],
         );
         let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
-        let rng = SmallRng::seed_from_u64(seed);
+        let rng = SmallRng::seed_from_u64(thread_rng().gen::<u64>());
         Self {
             target,
             step_size,
@@ -117,6 +119,18 @@ where
             positions,
             rng,
         }
+    }
+
+    /// Sets a new random seed.
+    ///
+    /// This method ensures reproducibility across runs.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The new random seed value.
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        self.rng = SmallRng::seed_from_u64(seed);
+        self
     }
 
     /// Run the HMC sampler for a specified number of steps.
@@ -153,6 +167,83 @@ where
                 )
             });
         }
+        out
+    }
+
+    /// Runs the HMC sampler for a specified number of steps with progress updates,
+    /// discarding the first `discard` iterations as burn-in.
+    ///
+    /// This function displays a progress bar (using the `indicatif` crate) that is updated
+    /// with an approximate acceptance probability computed over a sliding window of 50 iterations.
+    ///
+    /// # Parameters
+    ///
+    /// * `n_steps` - The number of sampling steps to run (after burn-in).
+    /// * `discard` - The number of initial iterations to discard.
+    ///
+    /// # Returns
+    ///
+    /// A tensor of shape `[n_steps, n_chains, D]` containing the collected samples.
+    pub fn run_progress(&mut self, n_steps: usize, discard: usize) -> Tensor<B, 3> {
+        // Discard initial burn-in samples.
+        (0..discard).for_each(|_| self.step());
+
+        let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
+        let mut out = Tensor::<B, 3>::empty([n_steps, n_chains, dim], &B::Device::default());
+
+        let pb = ProgressBar::new(n_steps as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.white} {pos}/{len} {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.set_prefix("HMC");
+
+        // Use a sliding window of 50 iterations to estimate the acceptance probability.
+        let window_size = 50;
+        let mut accept_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
+
+        let mut last_state = self.positions.clone();
+
+        for i in 0..n_steps {
+            self.step();
+            let current_state = self.positions.clone();
+
+            // For each chain, check if its state changed.
+            let accepted_count = last_state
+                .clone()
+                .not_equal(current_state.clone())
+                .all_dim(1)
+                .int()
+                .sum()
+                .into_scalar()
+                .to_f32();
+
+            let iter_accept_rate = accepted_count / n_chains as f32;
+
+            // Update the sliding window.
+            accept_window.push_front(iter_accept_rate);
+            if accept_window.len() > window_size {
+                accept_window.pop_back();
+            }
+
+            // Compute average acceptance rate over the sliding window.
+            let avg_accept_rate: f32 =
+                accept_window.iter().sum::<f32>() / accept_window.len() as f32;
+            pb.set_message(format!("p(accept) ≈ {:.2}", avg_accept_rate));
+
+            // Store the current state.
+            out.inplace(|_out| {
+                _out.slice_assign(
+                    [i..i + 1, 0..n_chains, 0..dim],
+                    current_state.clone().unsqueeze_dim(0),
+                )
+            });
+            pb.inc(1);
+            last_state = current_state;
+        }
+        pb.finish_with_message("Done!");
         out
     }
 
@@ -378,8 +469,8 @@ mod tests {
             initial_positions,
             0.01, // step size
             2,    // number of leapfrog steps per update
-            42,   // RNG seed
-        );
+        )
+        .set_seed(42);
 
         // Run the sampler for n_steps with no discard.
         let mut timer = Timer::new();
@@ -411,12 +502,45 @@ mod tests {
             initial_positions,
             0.01, // step size
             10,   // number of leapfrog steps per update
-            42,   // RNG seed
-        );
+        )
+        .set_seed(42);
 
         // Run the sampler for n_steps with no discard.
         let mut timer = Timer::new();
         let samples: Tensor<BackendType, 3> = sampler.run(n_steps, 0);
+        timer.log(format!(
+            "Collected samples (10 chains) with shape: {:?}",
+            samples.dims()
+        ))
+    }
+
+    #[test]
+    fn test_collect_hmc_samples_10_chains_progress() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<NdArray>;
+
+        // Create the Rosenbrock target (a = 1, b = 100)
+        let target = Rosenbrock2D {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // Define 10 chains all initialized to (1.0, 2.0).
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 10];
+        let n_steps = 1000;
+
+        // Create the HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
+            target,
+            initial_positions,
+            0.05, // step size
+            10,   // number of leapfrog steps per update
+        )
+        .set_seed(42);
+
+        // Run the sampler for n_steps with no discard.
+        let mut timer = Timer::new();
+        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_steps, 100);
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
@@ -445,8 +569,8 @@ mod tests {
             initial_positions,
             0.01, // step size
             50,   // number of leapfrog steps per update
-            42,   // RNG seed
-        );
+        )
+        .set_seed(42);
 
         // Run HMC for n_steps, collecting samples.
         let mut timer = Timer::new();
@@ -478,8 +602,8 @@ mod tests {
             initial_positions,
             0.01, // step size
             50,   // number of leapfrog steps per update
-            seed, // RNG seed
-        );
+        )
+        .set_seed(42);
 
         // Run HMC for n_steps, collecting samples.
         let mut timer = Timer::new();
