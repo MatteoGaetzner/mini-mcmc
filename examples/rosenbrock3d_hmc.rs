@@ -84,16 +84,16 @@ where
 
     // Predefined Altair (Tableau10) categorical palette with 50% opacity.
     let tableau10 = [
-        Rgba::new(78, 121, 167, 0.75),  // #4E79A7
-        Rgba::new(242, 142, 43, 0.75),  // #F28E2B
-        Rgba::new(225, 87, 89, 0.75),   // #E15759
-        Rgba::new(118, 183, 178, 0.75), // #76B7B2
-        Rgba::new(89, 161, 79, 0.75),   // #59A14F
-        Rgba::new(237, 201, 73, 0.75),  // #EDC949
-        Rgba::new(175, 122, 161, 0.75), // #AF7AA1
-        Rgba::new(255, 157, 167, 0.75), // #FF9DA7
-        Rgba::new(156, 117, 95, 0.75),  // #9C755F
-        Rgba::new(186, 176, 172, 0.75), // #BAB0AC
+        Rgba::new(78, 121, 167, 0.9),  // #4E79A7
+        Rgba::new(242, 142, 43, 0.9),  // #F28E2B
+        Rgba::new(225, 87, 89, 0.9),   // #E15759
+        Rgba::new(118, 183, 178, 0.9), // #76B7B2
+        Rgba::new(89, 161, 79, 0.9),   // #59A14F
+        Rgba::new(237, 201, 73, 0.9),  // #EDC949
+        Rgba::new(175, 122, 161, 0.9), // #AF7AA1
+        Rgba::new(255, 157, 167, 0.9), // #FF9DA7
+        Rgba::new(156, 117, 95, 0.9),  // #9C755F
+        Rgba::new(186, 176, 172, 0.9), // #BAB0AC
     ];
 
     // For each chain, add a 3D scatter trace.

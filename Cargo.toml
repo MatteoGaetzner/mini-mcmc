@@ -47,6 +47,9 @@ name = "poisson_mh"
 name = "rosenbrock_mh"
 
 [[example]]
+name = "rosenbrock3d_mh"
+
+[[example]]
 name = "mixture_gibbs"
 
 [dev-dependencies]
