@@ -1,7 +1,13 @@
 //! A simple Hamiltonian (Hybrid) Monte Carlo sampler using the `burn` crate for autodiff.
 //!
-//! This is modeled similarly to your Metropolis–Hastings approach but uses gradient-based
-//! proposals.
+//! This is modeled similarly to a Metropolis–Hastings sampler but uses gradient-based proposals
+//! for improved efficiency. The sampler works in a data-parallel fashion and can update multiple
+//! chains simultaneously.
+//!
+//! The code relies on a target distribution provided via the `GradientTarget` trait, which computes
+//! the unnormalized log probability for a batch of positions. The HMC implementation uses the leapfrog
+//! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
+//! validation.
 
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
@@ -11,23 +17,53 @@ use rand::prelude::*;
 use rand::Rng;
 use rand_distr::StandardNormal;
 
-// -- 1) A batched target trait (see above) --
+/// A batched target trait for computing the unnormalized log probability (and gradients) for a
+/// collection of positions.
+///
+/// Implement this trait for your target distribution to enable gradient-based sampling.
+///
+/// # Type Parameters
+///
+/// * `T`: The floating-point type (e.g., f32 or f64).
+/// * `B`: The autodiff backend from the `burn` crate.
 pub trait GradientTarget<T: Float, B: AutodiffBackend> {
+    /// Compute the log probability for a batch of positions.
+    ///
+    /// # Parameters
+    ///
+    /// * `positions`: A tensor of shape `[n_chains, D]` representing the current positions for each chain.
+    ///
+    /// # Returns
+    ///
+    /// A 1D tensor of shape `[n_chains]` containing the log probabilities for each chain.
     fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
-// -- 2) The data-parallel HMC struct --
+/// A data-parallel Hamiltonian Monte Carlo (HMC) sampler.
+///
+/// This struct encapsulates the HMC algorithm, including the leapfrog integrator and the
+/// accept/reject mechanism, for sampling from a target distribution in a batched manner.
+///
+/// # Type Parameters
+///
+/// * `T`: Floating-point type for numerical calculations.
+/// * `B`: Autodiff backend from the `burn` crate.
+/// * `GTarget`: The target distribution type implementing the `GradientTarget` trait.
 #[derive(Debug, Clone)]
 pub struct HMC<T, B, GTarget>
 where
     B: AutodiffBackend,
 {
+    /// The target distribution which provides log probability evaluations and gradients.
     pub target: GTarget,
+    /// The step size for the leapfrog integrator.
     pub step_size: T,
+    /// The number of leapfrog steps to take per HMC update.
     pub n_leapfrog: usize,
-    /// Positions for all chains, shape `[n_chains, D]`.
+    /// The current positions for all chains, stored as a tensor of shape `[n_chains, D]`.
     pub positions: Tensor<B, 2>,
-    /// A random-number generator for sampling momenta & accept tests.
+    /// A random number generator for sampling momenta and uniform random numbers for the
+    /// Metropolis acceptance test.
     pub rng: SmallRng,
 }
 
@@ -42,9 +78,23 @@ where
     StandardNormal: rand::distributions::Distribution<T>,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    /// Create a new data-parallel HMC, using `[n_chains, D]` initial positions.
+    /// Create a new data-parallel HMC sampler.
     ///
-    /// `initial_positions`: a `Vec<Vec<T>>` of shape `[n_chains][D]`.
+    /// This method initializes the sampler with the target distribution, initial positions,
+    /// step size, number of leapfrog steps, and a random seed for reproducibility.
+    ///
+    /// # Parameters
+    ///
+    /// * `target`: The target distribution implementing the `GradientTarget` trait.
+    /// * `initial_positions`: A vector of vectors containing the initial positions for each chain,
+    ///    with shape `[n_chains][D]`.
+    /// * `step_size`: The step size used in the leapfrog integrator.
+    /// * `n_leapfrog`: The number of leapfrog steps per update.
+    /// * `seed`: A seed for initializing the random number generator.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `HMC`.
     pub fn new(
         target: GTarget,
         initial_positions: Vec<Vec<T>>,
@@ -52,17 +102,14 @@ where
         n_leapfrog: usize,
         seed: u64,
     ) -> Self {
-        // Build a [n_chains, D] tensor
+        // Build a [n_chains, D] tensor from the flattened initial positions.
         let (n_chains, dim) = (initial_positions.len(), initial_positions[0].len());
         let td: TensorData = TensorData::new(
             initial_positions.into_iter().flatten().collect(),
             [n_chains, dim],
         );
-        // dbg!(&td.as_bytes());
         let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
-
         let rng = SmallRng::seed_from_u64(seed);
-
         Self {
             target,
             step_size,
@@ -72,6 +119,20 @@ where
         }
     }
 
+    /// Run the HMC sampler for a specified number of steps.
+    ///
+    /// First, the sampler discards a specified number of steps (burn-in), then collects
+    /// samples for the remaining steps. The samples for each step are stored in a 3D tensor of shape
+    /// `[n_steps, n_chains, D]`.
+    ///
+    /// # Parameters
+    ///
+    /// * `n_steps`: The number of sampling steps to run (after burn-in).
+    /// * `discard`: The number of initial steps to discard as burn-in.
+    ///
+    /// # Returns
+    ///
+    /// A tensor containing the collected samples.
     pub fn run(&mut self, n_steps: usize, discard: usize) -> Tensor<B, 3> {
         let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
         let mut out = Tensor::<B, 3>::empty(
@@ -79,10 +140,10 @@ where
             &B::Device::default(),
         );
 
-        // Discard first `discard` positions
+        // Discard the first `discard` positions.
         (0..discard).for_each(|_| self.step());
 
-        // Collect samples
+        // Collect samples.
         for step in 1..(n_steps + 1) {
             self.step();
             out.inplace(|_out| {
@@ -95,10 +156,14 @@ where
         out
     }
 
-    /// Perform one *batched* HMC update for all chains in parallel:
-    /// 1) Sample momenta from N(0, I).
-    /// 2) Run leapfrog steps in batch.
-    /// 3) Accept/reject per chain.
+    /// Perform one batched HMC update for all chains in parallel.
+    ///
+    /// The update consists of:
+    /// 1) Sampling momenta from a standard normal distribution.
+    /// 2) Running the leapfrog integrator to propose new positions.
+    /// 3) Performing an accept/reject step for each chain.
+    ///
+    /// This method updates `self.positions` in-place.
     pub fn step(&mut self) {
         let shape = self.positions.shape();
         let (n_chains, dim) = (shape.dims[0], shape.dims[1]);
@@ -110,25 +175,25 @@ where
             &B::Device::default(),
         );
 
-        // Current log-prob, shape [n_chains]
+        // Current log probability: shape [n_chains]
         let logp_current = self.target.log_prob_batch(&self.positions);
 
-        // Kinetic energy: 0.5 * sum_{d} (p^2) per chain => shape [n_chains]
+        // Compute kinetic energy: 0.5 * sum_{d} (p^2) for each chain.
         let ke_current = momentum_0
             .clone()
             .powf_scalar(2.0)
-            .sum_dim(1) // sum over dimension=1 => shape [n_chains]
+            .sum_dim(1) // Sum over dimension 1 => shape [n_chains]
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
 
-        // "Hamiltonian" = -logp + KE, shape [n_chains]
+        // Compute the Hamiltonian: -logp + kinetic energy, shape [n_chains]
         let h_current: Tensor<B, 1> = -logp_current + ke_current;
 
-        // 2) Run leapfrog integrator
+        // 2) Run the leapfrog integrator.
         let (proposed_positions, proposed_momenta, logp_proposed) =
             self.leapfrog(self.positions.clone(), momentum_0);
 
-        // Proposed kinetic
+        // Compute proposed kinetic energy.
         let ke_proposed = proposed_momenta
             .powf_scalar(2.0)
             .sum_dim(1)
@@ -137,13 +202,12 @@ where
 
         let h_proposed = -logp_proposed + ke_proposed;
 
-        // 3) Accept/Reject per chain
-        //    accept_logp = -(h_proposed - h_current) = h_current - h_proposed
+        // 3) Accept/Reject each proposal.
         let accept_logp = h_current.sub(h_proposed);
 
-        // We draw uniform(0,1) for each chain => shape [n_chains]
+        // Draw a uniform random number for each chain.
         let mut uniform_data = Vec::with_capacity(n_chains);
-        for _i in 0..n_chains {
+        for _ in 0..n_chains {
             uniform_data.push(self.rng.gen::<T>());
         }
         let uniform = Tensor::<B, 1>::random(
@@ -152,12 +216,13 @@ where
             &B::Device::default(),
         );
 
-        // Condition: accept_logp >= ln(u)
+        // Accept the proposal if accept_logp >= ln(u).
         let ln_u = uniform.log(); // shape [n_chains]
-        let accept_mask = accept_logp.greater_equal(ln_u); // Boolean mask: shape [n_chains]
+        let accept_mask = accept_logp.greater_equal(ln_u); // Boolean mask of shape [n_chains]
         let mut accept_mask_big: Tensor<B, 2, Bool> = accept_mask.clone().unsqueeze_dim(1);
         accept_mask_big = accept_mask_big.expand([n_chains, dim]);
 
+        // Update positions: for accepted chains, replace current positions with proposed positions.
         self.positions.inplace(|x| {
             x.clone()
                 .mask_where(accept_mask_big, proposed_positions)
@@ -165,10 +230,24 @@ where
         });
     }
 
-    /// A batched leapfrog step (one iteration). Usually you do `n_leapfrog` steps in a loop.
-    /// We’ll do `n_leapfrog` inside here for simplicity.
+    /// Perform the leapfrog integrator steps in a batched manner.
     ///
-    /// Returns `(positions, momenta, logp)` all shape `[n_chains, D]` or `[n_chains]`.
+    /// This method performs `n_leapfrog` iterations of the leapfrog update:
+    /// - A half-step update of the momentum.
+    /// - A full-step update of the positions.
+    /// - Another half-step update of the momentum.
+    ///
+    /// # Parameters
+    ///
+    /// * `pos`: The current positions, a tensor of shape `[n_chains, D]`.
+    /// * `mom`: The initial momenta, a tensor of shape `[n_chains, D]`.
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - The new positions (tensor of shape `[n_chains, D]`),
+    /// - The new momenta (tensor of shape `[n_chains, D]`),
+    /// - The log probability evaluated at the new positions (tensor of shape `[n_chains]`).
     fn leapfrog(
         &mut self,
         mut pos: Tensor<B, 2>,
@@ -176,30 +255,32 @@ where
     ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
         let half = T::from(0.5).unwrap();
         for _step_i in 0..self.n_leapfrog {
-            // Make sure pos is AD-enabled
+            // Detach pos to ensure it's AD-enabled for the gradient computation.
             pos = pos.detach().require_grad();
 
-            // Compute gradient of log_prob wrt pos (all chains in parallel!)
+            // Compute gradient of log probability with respect to pos (batched over chains).
             let logp = self.target.log_prob_batch(&pos); // shape [n_chains]
             let grads = pos.grad(&logp.backward()).unwrap();
 
-            // First half-step for momentum
+            // Update momentum by a half-step using the computed gradients.
             mom.inplace(|_mom| {
                 _mom.add(Tensor::<B, 2>::from_inner(
                     grads.mul_scalar(self.step_size * half),
                 ))
             });
 
-            // Full step in position
+            // Full-step update for positions.
             pos.inplace(|_pos| {
                 _pos.add(mom.clone().mul_scalar(self.step_size))
                     .detach()
                     .require_grad()
             });
 
-            // Second half-step for momentum
+            // Compute gradient at the new positions.
             let logp2 = self.target.log_prob_batch(&pos);
             let grads2 = pos.grad(&logp2.backward()).unwrap();
+
+            // Update momentum by another half-step using the new gradients.
             mom.inplace(|_mom| {
                 _mom.add(Tensor::<B, 2>::from_inner(
                     grads2.mul_scalar(self.step_size * half),
@@ -207,7 +288,7 @@ where
             });
         }
 
-        // Final logp for these positions
+        // Compute final log probability at the updated positions.
         let logp_final = self.target.log_prob_batch(&pos);
         (pos.detach(), mom.detach(), logp_final.detach())
     }
@@ -255,7 +336,6 @@ mod tests {
 
     // Define the Rosenbrock distribution.
     // From: https://arxiv.org/pdf/1903.09556.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct RosenbrockND {}
 
     // For the batched version we need to implement BatchGradientTarget.

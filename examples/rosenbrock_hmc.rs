@@ -2,134 +2,127 @@ use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
 use mini_mcmc::hmc::{GradientTarget, HMC};
 use num_traits::Float;
-use plotters::prelude::*;
+use plotly::common::{color::Rgba, Mode};
+use plotly::layout::{AspectRatio, LayoutScene};
+use plotly::{Layout, Plot, Scatter3D};
 use std::{error::Error, time::Instant};
 
-// Define the Rosenbrock distribution.
-#[derive(Clone, Copy)]
-struct Rosenbrock<T: Float> {
-    a: T,
-    b: T,
-}
+/// The 3D Rosenbrock distribution.
+///
+/// For a point x = (x₁, x₂, x₃), the log probability is defined as the negative of
+/// the sum of two Rosenbrock terms:
+///
+///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)²
+///
+/// This implementation generalizes to d dimensions, but here we use it for 3D.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct RosenbrockND {}
 
-impl<T, B> GradientTarget<T, B> for Rosenbrock<T>
+impl<T, B> GradientTarget<T, B> for RosenbrockND
 where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
     fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1> {
-        let n = positions.dims()[0] as i64;
-        let x = positions.clone().slice([(0, n), (0, 1)]);
-        let y = positions.clone().slice([(0, n), (1, 2)]);
-
-        // Compute (a - x)^2 in place.
-        let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
-
-        // Compute (y - x^2)^2 in place.
-        let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
-
-        // Return the negative sum as a flattened 1D tensor.
-        -(term_1 + term_2).flatten(0, 1)
+        // Assume positions shape is [n_chains, d] with d = 3 here.
+        // For each chain, compute:
+        //   f(x) = sum_{i=0}^{d-2} [100*(x[i+1] - x[i]²)² + (1 - x[i])²]
+        // and return the negative value.
+        let k = positions.dims()[0] as i64; // number of chains
+        let n = positions.dims()[1] as i64; // dimension d
+        let low = positions.clone().slice([(0, k), (0, (n - 1))]); // shape: [n_chains, d-1]
+        let high = positions.clone().slice([(0, k), (1, n)]); // shape: [n_chains, d-1]
+        let term_1 = (high - low.clone().powi_scalar(2))
+            .powi_scalar(2)
+            .mul_scalar(100);
+        let term_2 = low.neg().add_scalar(1).powi_scalar(2);
+        -(term_1 + term_2).sum_dim(1).squeeze(1)
     }
 }
 
-/// Plots the 3D tensor of samples (with shape [n_steps, n_chains, 2])
-/// to an SVG file named "hmc_scatter_plot.svg".
+/// Plots a 3D scatter plot of HMC samples (shape: [n_steps, n_chains, 3])
+/// using the plotly crate and saves the interactive plot as "hmc_scatter_plot.html".
+///
+/// Each chain is rendered as a separate trace with its own transparent color (50% opaque).
 fn plot_samples_from_tensor<B>(samples: &Tensor<B, 3>) -> Result<(), Box<dyn Error>>
 where
     B: burn::tensor::backend::Backend,
 {
-    // Get the dimensions: samples has shape [n_steps, n_chains, 2].
+    // Get the dimensions: samples has shape [n_steps, n_chains, 3].
     let dims = samples.dims();
     let n_steps = dims[0];
     let n_chains = dims[1];
     let dim = dims[2];
-    assert_eq!(dim, 2, "Expected 2D positions for plotting");
+    assert_eq!(dim, 3, "Expected 3D positions for plotting");
 
     // Convert the tensor data to a flat Vec<f32>.
     let flat: Vec<f32> = samples.to_data().to_vec::<f32>().unwrap();
 
-    // Reconstruct per-chain points.
-    let mut chains: Vec<Vec<(f32, f32)>> = vec![Vec::with_capacity(n_steps); n_chains];
+    // Reconstruct per-chain vectors for x, y, and z coordinates.
+    let mut chains: Vec<(Vec<f32>, Vec<f32>, Vec<f32>)> = vec![
+        (
+            Vec::with_capacity(n_steps),
+            Vec::with_capacity(n_steps),
+            Vec::with_capacity(n_steps)
+        );
+        n_chains
+    ];
     for step in 0..n_steps {
         (0..n_chains).for_each(|chain_idx| {
             let base = step * n_chains * dim + chain_idx * dim;
             let x = flat[base];
             let y = flat[base + 1];
-            chains[chain_idx].push((x, y));
+            let z = flat[base + 2];
+            chains[chain_idx].0.push(x);
+            chains[chain_idx].1.push(y);
+            chains[chain_idx].2.push(z);
         });
     }
 
-    // Compute global x and y bounds.
-    let (x_min, x_max) = chains
-        .iter()
-        .flat_map(|points| points.iter().map(|&(x, _)| x))
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), v| {
-            (min.min(v), max.max(v))
-        });
-    let (y_min, y_max) = chains
-        .iter()
-        .flat_map(|points| points.iter().map(|&(_, y)| y))
-        .fold((f32::INFINITY, f32::NEG_INFINITY), |(min, max), v| {
-            (min.min(v), max.max(v))
-        });
+    // Create a new Plotly plot.
+    let mut plot = Plot::new();
 
-    // Create an SVG drawing area (1200x900).
-    let root = SVGBackend::new("hmc_scatter_plot.svg", (1200, 900)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    // Build the chart.
-    let mut chart = ChartBuilder::on(&root)
-        .caption(
-            "HMC Samples from Rosenbrock Distribution",
-            ("sans-serif", 45),
-        )
-        .margin(20)
-        .x_label_area_size(60)
-        .y_label_area_size(60)
-        .build_cartesian_2d(x_min..x_max, y_min..y_max)?;
-
-    chart
-        .configure_mesh()
-        .disable_x_mesh()
-        .disable_y_mesh()
-        .x_desc("Dimension 0")
-        .y_desc("Dimension 1")
-        .axis_desc_style(("sans-serif", 30))
-        .draw()?;
-
-    // Define a palette of semi-transparent colors.
-    let chain_colors = [
-        RGBAColor(255, 0, 0, 0.1),   // red
-        RGBAColor(0, 0, 255, 0.1),   // blue
-        RGBAColor(0, 255, 0, 0.1),   // green
-        RGBAColor(255, 0, 255, 0.1), // magenta
-        RGBAColor(0, 255, 255, 0.1), // cyan
-        RGBAColor(255, 255, 0, 0.1), // yellow
+    // Predefined Altair (Tableau10) categorical palette with 50% opacity.
+    let tableau10 = [
+        Rgba::new(78, 121, 167, 0.75),  // #4E79A7
+        Rgba::new(242, 142, 43, 0.75),  // #F28E2B
+        Rgba::new(225, 87, 89, 0.75),   // #E15759
+        Rgba::new(118, 183, 178, 0.75), // #76B7B2
+        Rgba::new(89, 161, 79, 0.75),   // #59A14F
+        Rgba::new(237, 201, 73, 0.75),  // #EDC949
+        Rgba::new(175, 122, 161, 0.75), // #AF7AA1
+        Rgba::new(255, 157, 167, 0.75), // #FF9DA7
+        Rgba::new(156, 117, 95, 0.75),  // #9C755F
+        Rgba::new(186, 176, 172, 0.75), // #BAB0AC
     ];
 
-    // Plot each chain with a distinct color.
-    for (chain_idx, points) in chains.iter().enumerate() {
-        let color = chain_colors[chain_idx % chain_colors.len()];
-        chart
-            .draw_series(
-                points
-                    .iter()
-                    .map(move |&(x, y)| Circle::new((x, y), 5, color.filled())),
-            )?
-            .label(format!("Chain {}", chain_idx))
-            .legend(move |(lx, ly)| Circle::new((lx, ly), 5, color.filled()));
+    // For each chain, add a 3D scatter trace.
+    for (i, (xs, ys, zs)) in chains.into_iter().enumerate() {
+        let trace = Scatter3D::new(xs, ys, zs)
+            .mode(Mode::Markers)
+            .marker(
+                plotly::common::Marker::new()
+                    .color(tableau10[i % tableau10.len()])
+                    .size(3),
+            )
+            .name(format!("Chain {}", i));
+        plot.add_trace(trace);
     }
 
-    // Draw the legend.
-    chart
-        .configure_series_labels()
-        .border_style(BLACK)
-        .background_style(WHITE.mix(0.8))
-        .label_font(("sans-serif", 20))
-        .draw()?;
+    // Create a custom layout with increased width and height.
+    // Adjust the scene's aspect ratio so x and y are scaled larger relative to z.
+    let scene = LayoutScene::new().aspect_ratio(AspectRatio::new().x(1.5).y(1.5).z(1.0));
 
-    println!("Saved HMC scatter plot to hmc_scatter_plot.svg");
+    let layout = Layout::new()
+        .width(1200)
+        .height(800)
+        .title("HMC Samples from 3D Rosenbrock Distribution")
+        .scene(scene);
+    plot.set_layout(layout);
+
+    // Save the plot to an HTML file.
+    plot.write_html("hmc_scatter_plot.html");
+    println!("Saved HMC 3D scatter plot to hmc_scatter_plot.html");
     Ok(())
 }
 
@@ -137,18 +130,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Use the CPU backend (NdArray) wrapped in Autodiff.
     type BackendType = Autodiff<burn::backend::NdArray>;
 
-    // Create the Rosenbrock target.
-    let target = Rosenbrock {
-        a: 1.0_f32,
-        b: 100.0_f32,
-    };
+    // Create the 3D Rosenbrock target.
+    let target = RosenbrockND {};
 
-    // Define 6 chains, each initialized to (1.0, 2.0).
-    let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
-    let n_steps = 5000;
+    // Define 6 chains, each initialized to a 3D point (e.g., [1.0, 2.0, 3.0]).
+    let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
+    let n_steps = 500;
 
     // Create the data-parallel HMC sampler.
-    let mut sampler = HMC::<f32, BackendType, Rosenbrock<f32>>::new(
+    let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
         target,
         initial_positions,
         0.01, // step size
@@ -159,7 +149,6 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
     // Run HMC for n_steps, collecting samples as a 3D tensor.
     let samples = sampler.run(n_steps, 0);
-
     let duration = start.elapsed();
     println!(
         "HMC sampler: generating {} samples took {:?}",
@@ -167,7 +156,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         duration
     );
 
-    // Plot the samples using our helper.
+    // Plot the samples using the 3D plot helper.
     plot_samples_from_tensor(&samples)?;
 
     Ok(())

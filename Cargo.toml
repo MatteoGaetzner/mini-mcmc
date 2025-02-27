@@ -26,6 +26,7 @@ arrow = {version="54.1", optional=true}
 parquet = {version="54.1", optional=true}
 burn = { version = "0.16.0", features = ["autodiff", "ndarray", "wgpu"] }
 ndarray = { version = "0.16.1" }
+plotly = "0.12.1"
 
 [features]
 default = ["csv", "arrow", "parquet"]
