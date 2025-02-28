@@ -303,7 +303,7 @@ This library provides:
 
 2. **Run the Demo**:
    ```sh
-   cargo run --release --bin gauss_mh
+   cargo run --release --example gauss_mh
    ```
    Prints basic statistics of the MCMC chain (e.g., estimated mean).
    Saves a scatter plot of sampled points in `scatter_plot.png` and a Parquet file `samples.parquet`.
