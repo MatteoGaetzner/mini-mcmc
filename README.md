@@ -281,7 +281,8 @@ This library provides:
 - **Discrete & Continuous Distributions**: Get Metropolis-Hastings to work for continuous and discrete distributions. ✅
 - **Generic Datatypes**: Support sampling vectors of arbitrary integer or floating point types. ✅
 - **Gibbs Sampling**: A component-wise MCMC approach for higher-dimensional problems. ✅
-- **Hamiltonian Monte Carlo (HMC)**: A gradient-based method for efficient exploration.
+- **Hamiltonian Monte Carlo (HMC)**: A gradient-based method for efficient exploration. ✅
+-
 - **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
 - **Ensemble Slice Sampling (ESS)**: Efficient gradient-free sampler, see [paper](https://arxiv.org/abs/2002.06212).
 
