@@ -711,6 +711,8 @@ mod tests {
         array::{Float64Array, UInt32Array},
         ipc::reader::FileReader,
     };
+    use burn::backend::{ndarray::NdArrayDevice, NdArray};
+    use csv::Reader;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs;
     use std::{error::Error, fs::File};
@@ -1221,5 +1223,120 @@ chain,sample,dim_0,dim_1
             result.is_err(),
             "Expected error due to inconsistent number of samples among chains"
         );
+    }
+
+    #[test]
+    fn test_save_csv_tensor_data() -> Result<(), Box<dyn std::error::Error>> {
+        // Create a tensor with shape [2, 2, 2]: 2 samples, 2 chains, 2 dimensions.
+        let tensor = Tensor::<NdArray, 3>::from_floats(
+            [[[1.0, 2.0], [3.0, 4.0]], [[1.1, 2.1], [3.1, 4.1]]],
+            &NdArrayDevice::Cpu,
+        );
+        let file = NamedTempFile::new()?;
+        let filename = file.path().to_str().unwrap();
+        save_csv_tensor::<NdArray, _, f32>(&tensor, filename)?;
+        let contents = fs::read_to_string(filename)?;
+
+        // Use csv::Reader to parse the CSV file.
+        let mut rdr = Reader::from_reader(contents.as_bytes());
+        let headers = rdr.headers()?;
+        assert_eq!(&headers[0], "sample");
+        assert_eq!(&headers[1], "chain");
+        assert_eq!(&headers[2], "dim_0");
+        assert_eq!(&headers[3], "dim_1");
+
+        let records: Vec<_> = rdr.records().collect::<Result<_, _>>()?;
+        // There should be 2 samples * 2 chains = 4 records.
+        assert_eq!(records.len(), 4);
+
+        // Expected ordering: For each sample, for each chain.
+        // Row 0: sample 0, chain 0, dims: [1.0, 2.0]
+        // Row 1: sample 0, chain 1, dims: [3.0, 4.0]
+        // Row 2: sample 1, chain 0, dims: [1.1, 2.1]
+        // Row 3: sample 1, chain 1, dims: [3.1, 4.1]
+        let expected = [
+            vec!["0", "0", "1", "2"],
+            vec!["0", "1", "3", "4"],
+            vec!["1", "0", "1.1", "2.1"],
+            vec!["1", "1", "3.1", "4.1"],
+        ];
+        for (record, exp) in records.iter().zip(expected.iter()) {
+            for (field, &exp_field) in record.iter().zip(exp.iter()) {
+                // Allow small differences in formatting for floating-point numbers.
+                assert!(
+                    field.contains(exp_field),
+                    "Expected field '{}' to contain '{}'",
+                    field,
+                    exp_field
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_save_parquet_tensor_data() -> Result<(), Box<dyn std::error::Error>> {
+        // Create a tensor with shape [2, 2, 2]: 2 samples, 2 chains, 2 dimensions.
+        let tensor = Tensor::<NdArray, 3>::from_floats(
+            [[[1.0, 2.0], [3.0, 4.0]], [[1.1, 2.1], [3.1, 4.1]]],
+            &NdArrayDevice::Cpu,
+        );
+        let file = NamedTempFile::new()?;
+        let filename = file.path().to_str().unwrap();
+        save_parquet_tensor::<NdArray, _, f32>(&tensor, filename)?;
+
+        // Open the Parquet file using ParquetRecordBatchReader.
+        let file = fs::File::open(filename)?;
+        let mut reader = ParquetRecordBatchReader::try_new(file, 1024)?;
+        let batch = reader.next().expect("Expected a record batch")?;
+        // We expect 2 samples * 2 chains = 4 rows and 2 (sample, chain) + 2 dims = 4 columns.
+        assert_eq!(batch.num_rows(), 4);
+        assert_eq!(batch.num_columns(), 4);
+
+        // Extract and check the data.
+        let sample_array = batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("Failed to downcast sample column");
+        let chain_array = batch
+            .column(1)
+            .as_any()
+            .downcast_ref::<UInt32Array>()
+            .expect("Failed to downcast chain column");
+        let dim0_array = batch
+            .column(2)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("Failed to downcast dim_0 column");
+        let dim1_array = batch
+            .column(3)
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .expect("Failed to downcast dim_1 column");
+
+        // Expected ordering: sample-major order:
+        // Row 0: sample=0, chain=0, dims: [1.0, 2.0]
+        assert_eq!(sample_array.value(0), 0);
+        assert_eq!(chain_array.value(0), 0);
+        assert!((dim0_array.value(0) - 1.0).abs() < 1e-6);
+        assert!((dim1_array.value(0) - 2.0).abs() < 1e-6);
+        // Row 1: sample=0, chain=1, dims: [3.0, 4.0]
+        assert_eq!(sample_array.value(1), 0);
+        assert_eq!(chain_array.value(1), 1);
+        assert!((dim0_array.value(1) - 3.0).abs() < 1e-6);
+        assert!((dim1_array.value(1) - 4.0).abs() < 1e-6);
+        // Row 2: sample=1, chain=0, dims: [1.1, 2.1]
+        assert_eq!(sample_array.value(2), 1);
+        assert_eq!(chain_array.value(2), 0);
+        assert!((dim0_array.value(2) - 1.1).abs() < 1e-6);
+        assert!((dim1_array.value(2) - 2.1).abs() < 1e-6);
+        // Row 3: sample=1, chain=1, dims: [3.1, 4.1]
+        assert_eq!(sample_array.value(3), 1);
+        assert_eq!(chain_array.value(3), 1);
+        assert!((dim0_array.value(3) - 3.1).abs() < 1e-6);
+        assert!((dim1_array.value(3) - 4.1).abs() < 1e-6);
+
+        Ok(())
     }
 }
