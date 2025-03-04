@@ -283,6 +283,7 @@ This library provides:
 - **Gibbs Sampling**: A component-wise MCMC approach for higher-dimensional problems. ✅
 - **Hamiltonian Monte Carlo (HMC)**: A gradient-based method for efficient exploration. ✅
 - **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
+- **Rank Normalized Rhat**: Modern convergence diagnostic, see [paper](https://arxiv.org/abs/1903.08008).
 - **Ensemble Slice Sampling (ESS)**: Efficient gradient-free sampler, see [paper](https://arxiv.org/abs/2002.06212).
 
 ## Structure

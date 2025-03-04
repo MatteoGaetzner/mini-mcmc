@@ -146,7 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let start = Instant::now();
     // Run HMC for n_steps, collecting samples as a 3D tensor.
-    let samples = sampler.run_progress(n_steps, 100);
+    let samples = sampler.run_progress(n_steps, 100).unwrap();
     let duration = start.elapsed();
     println!(
         "HMC sampler: generating {} samples took {:?}",

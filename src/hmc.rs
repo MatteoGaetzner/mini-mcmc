@@ -9,6 +9,7 @@
 //! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
 //! validation.
 
+use crate::stats::PotentialScaleReduction;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::cast::ToElement;
@@ -19,6 +20,7 @@ use rand::prelude::*;
 use rand::Rng;
 use rand_distr::StandardNormal;
 use std::collections::VecDeque;
+use std::error::Error;
 
 /// A batched target trait for computing the unnormalized log probability (and gradients) for a
 /// collection of positions.
@@ -75,7 +77,8 @@ where
     T: Float
         + burn::tensor::ElementConversion
         + burn::tensor::Element
-        + rand_distr::uniform::SampleUniform,
+        + rand_distr::uniform::SampleUniform
+        + num_traits::FromPrimitive,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
     StandardNormal: rand::distributions::Distribution<T>,
@@ -174,7 +177,8 @@ where
     /// discarding the first `discard` iterations as burn-in.
     ///
     /// This function displays a progress bar (using the `indicatif` crate) that is updated
-    /// with an approximate acceptance probability computed over a sliding window of 50 iterations.
+    /// with an approximate acceptance probability computed over a sliding window of 50 iterations
+    /// as well as the potential scale reduction factor, see [Stan Reference Manual.][1]
     ///
     /// # Parameters
     ///
@@ -184,7 +188,13 @@ where
     /// # Returns
     ///
     /// A tensor of shape `[n_steps, n_chains, D]` containing the collected samples.
-    pub fn run_progress(&mut self, n_steps: usize, discard: usize) -> Tensor<B, 3> {
+    ///
+    /// [1]: https://mc-stan.org/docs/2_18/reference-manual/notation-for-samples-chains-and-draws.html
+    pub fn run_progress(
+        &mut self,
+        n_steps: usize,
+        discard: usize,
+    ) -> Result<Tensor<B, 3>, Box<dyn Error>> {
         // Discard initial burn-in samples.
         (0..discard).for_each(|_| self.step());
 
@@ -204,7 +214,12 @@ where
         let window_size = 50;
         let mut accept_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
 
+        let mut psr = PotentialScaleReduction::new(n_chains, dim);
+
         let mut last_state = self.positions.clone();
+
+        let mut last_state_data = last_state.to_data();
+        psr.step(last_state_data.as_slice::<T>().unwrap())?;
 
         for i in 0..n_steps {
             self.step();
@@ -228,11 +243,6 @@ where
                 accept_window.pop_back();
             }
 
-            // Compute average acceptance rate over the sliding window.
-            let avg_accept_rate: f32 =
-                accept_window.iter().sum::<f32>() / accept_window.len() as f32;
-            pb.set_message(format!("p(accept) ≈ {:.2}", avg_accept_rate));
-
             // Store the current state.
             out.inplace(|_out| {
                 _out.slice_assign(
@@ -242,9 +252,21 @@ where
             });
             pb.inc(1);
             last_state = current_state;
+
+            last_state_data = last_state.to_data();
+            psr.step(last_state_data.as_slice::<T>().unwrap())?;
+            let maxrhat = psr.max()?;
+
+            // Compute average acceptance rate over the sliding window.
+            let avg_accept_rate: f32 =
+                accept_window.iter().sum::<f32>() / accept_window.len() as f32;
+            pb.set_message(format!(
+                "p(accept) ≈ {:.2} | max rhat ≈ {:.2}.",
+                avg_accept_rate, maxrhat
+            ));
         }
         pb.finish_with_message("Done!");
-        out
+        Ok(out)
     }
 
     /// Perform one batched HMC update for all chains in parallel.
@@ -449,7 +471,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_hmc_samples_single() {
+    fn test_single() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -482,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_hmc_samples_10_chains() {
+    fn test_10_chains() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -515,7 +537,7 @@ mod tests {
     }
 
     #[test]
-    fn test_collect_hmc_samples_10_chains_progress() {
+    fn test_progress_10_chains() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -540,7 +562,7 @@ mod tests {
 
         // Run the sampler for n_steps with no discard.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_steps, 100);
+        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_steps, 100).unwrap();
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
@@ -549,7 +571,7 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_collect_hmc_samples_benchmark() {
+    fn test_bench() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<burn::backend::NdArray>;
 
@@ -575,6 +597,7 @@ mod tests {
         // Run HMC for n_steps, collecting samples.
         let mut timer = Timer::new();
         let samples = sampler.run(n_steps, 0);
+        // let samples = sampler.run_progress(n_steps, 0).unwrap();
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
@@ -583,9 +606,44 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_benchmark_10000d() {
+    fn test_progress_bench() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
-        type BackendType = Autodiff<burn::backend::Wgpu>;
+        type BackendType = Autodiff<burn::backend::NdArray>;
+
+        // Create the Rosenbrock target (a = 1, b = 100)
+        let target = Rosenbrock2D {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
+        let n_steps = 5000;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
+            target,
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+        )
+        .set_seed(42);
+
+        // Run HMC for n_steps, collecting samples.
+        let mut timer = Timer::new();
+        let samples = sampler.run_progress(n_steps, 0).unwrap();
+        // let samples = sampler.run_progress(n_steps, 0).unwrap();
+        timer.log(format!(
+            "HMC sampler: generated {} samples.",
+            samples.dims()[0..2].iter().product::<usize>()
+        ))
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_bench_10000d() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<burn::backend::NdArray>;
 
         let seed = 42;
         let d = 10000;
@@ -608,6 +666,38 @@ mod tests {
         // Run HMC for n_steps, collecting samples.
         let mut timer = Timer::new();
         let samples = sampler.run(n_steps, 0);
+        timer.log(format!(
+            "HMC sampler: generated {} samples.",
+            samples.dims()[0..2].iter().product::<usize>()
+        ))
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_progress_10000d_bench() {
+        type BackendType = Autodiff<burn::backend::Wgpu>;
+
+        let seed = 42;
+        let d = 10000;
+
+        let rng = SmallRng::seed_from_u64(seed);
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let initial_positions: Vec<Vec<f32>> =
+            vec![rng.sample_iter(StandardNormal).take(d).collect(); 6];
+        let n_steps = 5000;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
+            RosenbrockND {},
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+        )
+        .set_seed(42);
+
+        // Run HMC for n_steps, collecting samples.
+        let mut timer = Timer::new();
+        let samples = sampler.run_progress(n_steps, 0).unwrap();
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()

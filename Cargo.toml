@@ -26,6 +26,8 @@ arrow = {version="54.1", optional=true}
 parquet = {version="54.1", optional=true}
 burn = { version = "0.16.0", features = ["autodiff", "ndarray", "wgpu"] }
 ndarray = { version = "0.16.1" }
+simba = "0.9.0"
+ndarray-stats = "0.6.0"
 
 [features]
 default = ["csv", "arrow", "parquet"]
