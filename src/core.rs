@@ -3,61 +3,64 @@
 
 This module provides core functionality for running Markov Chain Monte Carlo (MCMC) chains in parallel.
 It includes:
-- The [`MarkovChain<S>`] trait, which abstracts a single MCMC chain.
+- The [`MarkovChain<T>`] trait, which abstracts a single MCMC chain.
 - Utility functions [`run_chain`] and [`run_chain_with_progress`] for executing a single chain and collecting its states.
-- The [`HasChains<S>`] trait for types that own multiple Markov chains.
-- The [`ChainRunner<S>`] trait that extends `HasChains<S>` with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
+- The [`HasChains<T>`] trait for types that own multiple Markov chains.
+- The [`ChainRunner<T>`] trait that extends `HasChains<T>` with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
 
-Any type implementing `HasChains<S>` (with the required trait bounds) automatically implements `ChainRunner<S>` via a blanket implementation.
+Any type implementing `HasChains<T>` (with the required trait bounds) automatically implements `ChainRunner<T>` via a blanket implementation.
 
-This module is generic over the state type using [`num_traits::Float`].
+This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
 
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
-use nalgebra as na;
-use num_traits::Zero;
+use ndarray::{prelude::*, LinalgScalar, ShapeError};
+use ndarray::{stack, Slice};
 use rayon::prelude::*;
+use std::cmp::PartialEq;
 use std::collections::VecDeque;
+use std::marker::Send;
 
 /// A trait that abstracts a single MCMC chain.
 ///
-/// A type implementing `MarkovChain<S>` must provide:
+/// A type implementing `MarkovChain<T>` must provide:
 /// - `step()`: advances the chain one iteration and returns a reference to the updated state.
 /// - `current_state()`: returns a reference to the current state without modifying the chain.
-pub trait MarkovChain<S> {
+pub trait MarkovChain<T> {
     /// Performs one iteration of the chain and returns a reference to the new state.
-    fn step(&mut self) -> &Vec<S>;
+    fn step(&mut self) -> &Vec<T>;
 
     /// Returns a reference to the current state of the chain without advancing it.
-    fn current_state(&self) -> &Vec<S>;
+    fn current_state(&self) -> &Vec<T>;
 }
 
 /// Runs a single MCMC chain for a specified number of steps.
 ///
 /// This function repeatedly calls the chain's `step()` method and collects each state into a
-/// [`nalgebra::DMatrix`], where each row corresponds to one iteration of the chain.
+/// [`ndarray::Array2<T>`], where each row corresponds to one iteration of the chain.
 ///
 /// # Arguments
 ///
-/// * `chain` - A mutable reference to an object implementing [`MarkovChain<S>`].
+/// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
 /// * `n_steps` - The total number of iterations to run.
 ///
 /// # Returns
 ///
-/// A [`nalgebra::DMatrix<S>`] where the number of rows equals `n_steps` and the number of columns equals
+/// A [`ndarray::Array2<T>`] where the number of rows equals `n_steps` and the number of columns equals
 /// the dimensionality of the chain's state.
-pub fn run_chain<S, M>(chain: &mut M, n_steps: usize) -> na::DMatrix<S>
+pub fn run_chain<T, M>(chain: &mut M, n_steps: usize) -> Array2<T>
 where
-    M: MarkovChain<S>,
-    S: Clone + na::Scalar + Zero,
+    M: MarkovChain<T>,
+    T: LinalgScalar,
 {
     let dim = chain.current_state().len();
-    let mut out = na::DMatrix::<S>::zeros(n_steps, dim);
+    let mut out = Array2::<T>::zeros((n_steps, dim));
 
     for i in 0..n_steps {
         let state = chain.step();
-        out.row_mut(i).copy_from_slice(state);
+        let state_arr = ArrayView::from_shape(state.len(), state.as_slice()).unwrap();
+        out.row_mut(i).assign(&state_arr);
     }
 
     out
@@ -70,24 +73,20 @@ where
 ///
 /// # Arguments
 ///
-/// * `chain` - A mutable reference to an object implementing [`MarkovChain<S>`].
+/// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
 /// * `n_steps` - The total number of iterations to run.
 /// * `pb` - A progress bar used to display progress.
 ///
 /// # Returns
 ///
-/// A [`nalgebra::DMatrix<S>`] containing the chain's states (one row per iteration).
-pub fn run_chain_with_progress<S, M>(
-    chain: &mut M,
-    n_steps: usize,
-    pb: &ProgressBar,
-) -> na::DMatrix<S>
+/// A [`ndarray::Array2<T>`] containing the chain's states (one row per iteration).
+pub fn run_chain_with_progress<T, M>(chain: &mut M, n_steps: usize, pb: &ProgressBar) -> Array2<T>
 where
-    M: MarkovChain<S>,
-    S: Clone + na::Scalar + Zero,
+    M: MarkovChain<T>,
+    T: LinalgScalar + PartialEq,
 {
     let dim = chain.current_state().len();
-    let mut out = na::DMatrix::<S>::zeros(n_steps, dim);
+    let mut out = Array2::<T>::zeros((n_steps, dim));
 
     pb.set_length(n_steps as u64);
     let mut n_accept = 0;
@@ -125,7 +124,9 @@ where
             }
         }
 
-        out.row_mut(i).copy_from_slice(current_state);
+        out.row_mut(i).assign(
+            &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
+        );
 
         // Update progress bar
         pb.inc(1);
@@ -137,13 +138,13 @@ where
 
 /// A trait for types that own multiple MCMC chains.
 ///
-/// - `S` is the type of the state elements (e.g., `f64`).
-/// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<S>`]
+/// - `T` is the type of the state elements (e.g., `f64`).
+/// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<T>`]
 ///   and be `Send`.
 ///
 /// Implementors must provide a method to access the internal vector of chains.
 pub trait HasChains<S> {
-    type Chain: MarkovChain<S> + std::marker::Send;
+    type Chain: MarkovChain<S> + Send;
 
     /// Returns a mutable reference to the vector of chains.
     fn chains_mut(&mut self) -> &mut Vec<Self::Chain>;
@@ -151,22 +152,16 @@ pub trait HasChains<S> {
 
 /// An extension trait for types that own multiple MCMC chains.
 ///
-/// `ChainRunner<S>` extends [`HasChains<S>`] by providing default methods to run all chains
+/// `ChainRunner<T>` extends [`HasChains<T>`] by providing default methods to run all chains
 /// in parallel using Rayon. These methods allow you to:
 /// - Run all chains for a specified number of iterations and discard an initial burn-in period.
 /// - Optionally display progress bars for each chain during execution.
 ///
-/// Any type that implements [`HasChains<S>`] (with appropriate bounds on `S`) automatically implements
-/// `ChainRunner<S>`.
-pub trait ChainRunner<S>: HasChains<S>
+/// Any type that implements [`HasChains<T>`] (with appropriate bounds on `T`) automatically implements
+/// `ChainRunner<T>`.
+pub trait ChainRunner<T>: HasChains<T>
 where
-    S: std::clone::Clone
-        + num_traits::Zero
-        + std::marker::Send
-        + std::cmp::PartialEq
-        + std::marker::Sync
-        + std::fmt::Debug
-        + 'static,
+    T: LinalgScalar + PartialEq + Send,
 {
     /// Runs all chains in parallel, discarding the first `discard` iterations (burn-in).
     ///
@@ -177,25 +172,21 @@ where
     ///
     /// # Returns
     ///
-    /// A vector of [`nalgebra::DMatrix<S>`] matrices, one for each chain, containing the samples
-    /// after burn-in.
-    fn run(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
+    /// A [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
+    /// step and the last one the parameter dimension.
+    fn run(&mut self, n_steps: usize, discard: usize) -> Result<Array3<T>, ShapeError> {
         // Run them all in parallel
-        let results: Vec<na::DMatrix<S>> = self
+        let results: Vec<Array2<T>> = self
             .chains_mut()
             .par_iter_mut()
             .map(|chain| run_chain(chain, n_steps))
             .collect();
-
-        // Now discard the burn-in rows from each matrix
-        results
-            .into_iter()
-            .map(|mat| {
-                let nrows = mat.nrows();
-                let keep = nrows - discard;
-                mat.rows(discard, keep).into()
-            })
-            .collect()
+        let views: Vec<ArrayView2<T>> = results
+            .iter()
+            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..discard + n_steps)))
+            .collect();
+        let out: Array3<T> = stack(Axis(0), views.as_slice())?;
+        Ok(out)
     }
 
     /// Runs all chains in parallel with progress bars, discarding the burn-in.
@@ -210,8 +201,9 @@ where
     ///
     /// # Returns
     ///
-    /// A vector of sample matrices (one per chain) containing only the samples after burn-in.
-    fn run_progress(&mut self, n_steps: usize, discard: usize) -> Vec<na::DMatrix<S>> {
+    /// Returns a [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
+    /// step and the last one the parameter dimension.
+    fn run_progress(&mut self, n_steps: usize, discard: usize) -> Result<Array3<T>, ShapeError> {
         let multi = MultiProgress::new();
         let pb_style = ProgressStyle::default_bar()
             .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.white} {pos}/{len} {msg}")
@@ -219,7 +211,7 @@ where
             .progress_chars("=>-");
 
         // Run each chain in parallel
-        let results: Vec<(Vec<S>, na::DMatrix<S>)> = self
+        let results: Vec<Array2<T>> = self
             .chains_mut()
             .par_iter_mut()
             .map(|chain| {
@@ -230,29 +222,17 @@ where
 
                 pb.finish_with_message("Done!");
 
-                (chain.current_state().clone(), samples)
+                samples
             })
             .collect();
 
-        results
-            .into_par_iter()
-            .map(|(_, samples)| {
-                let keep_rows = samples.nrows().saturating_sub(discard);
-                samples.rows(discard, keep_rows).into()
-            })
-            .collect()
+        let views: Vec<ArrayView2<T>> = results
+            .iter()
+            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..discard + n_steps)))
+            .collect();
+        let out: Array3<T> = stack(Axis(0), views.as_slice())?;
+        Ok(out)
     }
 }
 
-impl<
-        S: std::fmt::Debug
-            + std::marker::Sync
-            + std::cmp::PartialEq
-            + std::marker::Send
-            + num_traits::Zero
-            + std::clone::Clone
-            + 'static,
-        T: HasChains<S>,
-    > ChainRunner<S> for T
-{
-}
+impl<T: LinalgScalar + Send + PartialEq, R: HasChains<T>> ChainRunner<T> for R {}

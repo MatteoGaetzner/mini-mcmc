@@ -13,11 +13,9 @@ The [`MarkovChain`] trait is implemented for `GibbsMarkovChain` so that generic 
 functions (e.g. via the [`ChainRunner`] extension) work with Gibbs chains.
 */
 
-use num_traits::Zero;
+use ndarray::LinalgScalar;
 use rand::rngs::SmallRng;
 use rand::{thread_rng, Rng, SeedableRng};
-
-use nalgebra::Scalar;
 
 use crate::core::{HasChains, MarkovChain};
 use crate::distributions::Conditional;
@@ -47,10 +45,10 @@ where
     pub rng: SmallRng,
 }
 
-impl<S, D> GibbsMarkovChain<S, D>
+impl<T, D> GibbsMarkovChain<T, D>
 where
-    D: Conditional<S> + Clone,
-    S: Scalar + Zero,
+    D: Conditional<T> + Clone,
+    T: LinalgScalar,
 {
     /// Creates a new Gibbs sampling chain.
     ///
@@ -64,7 +62,6 @@ where
     /// ```rust
     /// use mini_mcmc::gibbs::GibbsMarkovChain;
     /// use mini_mcmc::distributions::Conditional;
-    /// use nalgebra::Scalar;
     ///
     /// // For example, a dummy conditional that always returns 1.0:
     /// #[derive(Clone)]
@@ -76,7 +73,7 @@ where
     /// let chain = GibbsMarkovChain::new(OneConditional, &[0.0, 0.0]);
     /// assert_eq!(chain.current_state, vec![0.0, 0.0]);
     /// ```
-    pub fn new(target: D, initial_state: &[S]) -> Self {
+    pub fn new(target: D, initial_state: &[T]) -> Self {
         let seed = rand::thread_rng().gen::<u64>();
         Self {
             target,
@@ -123,10 +120,10 @@ pub struct GibbsSampler<S, D: Conditional<S>> {
     pub seed: u64,
 }
 
-impl<S, D> GibbsSampler<S, D>
+impl<T, D> GibbsSampler<T, D>
 where
-    D: Conditional<S> + Clone + Send + Sync,
-    S: Clone + Send + 'static + std::fmt::Debug + std::cmp::PartialEq + num_traits::Zero,
+    D: Conditional<T> + Clone + Send + Sync,
+    T: LinalgScalar,
 {
     /// Creates a new Gibbs sampler with a specified number of parallel chains.
     ///
@@ -154,7 +151,7 @@ where
     /// let sampler = GibbsSampler::new(DummyConditional, &[0.0, 0.0], 4);
     /// assert_eq!(sampler.chains.len(), 4);
     /// ```
-    pub fn new(target: D, initial_state: &[S], n_chains: usize) -> Self {
+    pub fn new(target: D, initial_state: &[T], n_chains: usize) -> Self {
         let seed = thread_rng().gen::<u64>();
         let chains = (0..n_chains)
             .map(|_| GibbsMarkovChain::new(target.clone(), initial_state))
@@ -206,6 +203,8 @@ where
 mod tests {
     use super::*;
     use crate::core::ChainRunner;
+    use approx::assert_abs_diff_eq;
+    use ndarray::{Array3, Axis};
     use rand_distr::Normal;
     use std::f64::consts::PI;
 
@@ -307,70 +306,36 @@ mod tests {
         // Create a sampler with 4 chains.
         let mut sampler = GibbsSampler::new(conditional, &initial_state, 4);
         // Run each chain for 10 steps and discard the first 5 as burn-in.
-        let samples = sampler.run(10, 5);
-        // Each chain should have 10 - 5 = 5 rows and 2 columns.
-        for (chain_idx, chain_samples) in samples.iter().enumerate() {
-            assert_eq!(
-                chain_samples.nrows(),
-                5,
-                "Chain {} row count mismatch",
-                chain_idx
-            );
-            assert_eq!(
-                chain_samples.ncols(),
-                2,
-                "Chain {} column count mismatch",
-                chain_idx
-            );
-            // Check that the final (last) row is (approximately) equal to [42.0, 42.0].
-            let last_row = chain_samples.row(chain_samples.nrows() - 1);
-            for (j, &value) in last_row.iter().enumerate() {
-                assert!(
-                    (value - constant).abs() < f64::EPSILON,
-                    "Chain {}, coordinate {} expected {}, got {}",
-                    chain_idx,
-                    j,
-                    constant,
-                    value
-                );
-            }
-        }
+        let samples = sampler.run(10, 5).unwrap();
+        let shape = samples.shape();
+        assert_eq!(shape[0], 4);
+        assert_eq!(shape[1], 5);
+        assert_eq!(shape[2], 2);
+        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 5, 2), 42.0));
     }
 
     /// Test the run_progress method on the GibbsSampler.
     #[test]
     fn test_gibbs_sampler_run_progress() {
-        let constant = 10.0;
+        let constant = 42.0;
         let conditional = ConstantConditional { c: constant };
+        // 2-dimensional state.
         let initial_state = [0.0, 0.0];
-        let mut sampler = GibbsSampler::new(conditional, &initial_state, 2);
-        // Run with progress for 20 steps and discard the first 5.
-        let samples = sampler.run_progress(20, 5);
-        for (chain_idx, chain_samples) in samples.iter().enumerate() {
-            assert_eq!(
-                chain_samples.nrows(),
-                15,
-                "Chain {} row count mismatch",
-                chain_idx
-            );
-            let last_row = chain_samples.row(chain_samples.nrows() - 1);
-            for (j, &value) in last_row.iter().enumerate() {
-                assert!(
-                    (value - constant).abs() < f64::EPSILON,
-                    "Chain {}, coordinate {} expected {}, got {}",
-                    chain_idx,
-                    j,
-                    constant,
-                    value
-                );
-            }
-        }
+        // Create a sampler with 4 chains.
+        let mut sampler = GibbsSampler::new(conditional, &initial_state, 4);
+        // Run each chain for 10 steps and discard the first 5 as burn-in.
+        let samples = sampler.run_progress(10, 5).unwrap();
+        let shape = samples.shape();
+        assert_eq!(shape[0], 4);
+        assert_eq!(shape[1], 5);
+        assert_eq!(shape[2], 2);
+        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 5, 2), 42.0));
     }
 
     /// Helper function that runs a GibbsSampler for a mixture distribution
     /// and returns (theoretical_mean, theoretical_variance, sample_mean, sample_variance)
     #[allow(clippy::too_many_arguments)]
-    fn run_mixture_simulation(
+    fn assert_mixture_simulation(
         mu0: f64,
         sigma0: f64,
         mu1: f64,
@@ -380,11 +345,11 @@ mod tests {
         n_steps: usize,
         burn_in: usize,
         seed: u64,
-    ) -> (f64, f64, f64, f64) {
+    ) {
         // Compute theoretical marginal mean and variance for x.
-        let theoretical_mean = pi0 * mu0 + (1.0 - pi0) * mu1;
-        let theoretical_variance = pi0 * (sigma0.powi(2) + (mu0 - theoretical_mean).powi(2))
-            + (1.0 - pi0) * (sigma1.powi(2) + (mu1 - theoretical_mean).powi(2));
+        let theo_mean = pi0 * mu0 + (1.0 - pi0) * mu1;
+        let theo_var = pi0 * (sigma0.powi(2) + (mu0 - theo_mean).powi(2))
+            + (1.0 - pi0) * (sigma1.powi(2) + (mu1 - theo_mean).powi(2));
 
         let conditional = MixtureConditional {
             mu0,
@@ -396,84 +361,13 @@ mod tests {
         };
         let initial_state = [0.0, 0.0];
         let mut sampler = GibbsSampler::new(conditional, &initial_state, n_chains).set_seed(seed);
-        let samples = sampler.run(n_steps, burn_in);
+        let samples = sampler.run(n_steps, burn_in).unwrap();
 
         // Collect all x-values from all chains.
-        let mut all_x = Vec::new();
-        for mat in samples {
-            for i in 0..mat.nrows() {
-                let row = mat.row(i);
-                all_x.push(row[0]);
-            }
-        }
-        let n = all_x.len() as f64;
-        let sample_mean: f64 = all_x.iter().sum::<f64>() / n;
-        let sample_variance: f64 = all_x
-            .iter()
-            .map(|&x| (x - sample_mean).powi(2))
-            .sum::<f64>()
-            / n;
-        (
-            theoretical_mean,
-            theoretical_variance,
-            sample_mean,
-            sample_variance,
-        )
-    }
-
-    /// Test the GibbsSampler on a two-component Gaussian mixture (set 1).
-    #[test]
-    fn test_gibbs_sampler_mixture_1() {
-        let (theo_mean, theo_var, sample_mean, sample_var) = run_mixture_simulation(
-            -2.0, // mu0
-            1.0,  // sigma0
-            3.0,  // mu1
-            1.5,  // sigma1
-            0.5,  // pi0
-            3,    // n_chains
-            5000, // n_steps
-            1000, // burn_in
-            42,   // seed
-        );
-        println!("Mixture 1:");
-        println!("Theoretical mean: {}", theo_mean);
-        println!("Empirical mean: {}", sample_mean);
-        println!("Theoretical variance: {}", theo_var);
-        println!("Empirical variance: {}", sample_var);
-
-        assert!(
-            (sample_mean - theo_mean).abs() < 0.5,
-            "Empirical mean {} deviates too much from theoretical {}",
-            sample_mean,
-            theo_mean
-        );
-        assert!(
-            (sample_var - theo_var).abs() < 1.5,
-            "Empirical variance {} deviates too much from theoretical {}",
-            sample_var,
-            theo_var
-        );
-    }
-
-    /// Test the GibbsSampler on a two-component Gaussian mixture (set 2).
-    #[test]
-    fn test_gibbs_sampler_mixture_2() {
-        let (theo_mean, theo_var, sample_mean, sample_var) = run_mixture_simulation(
-            -42.0,  // mu0
-            69.0,   // sigma0
-            1.0,    // mu1
-            2.0,    // sigma1
-            0.123,  // pi0
-            3,      // n_chains
-            100000, // n_steps
-            10000,  // burn_in
-            42,     // seed
-        );
-        println!("Mixture 2:");
-        println!("Theoretical mean: {}", theo_mean);
-        println!("Empirical mean: {}", sample_mean);
-        println!("Theoretical variance: {}", theo_var);
-        println!("Empirical variance: {}", sample_var);
+        let x = samples.index_axis(Axis(2), 0);
+        let x = x.flatten();
+        let sample_mean = x.mean().unwrap();
+        let sample_var = x.var(0.0);
 
         assert!(
             (sample_mean - theo_mean).abs() < theo_mean.abs() / 10.0,
@@ -486,6 +380,38 @@ mod tests {
             "Empirical variance {} deviates too much from theoretical {}",
             sample_var,
             theo_var
+        );
+    }
+
+    /// Test the GibbsSampler on a two-component Gaussian mixture (set 1).
+    #[test]
+    fn test_gibbs_sampler_mixture_1() {
+        assert_mixture_simulation(
+            -2.0, // mu0
+            1.0,  // sigma0
+            3.0,  // mu1
+            1.5,  // sigma1
+            0.5,  // pi0
+            3,    // n_chains
+            5000, // n_steps
+            1000, // burn_in
+            42,   // seed
+        );
+    }
+
+    /// Test the GibbsSampler on a two-component Gaussian mixture (set 2).
+    #[test]
+    fn test_gibbs_sampler_mixture_2() {
+        assert_mixture_simulation(
+            -42.0,  // mu0
+            69.0,   // sigma0
+            1.0,    // mu1
+            2.0,    // sigma1
+            0.123,  // pi0
+            3,      // n_chains
+            100000, // n_steps
+            10000,  // burn_in
+            42,     // seed
         );
     }
 

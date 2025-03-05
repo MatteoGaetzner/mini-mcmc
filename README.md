@@ -3,7 +3,6 @@
 ![tests](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/general.yml/badge.svg)
 ![security](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/audit.yml/badge.svg)
 [![codecov](https://codecov.io/gh/MatteoGaetzner/mini-mcmc/graph/badge.svg?token=IDLWGMMUFI)](https://codecov.io/gh/MatteoGaetzner/mini-mcmc)
-
 A small (and growing) Rust library for **Markov Chain Monte Carlo (MCMC)** methods.
 
 ## Installation
@@ -23,24 +22,25 @@ Then `use mini_mcmc` in your Rust code.
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use ndarray::{arr1, arr2};
 
 fn main() {
-        let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-        };
-        let proposal = IsotropicGaussian::new(1.0);
-        let initial_state = [0.0, 0.0];
+    let target = Gaussian2D {
+        mean: arr1(&[0.0, 0.0]),
+        cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
+    };
+    let proposal = IsotropicGaussian::new(1.0);
+    let initial_state = [0.0, 0.0];
 
-        // Create a MH sampler with 4 parallel chains
-        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
+    // Create a MH sampler with 4 parallel chains
+    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
 
-        // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
-        let samples = mh.run(1000, 100);
+    // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
+    let samples = mh.run(1000, 100).unwrap();
 
-        // We should have 900 * 4 = 3600 samples
-        assert_eq!(samples.len(), 4);
-        assert_eq!(samples[0].nrows(), 900); // samples[0] is a nalgebra::DMatrix
+    // We should have 900 * 4 = 3600 samples
+    assert_eq!(samples.shape()[0], 4);
+    assert_eq!(samples.shape()[1], 900);
 }
 ```
 
@@ -48,7 +48,7 @@ You can also find this example at `examples/minimal_mh.rs`.
 
 ## Example: Sampling From a Custom Distribution
 
-Below we define a custom Poisson distribution for nonnegative integer states $\{0,1,2,\dots\}$ and a simple random-walk proposal. We then run Metropolis–Hastings to sample from this distribution, collecting frequencies of $k$ after some burn-in:
+Below we define a custom Poisson distribution for nonnegative integer states $\{0,1,2,\dots\}$ and a basic random-walk proposal. We then run Metropolis–Hastings to sample from this distribution, collecting frequencies of $k$ after some burn-in:
 
 ```rust
 use mini_mcmc::core::ChainRunner;
@@ -192,7 +192,8 @@ You can also find this example at `examples/poisson_mh.rs`.
 
   - If $x=0$, propose $1$ with probability $1$.
   - If $x>0$, propose $x+1$ or $x-14$ with probability $0.5$ each.
-  - `log_prob` returns $\ln(0.5)$ for the valid moves, or $-\infty$ for invalid moves.
+  - `log_prob` returns $\ln(0.5)$ for the possible moves, or $-\infty$ for
+    impossible moves.
 
 - **Usage**:  
   We start the chain at $k=0$, run 10,000 iterations discarding 1,000 as burn-in, and tally the final sample frequencies for $k=0 \dots 20$. They should approximate the Poisson(4.0) distribution (peak around $k=4$).

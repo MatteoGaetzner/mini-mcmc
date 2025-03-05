@@ -19,14 +19,14 @@ use mini_mcmc::distributions::{
     Gaussian2D, IsotropicGaussian, Proposal,
     Target, Normalized
 };
-use nalgebra::{Vector2, Matrix2};
+use ndarray::{arr1, arr2};
 
 // ----------------------
 // Example: Gaussian2D (2D with full covariance)
 // ----------------------
-let mean = Vector2::new(0.0, 0.0);
-let cov = Matrix2::new(1.0, 0.0,
-                       0.0, 1.0);
+let mean = arr1(&[0.0, 0.0]);
+let cov = arr2(&[[1.0, 0.0],
+                [0.0, 1.0]]);
 let gauss: Gaussian2D<f64> = Gaussian2D { mean, cov };
 
 // Compute the fully normalized log-prob at (0.5, -0.5):
@@ -42,38 +42,38 @@ let candidate = proposal.sample(&current);
 println!("Candidate state: {:?}", candidate);
 */
 
-use nalgebra::{Matrix2, Vector2};
+use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use std::f64::consts::PI;
-use std::ops::{AddAssign, DivAssign, MulAssign, SubAssign};
+use std::ops::AddAssign;
 
 /// A trait for generating proposals in Metropolis–Hastings or similar algorithms.
-/// The state type `S` is typically a vector of continuous values.
-pub trait Proposal<S, T: Float> {
+/// The state type `T` is typically a vector of continuous values.
+pub trait Proposal<T, F: Float> {
     /// Samples a new point from q(x' | x).
-    fn sample(&mut self, current: &[S]) -> Vec<S>;
+    fn sample(&mut self, current: &[T]) -> Vec<T>;
 
     /// Evaluates log q(x' | x).
-    fn log_prob(&self, from: &[S], to: &[S]) -> T;
+    fn log_prob(&self, from: &[T], to: &[T]) -> F;
 
     /// Returns a new instance of this proposal distribution seeded with `seed`.
     fn set_seed(self, seed: u64) -> Self;
 }
 
 /// A trait for continuous target distributions from which we want to sample.
-/// The state type `S` is typically a vector of continuous values.
-pub trait Target<S, T: Float> {
+/// The state type `T` is typically a vector of continuous values.
+pub trait Target<T, F: Float> {
     /// Returns the log of the unnormalized density for state `theta`.
-    fn unnorm_log_prob(&self, theta: &[S]) -> T;
+    fn unnorm_log_prob(&self, theta: &[T]) -> F;
 }
 
 /// A trait for distributions that provide a normalized log-density (e.g., for diagnostics).
-pub trait Normalized<S, T: Float> {
+pub trait Normalized<T, F: Float> {
     /// Returns the normalized log-density for state `theta`.
-    fn log_prob(&self, theta: &[S]) -> T;
+    fn log_prob(&self, theta: &[T]) -> F;
 }
 
 /** A trait for discrete distributions whose state is represented as an index.
@@ -107,26 +107,26 @@ A 2D Gaussian distribution parameterized by a mean vector and a 2×2 covariance 
 
 ```rust
 use mini_mcmc::distributions::{Gaussian2D, Normalized};
-use nalgebra::{Vector2, Matrix2};
+use ndarray::{arr1, arr2};
 
-let mean = Vector2::new(0.0, 0.0);
-let cov = Matrix2::new(1.0, 0.0,
-                       0.0, 1.0);
+let mean = arr1(&[0.0, 0.0]);
+let cov = arr2(&[[1.0, 0.0],
+                [0.0, 1.0]]);
 let gauss: Gaussian2D<f64> = Gaussian2D { mean, cov };
 
 let lp = gauss.log_prob(&vec![0.5, -0.5]);
 println!("Normalized log probability: {}", lp);
 ```
 */
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Gaussian2D<T: Float> {
-    pub mean: Vector2<T>,
-    pub cov: Matrix2<T>,
+    pub mean: Array1<T>,
+    pub cov: Array2<T>,
 }
 
 impl<T> Normalized<T, T> for Gaussian2D<T>
 where
-    T: Float + SubAssign + AddAssign + DivAssign + MulAssign + std::fmt::Debug + 'static,
+    T: NdFloat,
 {
     /// Computes the fully normalized log-density of a 2D Gaussian.
     fn log_prob(&self, theta: &[T]) -> T {
@@ -141,24 +141,17 @@ where
         let half = T::from(0.5).unwrap();
         let term_2 = -half * det.abs().ln();
 
-        let x = Vector2::new(theta[0], theta[1]);
-        let diff = x - self.mean;
-        let inv_cov = Matrix2::new(d, -b, -c, a) / det;
-        let term_3 = -half * (diff.transpose() * inv_cov * diff)[(0, 0)];
+        let x = arr1(theta);
+        let diff = x - self.mean.clone();
+        let inv_cov = arr2(&[[d, -b], [-c, a]]) / det;
+        let term_3 = -half * diff.dot(&inv_cov).dot(&diff);
         term_1 + term_2 + term_3
     }
 }
 
 impl<T> Target<T, T> for Gaussian2D<T>
 where
-    T: Float
-        + std::fmt::Debug
-        + std::ops::SubAssign
-        + std::ops::DivAssign
-        + std::ops::AddAssign
-        + std::ops::MulAssign
-        + std::ops::Neg
-        + 'static,
+    T: NdFloat,
 {
     fn unnorm_log_prob(&self, theta: &[T]) -> T {
         let (a, b, c, d) = (
@@ -168,10 +161,10 @@ where
             self.cov[(1, 1)],
         );
         let det = a * d - b * c;
-        let x = Vector2::new(theta[0], theta[1]);
-        let diff = x - self.mean;
-        let inv_cov = Matrix2::new(d, -b, -c, a) / det;
-        -T::from(0.5).unwrap() * (diff.transpose() * inv_cov * diff)[(0, 0)]
+        let x = arr1(theta);
+        let diff = x - self.mean.clone();
+        let inv_cov = arr2(&[[d, -b], [-c, a]]) / det;
+        -T::from(0.5).unwrap() * diff.dot(&inv_cov).dot(&diff)
     }
 }
 

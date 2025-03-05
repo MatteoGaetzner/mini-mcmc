@@ -256,13 +256,13 @@ where
     }
 }
 
-impl<S, T, D, Q> MarkovChain<S> for MHMarkovChain<S, T, D, Q>
+impl<T, F, D, Q> MarkovChain<T> for MHMarkovChain<T, F, D, Q>
 where
-    D: Target<S, T> + Clone,
-    Q: Proposal<S, T> + Clone,
-    S: Clone + PartialEq + na::Scalar + num_traits::Zero,
-    T: Float,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    D: Target<T, F> + Clone,
+    Q: Proposal<T, F> + Clone,
+    T: Clone + PartialEq + na::Scalar + num_traits::Zero,
+    F: Float,
+    rand_distr::Standard: rand_distr::Distribution<F>,
 {
     /// Performs one Metropolis–Hastings update step.
     ///
@@ -297,14 +297,14 @@ where
     /// let new_state = chain.step();
     /// assert_eq!(new_state.len(), 2);
     /// ```
-    fn step(&mut self) -> &Vec<S> {
-        let proposed: Vec<S> = self.proposal.sample(&self.current_state);
+    fn step(&mut self) -> &Vec<T> {
+        let proposed: Vec<T> = self.proposal.sample(&self.current_state);
         let current_lp = self.target.unnorm_log_prob(&self.current_state);
         let proposed_lp = self.target.unnorm_log_prob(&proposed);
         let log_q_forward = self.proposal.log_prob(&self.current_state, &proposed);
         let log_q_backward = self.proposal.log_prob(&proposed, &self.current_state);
         let log_accept_ratio = (proposed_lp + log_q_backward) - (current_lp + log_q_forward);
-        let u: T = self.rng.gen();
+        let u: F = self.rng.gen();
         if log_accept_ratio > u.ln() {
             self.current_state = proposed;
         }
@@ -312,7 +312,7 @@ where
     }
 
     /// Returns a reference to the current state of the chain.
-    fn current_state(&self) -> &Vec<S> {
+    fn current_state(&self) -> &Vec<T> {
         &self.current_state
     }
 }
@@ -320,253 +320,82 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ChainRunner;
-    use crate::distributions::Normalized;
-    use crate::ks_test::TotalF64;
-    use rand_distr::StandardNormal;
+    use crate::core::ChainRunner; // or run_progress, etc.
+    use approx::assert_abs_diff_eq;
+    use ndarray::{arr1, arr2, Axis};
+    use ndarray_stats::CorrelationExt;
 
-    use crate::{
-        distributions::{Gaussian2D, IsotropicGaussian},
-        stats,
-    };
-    use nalgebra as na;
+    use crate::distributions::{Gaussian2D, IsotropicGaussian};
 
-    #[test]
-    fn four_chains_test() {
-        const SAMPLE_SIZE: usize = 20_000;
-        const BURNIN: usize = 5_000;
-        const N_CHAINS: usize = 8;
-        const SEED: u64 = 42;
-
-        // Target distribution & sampler setup
-        let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[4.0, 2.0], [2.0, 3.0]].into(),
-        };
-        let initial_state = [0.0, 0.0];
-        let proposal = IsotropicGaussian::<f64>::new(1.0).set_seed(SEED);
-        let mut mh =
-            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(SEED);
-
-        // Generate "true" samples from the target using Cholesky
-        let chol = na::Cholesky::new(mh.chains[0].target.cov).expect("Cov not positive definite");
-        let mut rng = SmallRng::seed_from_u64(SEED);
-        let z_vec: Vec<f64> = (0..(2 * SAMPLE_SIZE))
-            .map(|_| rng.sample(StandardNormal))
-            .collect();
-
-        let z = na::DMatrix::from_vec(2, SAMPLE_SIZE, z_vec);
-        let samples_target = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, (chol.l() * z).as_slice());
-
-        // Run MCMC, discard burn-in
-        let mut samples = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
-        mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN)
-            .into_iter()
-            .enumerate()
-            .for_each(|(i, chain_samples)| {
-                dbg!(i, chain_samples.row_mean());
-                samples
-                    .rows_mut(i * chain_samples.nrows(), chain_samples.nrows())
-                    .copy_from(&chain_samples)
-            });
-
-        // Validate mean & covariance
-        let mean_mcmc = samples.row_mean();
-        let cov_mcmc = stats::cov(&samples).unwrap();
-
-        // Compare log probabilities via two-sample KS test
-        let log_prob_mcmc: Vec<f64> = samples
-            .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
-            .collect();
-        let log_prob_target: Vec<f64> = samples_target
-            .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
-            .collect();
-
-        // Quick sanity check for NaN/infinite
-        assert!(
-            !log_prob_mcmc
-                .iter()
-                .chain(log_prob_target.iter())
-                .any(|x| x.is_nan() || x.is_infinite()),
-            "Found infinite/NaN in log probabilities."
-        );
-
-        let good_mean = (na::DMatrix::from_column_slice(1, 2, mh.target.mean.as_slice())
-            - mean_mcmc)
-            .map(|x| x.abs() < 0.5);
-        assert!(
-            good_mean[0] && good_mean[1],
-            "Mean deviation too large from target."
-        );
-
-        dbg!(mh.target.cov, &cov_mcmc);
-        let good_cov = (na::DMatrix::from_column_slice(2, 2, mh.target.cov.as_slice()) - cov_mcmc)
-            .map(|x| x.abs() < 0.5);
-        assert!(
-            good_cov[0] && good_cov[1] && good_cov[2] && good_cov[3],
-            "Covariance deviation too large."
-        );
-    }
-
-    //
-    // This test uses the MH sampler to generate samples, computes the log‐probabilities
-    // of each sample (under both the target and an “exact” sampler), and then runs the
-    // KS test on these log probabilities. It prints both the internal and external KS test results.
-    //
-    #[test]
-    fn test_mh_ks_comparison() {
-        // --- Setup MH sampler parameters ---
+    /// Common test harness for checking that samples from a 2D Gaussian match
+    /// the true mean and covariance within floating-point tolerance.
+    ///
+    /// - `n_chains`: number of parallel chains
+    /// - `use_progress`: whether to call `run_progress` instead of `run`
+    fn run_gaussian_2d_test(n_chains: usize, use_progress: bool) {
         const SAMPLE_SIZE: usize = 10_000;
         const BURNIN: usize = 2_000;
-        const N_CHAINS: usize = 8;
         const SEED: u64 = 42;
 
-        // Setup target distribution: a bivariate Gaussian.
+        // Target distribution
         let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[4.0, 2.0], [2.0, 3.0]].into(),
+            mean: arr1(&[0.0, 1.0]),
+            cov: arr2(&[[4.0, 2.0], [2.0, 3.0]]),
         };
+
+        // Build the sampler
         let initial_state = [0.0, 0.0];
         let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
-        let mut mh =
-            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(SEED);
+        let mut mh = MetropolisHastings::new(target.clone(), proposal, &initial_state, n_chains)
+            .set_seed(SEED);
 
-        // --- Generate “true” samples from the target distribution ---
-        // We use Cholesky decomposition to generate independent samples.
-        let chol =
-            na::Cholesky::new(mh.chains[0].target.cov).expect("Covariance not positive definite");
-        let mut rng = SmallRng::seed_from_u64(SEED);
-        let z_vec: Vec<f64> = (0..(2 * SAMPLE_SIZE))
-            .map(|_| rng.sample(StandardNormal))
-            .collect();
-        let z = na::DMatrix::from_vec(2, SAMPLE_SIZE, z_vec);
-        let samples_target = na::DMatrix::from_row_slice(SAMPLE_SIZE, 2, (chol.l() * z).as_slice());
+        // Generate samples
+        let samples = if use_progress {
+            mh.run_progress(SAMPLE_SIZE / n_chains + BURNIN, BURNIN)
+        } else {
+            mh.run(SAMPLE_SIZE / n_chains + BURNIN, BURNIN)
+        }
+        .expect("Sampling failed");
 
-        // --- Run the MH sampler ---
-        // We run enough steps so that after discarding burn-in we have SAMPLE_SIZE samples.
-        let mut samples_mcmc = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
-        mh.run(SAMPLE_SIZE / N_CHAINS + BURNIN, BURNIN)
-            .into_iter()
-            .enumerate()
-            .for_each(|(i, chain_samples)| {
-                samples_mcmc
-                    .rows_mut(i * chain_samples.nrows(), chain_samples.nrows())
-                    .copy_from(&chain_samples)
-            });
+        // Reshape samples into a [SAMPLE_SIZE, 2] array
+        let stacked = samples
+            .into_shape_with_order((SAMPLE_SIZE, 2))
+            .expect("Failed to reshape samples");
 
-        // --- Compute log probabilities for both sets of samples ---
-        // (We assume your target distribution provides log_prob)
-        let log_prob_mcmc: Vec<f64> = samples_mcmc
-            .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
-            .collect();
-        let log_prob_target: Vec<f64> = samples_target
-            .row_iter()
-            .map(|row| mh.target.log_prob(&[row[0], row[1]]))
-            .collect();
-
-        // --- Convert the log probabilities to TotalF64 so they can be sorted ---
-        let log_prob_mcmc_total: Vec<TotalF64> =
-            log_prob_mcmc.iter().copied().map(TotalF64).collect();
-        let log_prob_target_total: Vec<TotalF64> =
-            log_prob_target.iter().copied().map(TotalF64).collect();
-
-        // --- Run the internal KS test ---
-        // Here the chosen significance level (0.05) is arbitrary.
-        let res_internal: crate::ks_test::TestResult =
-            crate::ks_test::two_sample_ks_test(&log_prob_mcmc_total, &log_prob_target_total, 0.05)
-                .expect("Internal KS test failed");
-
-        // --- Run the external KS test ---
-        // The external function may use a different significance level (here 0.95).
-        let res_external =
-            kolmogorov_smirnov::test(&log_prob_mcmc_total, &log_prob_target_total, 0.95);
-
-        // --- Print both results for manual verification ---
-        println!(
-            "Internal KS test result:\n  statistic: {}\n  p_value: {}\n  is_rejected: {}",
-            res_internal.statistic, res_internal.p_value, res_internal.is_rejected
-        );
-        println!(
-            "External KS test result:\n  statistic: {}\n  p_value: {}\n  is_rejected: {}",
-            res_external.statistic,
-            1.0 - res_external.reject_probability,
-            res_external.is_rejected
-        );
-
-        assert!(
-            (res_internal.p_value - 1.0 + res_external.reject_probability).abs() < 0.001,
-            "Expected p-values to be close to each other."
-        );
+        // Check that mean and covariance match the target distribution
+        let mean = stacked.mean_axis(Axis(0)).unwrap();
+        let cov = stacked.cov(1.0).unwrap();
+        assert_abs_diff_eq!(mean, target.mean, epsilon = 0.2); // or tighter threshold
+        assert_abs_diff_eq!(cov, target.cov, epsilon = 0.5);
     }
 
     #[test]
-    fn test_run_progress() {
-        // We'll do a small run to keep the test fast
-        const SAMPLE_SIZE: usize = 2000;
-        const DISCARD: usize = 500;
-        const N_CHAINS: usize = 2;
-        const SEED: u64 = 42;
-
-        // Setup a small Gaussian2D target and an isotropic proposal
-        let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
-        };
-        let proposal = IsotropicGaussian::<f32>::new(0.5).set_seed(SEED);
-        let initial_state = [1.0, 1.0];
-
-        // Create the MH sampler with multiple chains
-        let mut mh_progress =
-            MetropolisHastings::new(target, proposal.clone(), &initial_state.clone(), N_CHAINS)
-                .set_seed(SEED);
-
-        // Run with progress bars
-        println!("STARTING RUNNING WITH PROGRESS");
-        let samples_progress = mh_progress.run_progress(SAMPLE_SIZE / N_CHAINS + DISCARD, DISCARD);
-        println!("FINISHED RUNNING WITH PROGRESS");
-
-        // Basic checks
-        assert_eq!(samples_progress.len(), N_CHAINS);
-
-        for chain_samples in &samples_progress {
-            assert_eq!(chain_samples.nrows(), SAMPLE_SIZE / 2);
-        }
-
-        // Compare to normal run
-        let mut mh_normal =
-            MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(SEED);
-        let samples_normal = mh_normal.run(SAMPLE_SIZE / N_CHAINS + DISCARD, DISCARD);
-
-        // Check that shape is the same
-        assert_eq!(samples_normal.len(), N_CHAINS);
-        for chain_samples in &samples_normal {
-            assert_eq!(chain_samples.nrows(), SAMPLE_SIZE / 2);
-        }
-
-        // Compare means across the two runs.
-        // We'll just do a naive check that they're "similar".
-        for (sp_chain, sn_chain) in samples_progress.iter().zip(samples_normal.iter()) {
-            let sp_mean = sp_chain.row_mean();
-            let sn_mean = sn_chain.row_mean();
-            assert!(
-                (sp_mean[0] - sn_mean[0]).abs() < 0.5,
-                "Means differ more than expected on dimension 0"
-            );
-            assert!(
-                (sp_mean[1] - sn_mean[1]).abs() < 0.5,
-                "Means differ more than expected on dimension 1"
-            );
-        }
+    fn test_single_1_chain() {
+        run_gaussian_2d_test(1, false);
     }
 
+    #[test]
+    fn test_8_chains() {
+        run_gaussian_2d_test(8, false);
+    }
+
+    #[test]
+    fn test_progress_1_chain() {
+        run_gaussian_2d_test(1, true);
+    }
+
+    #[test]
+    fn test_progress_8_chains() {
+        run_gaussian_2d_test(8, true);
+    }
+
+    /// This test remains separate because it's exercising the "example usage"
+    /// scenario from the docs rather than checking numeric correctness.
     #[test]
     fn readme_test() {
         let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+            mean: arr1(&[0.0, 0.0]),
+            cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
         };
         let proposal = IsotropicGaussian::new(1.0);
         let initial_state = [0.0, 0.0];
@@ -575,10 +404,10 @@ mod tests {
         let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
 
         // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
-        let samples = mh.run(1000, 100);
+        let samples = mh.run(1000, 100).unwrap();
 
         // We should have 900 * 4 = 3600 samples
-        assert_eq!(samples.len(), 4);
-        assert_eq!(samples[0].nrows(), 900);
+        assert_eq!(samples.shape()[0], 4);
+        assert_eq!(samples.shape()[1], 900);
     }
 }
