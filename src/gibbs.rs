@@ -60,14 +60,16 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use mini_mcmc::gibbs::GibbsMarkovChain;
     /// use mini_mcmc::distributions::Conditional;
+    /// use mini_mcmc::gibbs::GibbsMarkovChain;
     ///
     /// // For example, a dummy conditional that always returns 1.0:
     /// #[derive(Clone)]
     /// struct OneConditional;
     /// impl Conditional<f64> for OneConditional {
-    ///     fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 { 1.0 }
+    ///     fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 {
+    ///         1.0
+    ///     }
     /// }
     ///
     /// let chain = GibbsMarkovChain::new(OneConditional, &[0.0, 0.0]);
@@ -139,13 +141,15 @@ where
     /// # Example
     ///
     /// ```rust
-    /// use mini_mcmc::gibbs::GibbsSampler;
     /// use mini_mcmc::distributions::Conditional;
+    /// use mini_mcmc::gibbs::GibbsSampler;
     ///
     /// #[derive(Clone)]
     /// struct DummyConditional;
     /// impl Conditional<f64> for DummyConditional {
-    ///     fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 { 0.0 }
+    ///     fn sample(&mut self, _i: usize, _given: &[f64]) -> f64 {
+    ///         0.0
+    ///     }
     /// }
     ///
     /// let sampler = GibbsSampler::new(DummyConditional, &[0.0, 0.0], 4);
@@ -367,7 +371,7 @@ mod tests {
         let x = samples.index_axis(Axis(2), 0);
         let x = x.flatten();
         let sample_mean = x.mean().unwrap();
-        let sample_var = x.var(0.0);
+        let sample_var = x.var(1.0);
 
         assert!(
             (sample_mean - theo_mean).abs() < theo_mean.abs() / 10.0,
@@ -387,15 +391,15 @@ mod tests {
     #[test]
     fn test_gibbs_sampler_mixture_1() {
         assert_mixture_simulation(
-            -2.0, // mu0
-            1.0,  // sigma0
-            3.0,  // mu1
-            1.5,  // sigma1
-            0.5,  // pi0
-            3,    // n_chains
-            5000, // n_steps
-            1000, // burn_in
-            42,   // seed
+            -2.0,   // mu0
+            1.0,    // sigma0
+            3.0,    // mu1
+            1.5,    // sigma1
+            0.5,    // pi0
+            4,      // n_chains
+            40_000, // n_steps
+            1000,   // burn_in
+            42,     // seed
         );
     }
 
@@ -403,15 +407,15 @@ mod tests {
     #[test]
     fn test_gibbs_sampler_mixture_2() {
         assert_mixture_simulation(
-            -42.0,  // mu0
-            69.0,   // sigma0
-            1.0,    // mu1
-            2.0,    // sigma1
-            0.123,  // pi0
-            3,      // n_chains
-            100000, // n_steps
-            10000,  // burn_in
-            42,     // seed
+            -42.0,   // mu0
+            69.0,    // sigma0
+            1.0,     // mu1
+            2.0,     // sigma1
+            0.123,   // pi0
+            4,       // n_chains
+            100_000, // n_steps
+            10_000,  // burn_in
+            42,      // seed
         );
     }
 

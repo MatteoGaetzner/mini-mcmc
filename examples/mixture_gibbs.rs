@@ -4,7 +4,7 @@
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::Conditional;
 use mini_mcmc::gibbs::GibbsSampler;
-use nalgebra as na;
+use ndarray::Axis;
 use plotters::chart::ChartBuilder;
 use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
 use plotters::style::Color;
@@ -102,19 +102,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut sampler = GibbsSampler::new(conditional, &initial_state, N_CHAINS).set_seed(seed);
 
     // Generate samples.
-    let samples = sampler.run(TOTAL_STEPS, BURNIN);
-    let samples_per_chain = samples[0].nrows();
-    // Pool the samples from all chains.
-    let mut pooled = na::DMatrix::<f64>::zeros(samples_per_chain * N_CHAINS, 2);
-    for (i, mat) in samples.iter().enumerate() {
-        pooled
-            .rows_mut(i * samples_per_chain, samples_per_chain)
-            .copy_from_slice(mat.as_slice());
-    }
+    let samples = sampler.run(TOTAL_STEPS, BURNIN).unwrap();
+    let pooled = samples.to_shape((((TOTAL_STEPS - BURNIN) * 4), 2)).unwrap();
     println!("Generated {} samples", pooled.len());
 
     // Compute basic statistics.
-    let row_mean = pooled.row_mean();
+    let row_mean = pooled.mean_axis(Axis(0)).unwrap();
     println!(
         "Mean after burn-in: ({:.2}, {:.2})",
         row_mean[0], row_mean[1]
@@ -134,7 +127,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Filter samples within the plotting range.
     let filtered: Vec<_> = pooled
-        .row_iter()
+        .axis_iter(Axis(0))
         .filter(|point| x_range.contains(&point[0]) && y_range.contains(&point[1]))
         .collect();
     println!("Filtered samples: {}", filtered.len());

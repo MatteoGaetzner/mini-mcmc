@@ -100,21 +100,23 @@ fn main() {
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
 
     // Run 10_000 steps, discarding first 1_000
-    let samples = mh.run(10_000, 1_000);
-    let chain0 = &samples[0];
-    println!("Chain shape = {} x {}", chain0.nrows(), chain0.ncols());
+    let samples = mh
+        .run(10_000, 1_000)
+        .expect("Expected generating samples to succeed");
+    let chain0 = samples.to_shape(9_000).unwrap();
+    println!("Elements in chain: {}", chain0.len());
 
     // Tally frequencies of each k up to some cutoff
     let cutoff = 20; // enough to see the mass near lambda=4
     let mut counts = vec![0usize; cutoff + 1];
-    for row in chain0.row_iter() {
-        let k = row[0];
+    for row in chain0.iter() {
+        let k = *row;
         if k <= cutoff {
             counts[k] += 1;
         }
     }
 
-    let total = chain0.nrows();
+    let total = chain0.len();
     println!("Frequencies for k=0..{cutoff}, from chain after burn-in:");
     for (k, &cnt) in counts.iter().enumerate() {
         let freq = cnt as f64 / total as f64;

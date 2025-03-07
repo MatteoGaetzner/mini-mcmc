@@ -17,7 +17,6 @@ exclude = [
 [dependencies]
 rand = {version="0.8", features=["small_rng"]}
 rand_distr = "0.4"
-nalgebra = "0.33"
 rayon = "1.5"
 indicatif = "0.17"
 num-traits = "0.2"
@@ -26,7 +25,6 @@ arrow = {version="54.1", optional=true}
 parquet = {version="54.1", optional=true}
 burn = { version = "0.16.0", features = ["autodiff", "ndarray", "wgpu"] }
 ndarray = { version = "0.16.1"}
-simba = "0.9.0"
 ndarray-stats = "0.6.0"
 approx = "0.5.1"
 

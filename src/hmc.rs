@@ -9,7 +9,7 @@
 //! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
 //! validation.
 
-use crate::stats::PotentialScaleReduction;
+use crate::stats::RhatMulti;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::cast::ToElement;
@@ -214,7 +214,7 @@ where
         let window_size = 50;
         let mut accept_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
 
-        let mut psr = PotentialScaleReduction::new(n_chains, dim);
+        let mut psr = RhatMulti::new(n_chains, dim);
 
         let mut last_state = self.positions.clone();
 

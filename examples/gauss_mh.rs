@@ -4,8 +4,8 @@ use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
 use mini_mcmc::io::save_parquet;
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use nalgebra as na;
 
+use ndarray::{arr1, arr2, Axis};
 use plotters::chart::ChartBuilder;
 use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
 use plotters::style::{Color, RGBAColor, BLACK, RED, WHITE};
@@ -21,8 +21,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let seed: u64 = thread_rng().gen();
 
     let target = Gaussian2D {
-        mean: [0.0, 0.0].into(),
-        cov: [[2.0, 1.0], [1.0, 2.0]].into(),
+        mean: arr1(&[0.0, 0.0]),
+        cov: arr2(&[[2.0, 1.0], [1.0, 2.0]]),
     };
     let proposal = IsotropicGaussian::new(2.0).set_seed(seed);
     let initial_state = [10.0, 12.0];
@@ -30,18 +30,15 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
 
     // Generate samples
-    let samples = mh.run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN);
-    let mut pooled = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
-    samples.iter().enumerate().for_each(|(i, x)| {
-        pooled
-            .rows_mut(i * x.nrows(), x.nrows())
-            .copy_from_slice(x.as_slice())
-    });
+    let samples = mh
+        .run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN)
+        .unwrap();
+    let pooled = samples.to_shape((SAMPLE_SIZE, 2)).unwrap();
 
-    println!("Generated {} samples", pooled.len());
+    println!("Generated {} samples", pooled.shape()[0]);
 
     // Basic statistics
-    let row_mean = pooled.row_mean();
+    let row_mean = pooled.mean_axis(Axis(0)).unwrap();
     println!(
         "Mean after burn-in: ({:.2}, {:.2})",
         row_mean[0], row_mean[1]
@@ -60,7 +57,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Filter samples within the plotting range
     let filtered: Vec<_> = pooled
-        .row_iter()
+        .axis_iter(Axis(0))
         .filter(|point| x_range.contains(&point[0]) && y_range.contains(&point[1]))
         .collect();
     println!("Filtered samples: {}", filtered.len());

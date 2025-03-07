@@ -11,31 +11,16 @@ This module provides functions to save MCMC sample data to various file formats:
 
 ## Data Format: Metropolis-Hastings and Gibbs
 
-### Storing as `nalgebra::DMatrix<T>` (Chain × Sample × Dimension)
-
-Many functions here expect MCMC sample data as a slice of [`nalgebra::DMatrix<T>`] objects:
-- Each matrix in the slice corresponds to **one chain**.
-- **Rows** (`nrows()`) correspond to individual samples.
-- **Columns** (`ncols()`) correspond to the dimensions of the state.
-
-For example:
-- `data[c].nrows()` = number of samples in chain `c`.
-- `data[c].ncols()` = number of dimensions.
-
-All chains must have the same shape (same number of samples and dimensions). If any chain differs, an error is returned.
-
-#### CSV Output
+### Storing as `ndarray::Array3<T>` (Chain × Sample × Dimension)
 
 When using the `csv` feature:
 ```rust
 use mini_mcmc::io::save_csv;
-use nalgebra as na;
+use ndarray::arr3;
 
 // A single chain with 2 samples and 4 dimensions.
-let data = vec![na::DMatrix::from_row_slice(2, 4, &[
-    1, 2, 3, 4,
-    5, 6, 7, 8
-])];
+let data = arr3(&[[[1.0, 2.0, 3.0],[4.0, 5.0, 6.0]]]);
+
 save_csv(&data, "/tmp/output.csv")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -46,18 +31,16 @@ save_csv(&data, "/tmp/output.csv")?;
 When using the `arrow` feature:
 ```rust
 use mini_mcmc::io::save_arrow;
-use nalgebra as na;
+use ndarray::arr3;
 
 // 2 chains, each with 2 samples and 3 dimensions.
-let chain0 = na::DMatrix::from_row_slice(2, 3, &[
-    1.0, 2.0, 3.0,
-    4.0, 5.0, 6.0
+let data = arr3(&[
+    [[1.0, 2.0, 3.0],
+    [4.0, 5.0, 6.0]],
+    [[1.1, 2.1, 3.1],
+    [4.1, 5.1, 6.1]]
 ]);
-let chain1 = na::DMatrix::from_row_slice(2, 3, &[
-    10.0, 20.0, 30.0,
-    40.0, 50.0, 60.0
-]);
-let data = vec![chain0, chain1];
+
 save_arrow(&data, "/tmp/output.arrow")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -68,14 +51,11 @@ save_arrow(&data, "/tmp/output.arrow")?;
 When using the `parquet` feature:
 ```rust
 use mini_mcmc::io::save_parquet;
-use nalgebra as na;
+use ndarray::arr3;
 
 // A single chain with 2 samples and 3 dimensions.
-let single_chain = na::DMatrix::from_row_slice(2, 3, &[
-    1.0, 2.0, 3.0,
-    4.0, 5.0, 6.0
-]);
-let data = vec![single_chain];
+let data = arr3(&[[[1.0, 2.0, 3.0],[4.0, 5.0, 6.0]]]);
+
 save_parquet(&data, "/tmp/output.parquet")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
@@ -134,29 +114,17 @@ For users of the [**burn**](https://github.com/burn-rs/burn) framework, this mod
 ## Features
 
 - `csv`:
-  Enables CSV I/O for both **`nalgebra::DMatrix<T>`** data (`save_csv`) and **3D Burn tensors** (`save_csv_tensor`).
+  Enables CSV I/O for both **`ndarray::Array3<T>`** data (`save_csv`) and **3D Burn tensors** (`save_csv_tensor`).
 
 - `arrow`:
-  Enables Arrow (IPC) saving for **`nalgebra::DMatrix<T>`** data (`save_arrow`). Not available yet for Burn tensors.
+  Enables Arrow (IPC) saving for **`ndarray::Array3<T>`** data (`save_arrow`). Not available yet for Burn tensors.
 
 - `parquet`:
-  Enables Parquet saving for both **`nalgebra::DMatrix<T>`** data (`save_parquet`) and **3D Burn tensors** (`save_parquet_tensor`).
-
----
-
-## Error Handling
-
-All saving functions validate consistency of dimensions:
-- For `nalgebra::DMatrix<T>` data: each chain must have the same number of samples (rows) and dimensions (columns).
-- For 3D Burn tensors: the shape is `[num_samples, num_chains, num_dimensions]`, and each method ensures proper flattening to the right shape.
-
-If there is any inconsistency, an error is returned. I/O or Arrow/Parquet errors are also propagated as `Err(...)`.
-
----
+  Enables Parquet saving for both **`ndarray::Array3<T>`** data (`save_parquet`) and **3D Burn tensors** (`save_parquet_tensor`).
 */
 
 use burn::prelude::*;
-use nalgebra as na;
+use ndarray::{Array3, Axis};
 use std::error::Error;
 use std::fs::File;
 use std::sync::Arc;
@@ -179,28 +147,17 @@ use arrow::{
 /**
 Saves MCMC sample data as a CSV file.
 
-The data is expected to be in a shape of **chain × sample × dimension**,
-but each chain’s data is stored in an [`nalgebra::DMatrix<T>`] with:
-
-  - **`nrows()` = number of samples**,
-  - **`ncols()` = number of dimensions**.
-
-The outer `&[DMatrix<T>]` slice corresponds to the chain index.
+The data is expected to be in a shape of **chain × sample × dimension**.
 
 The resulting CSV file will have:
 - A header row containing `"chain"`, `"sample"`, and one column per dimension
   named `"dim_0"`, `"dim_1"`, etc.
 - Each subsequent row will correspond to a single sample of a specific chain.
 
-If `data` is empty or if the first chain is empty, the CSV file will only
-contain the header row.
-
 # Arguments
 
-* `data` - A slice of MCMC data, one `DMatrix<T>` per chain. Each matrix must
-  have the same number of columns (dimensions) and (optionally) the same
-  number of rows (samples). If not, an error is returned.
-* `filename` - The file path where the CSV data will be written.
+* `data` - An Array3<T> object containing the MCMC data.
+* * `filename` - The file path where the CSV data will be written.
 
 # Returns
 
@@ -211,33 +168,29 @@ issue occurs.
 
 ```rust
 use mini_mcmc::io::save_csv;
-use nalgebra as na;
-// A single chain (1 DMatrix) with 2 samples and 4 dimensions.
+use ndarray::arr3;
+
 // This matrix has 2 rows (samples) and 4 columns (dimensions).
-let data = vec![na::DMatrix::from_row_slice(2, 4, &[1, 2, 3, 4,
-                                                   5, 6, 7, 8])];
+let data = arr3(&[[[1, 2, 3, 4], [5, 6, 7, 8]]]);
+
 save_csv(&data, "/tmp/output.csv").expect("Expecting saving data to succeed");
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_csv<T: std::fmt::Display>(
-    data: &[na::DMatrix<T>],
+    data: &Array3<T>,
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
     let mut wtr = Writer::from_writer(File::create(filename)?);
+    let n_dims = data.shape()[2];
 
-    let num_dimensions = if !data.is_empty() && data[0].nrows() > 0 {
-        data[0].ncols()
-    } else {
-        0
-    };
     let mut header: Vec<String> = vec!["chain".to_string(), "sample".to_string()];
-    header.extend((0..num_dimensions).map(|i| format!("dim_{}", i)));
+    header.extend((0..n_dims).map(|i| format!("dim_{}", i)));
     wtr.write_record(&header)?;
 
     // Flatten and write data
-    for (chain_idx, chain) in data.iter().enumerate() {
-        for (sample_idx, sample) in chain.row_iter().enumerate() {
+    for (chain_idx, chain) in data.axis_iter(Axis(0)).enumerate() {
+        for (sample_idx, sample) in chain.axis_iter(Axis(0)).enumerate() {
             let mut row = vec![chain_idx.to_string(), sample_idx.to_string()];
             row.extend(sample.iter().map(|v| v.to_string()));
             wtr.write_record(&row)?;
@@ -254,17 +207,7 @@ Saves MCMC data (chain × sample × dimension) as an Apache Arrow (IPC) file.
 
 # Arguments
 
-* `data` - A slice of MCMC data, where each `DMatrix<T>` in `data` represents
-  a single chain. In each matrix, **rows** are samples and **columns** are
-  dimensions. If you have `k` chains, you'll pass a `Vec<DMatrix<T>>` of
-  length `k`.
-
-  - `data[c].nrows()` => number of samples in chain `c`.
-  - `data[c].ncols()` => number of dimensions in chain `c`.
-
-  This function requires that each chain has the same shape (same number of
-  samples and same number of dimensions). If not, it returns an error.
-
+* `data` - An `Array3<T>` object.
 * `filename` - The path to the Arrow (IPC) file to create.
 
 # Type Parameters
@@ -281,45 +224,25 @@ is returned if any I/O or Arrow‐related error occurs.
 
 ```rust
 use mini_mcmc::io::save_arrow;
-use nalgebra as na;
-// Suppose we have 2 chains, each with 2 samples, and 3 dimensions.
-// Each DMatrix is 2 rows × 3 columns (samples × dimensions).
-let chain0 = na::DMatrix::from_row_slice(2, 3, &[1.0, 2.0, 3.0,
-                                               4.0, 5.0, 6.0]);
-let chain1 = na::DMatrix::from_row_slice(2, 3, &[10.0, 20.0, 30.0,
-                                               40.0, 50.0, 60.0]);
+use ndarray::arr3;
 
-let data = vec![chain0, chain1];
+// Suppose we have 2 chains, each with 2 samples, and 3 dimensions.
+let data = arr3(&[[[1.0, 2.0, 3.0],
+                [4.0, 5.0, 6.0]],
+                [[10.0, 20.0, 30.0],
+                [40.0, 50.0, 60.0]]]);
 
 save_arrow(&data, "/tmp/output.arrow")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_arrow<T: Into<f64> + Copy>(
-    data: &[na::DMatrix<T>],
+    data: &Array3<T>,
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
     // Compute dimensions (but don't return early if empty)
-    let n_chains = data.len();
-    let n_samples = if n_chains > 0 { data[0].nrows() } else { 0 };
-    let n_dims = if n_chains > 0 && n_samples > 0 {
-        data[0].ncols()
-    } else {
-        0
-    };
-
-    // Validate that each chain has the same number of samples,
-    // and each sample has the same number of dimensions.
-    for chain in data {
-        if chain.nrows() != n_samples {
-            return Err("Inconsistent number of samples among chains".into());
-        }
-        for sample in chain.row_iter() {
-            if sample.len() != n_dims {
-                return Err("Inconsistent sample dimensions among chains".into());
-            }
-        }
-    }
+    let shape = data.shape();
+    let (n_chains, n_dims) = (shape[0], shape[2]);
 
     // Define the schema: chain (UInt32), sample (UInt32), dim_0..dim_n (Float64)
     let mut fields = vec![
@@ -344,9 +267,8 @@ pub fn save_arrow<T: Into<f64> + Copy>(
 
     // If there's actual data, fill the builders
     if n_chains > 0 {
-        for (chain_idx, chain) in data.iter().enumerate() {
-            for (sample_idx, sample) in chain.row_iter().enumerate() {
-                println!("{chain_idx}, {sample_idx}");
+        for (chain_idx, chain) in data.axis_iter(Axis(0)).enumerate() {
+            for (sample_idx, sample) in chain.axis_iter(Axis(0)).enumerate() {
                 chain_builder.append_value(chain_idx as u32);
                 sample_builder.append_value(sample_idx as u32);
 
@@ -386,16 +308,7 @@ Saves MCMC data (chain × sample × dimension) to a Parquet file.
 
 # Arguments
 
-* `data` - A slice of MCMC data, where each `DMatrix<T>` in `data` represents
-  a single chain. In each matrix, **rows** are samples and **columns** are
-  dimensions.
-
-  - `data[c].nrows()` => number of samples in chain `c`.
-  - `data[c].ncols()` => number of dimensions in chain `c`.
-
-  All chains must have the same number of rows and columns. If they differ,
-  an error is returned.
-
+* `data` - An `Array3<T>` object where.
 * `filename` - The path to the Parquet file to create.
 
 # Type Parameters
@@ -412,47 +325,25 @@ error wrapped in a `Box<dyn Error>`.
 
 ```rust
 use mini_mcmc::io::save_parquet;
-use nalgebra as na;
-// 1 chain, 2 samples, 3 dimensions => a 2×3 DMatrix.
-let single_chain = na::DMatrix::from_row_slice(2, 3, &[1.0, 2.0, 3.0,
-                                                    4.0, 5.0, 6.0]);
-let data = vec![single_chain];
+use ndarray::arr3;
+
+// 1 chain, 2 samples, 3 dimensions
+let data = arr3(&[[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]]);
 
 save_parquet(&data, "/tmp/output.parquet")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
 pub fn save_parquet<T: Into<f64> + Copy>(
-    data: &[na::DMatrix<T>],
+    data: &Array3<T>,
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // Compute dimensions
-    let n_chains = data.len();
-    let n_samples = if n_chains > 0 { data[0].nrows() } else { 0 };
-    let n_dims = if n_chains > 0 && n_samples > 0 {
-        data[0].ncols()
-    } else {
-        0
-    };
-
-    // Validate that each chain has the same number of samples
-    // and that each sample has the same number of dimensions
-    for chain in data {
-        if chain.nrows() != n_samples {
-            return Err("Inconsistent number of samples among chains".into());
-        }
-        for sample in chain.row_iter() {
-            if sample.len() != n_dims {
-                return Err("Inconsistent sample dimensions among chains".into());
-            }
-        }
-    }
-
     // Define the Arrow schema: chain (UInt32), sample (UInt32), then dim_0..dim_n (Float64)
     let mut fields = vec![
         Field::new("chain", DataType::UInt32, false),
         Field::new("sample", DataType::UInt32, false),
     ];
+    let n_dims = data.shape()[2];
     for dim_idx in 0..n_dims {
         fields.push(Field::new(
             format!("dim_{}", dim_idx),
@@ -469,15 +360,13 @@ pub fn save_parquet<T: Into<f64> + Copy>(
         (0..n_dims).map(|_| Float64Builder::new()).collect();
 
     // Populate builders
-    if n_chains > 0 {
-        for (chain_idx, chain) in data.iter().enumerate() {
-            for (sample_idx, sample) in chain.row_iter().enumerate() {
-                chain_builder.append_value(chain_idx as u32);
-                sample_builder.append_value(sample_idx as u32);
+    for (chain_idx, chain) in data.axis_iter(Axis(0)).enumerate() {
+        for (sample_idx, sample) in chain.axis_iter(Axis(0)).enumerate() {
+            chain_builder.append_value(chain_idx as u32);
+            sample_builder.append_value(sample_idx as u32);
 
-                for (dim_idx, val) in sample.iter().enumerate() {
-                    dim_builders[dim_idx].append_value((*val).into());
-                }
+            for (dim_idx, val) in sample.iter().enumerate() {
+                dim_builders[dim_idx].append_value((*val).into());
             }
         }
     }
@@ -713,6 +602,7 @@ mod tests {
     };
     use burn::backend::{ndarray::NdArrayDevice, NdArray};
     use csv::Reader;
+    use ndarray::arr3;
     use parquet::arrow::arrow_reader::ParquetRecordBatchReader;
     use std::fs;
     use std::{error::Error, fs::File};
@@ -723,7 +613,7 @@ mod tests {
     /// Test saving empty data to CSV (zero chains).
     #[test]
     fn test_save_csv_empty_data() {
-        let data: Vec<na::DMatrix<f32>> = vec![]; // no chains
+        let data = arr3::<f32, 0, 0>(&[]);
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -744,7 +634,7 @@ mod tests {
     /// Test saving a single chain with a single sample (and single dimension) to CSV.
     #[test]
     fn test_save_csv_single_chain_single_sample() {
-        let data = vec![na::dmatrix![42]]; // chain=0, sample=0, dim_0=42
+        let data = arr3(&[[[42.0]]]); // chain=0, sample=0, dim_0=42
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -764,10 +654,7 @@ mod tests {
     #[test]
     fn test_save_csv_multi_chain() {
         // data[chain][sample][dim]
-        let data = vec![
-            na::DMatrix::<i32>::from_row_slice(2, 2, &[1, 2, 3, 4]),
-            na::DMatrix::<i32>::from_row_slice(2, 2, &[10, 20, 30, 40]),
-        ];
+        let data = arr3(&[[[1, 2], [3, 4]], [[10, 20], [30, 40]]]);
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -789,7 +676,7 @@ chain,sample,dim_0,dim_1
     /// Test saving empty data to Arrow (zero chains).
     #[test]
     fn test_save_arrow_empty_data() {
-        let data: Vec<na::DMatrix<f32>> = vec![]; // no chains
+        let data = arr3::<f32, 0, 0>(&[]); // no chains
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -822,7 +709,7 @@ chain,sample,dim_0,dim_1
     /// Test saving a single chain/single sample (with single dimension) to Arrow using `f64`.
     #[test]
     fn test_save_arrow_single_chain_single_sample_f64() -> Result<(), Box<dyn Error>> {
-        let data = vec![na::dmatrix![42f64]];
+        let data = arr3(&[[[42f64]]]);
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
 
@@ -874,10 +761,10 @@ chain,sample,dim_0,dim_1
         // chain=0, sample=1 => dims=[3.0, 4.5]
         // chain=1, sample=0 => dims=[10.0, 20.5]
         // chain=1, sample=1 => dims=[30.0, 40.5]
-        let data = vec![
-            na::DMatrix::<f32>::from_row_slice(2, 2, &[1f32, 2.5f32, 3f32, 4.5f32]),
-            na::DMatrix::<f32>::from_row_slice(2, 2, &[10f32, 20.5f32, 30f32, 40.5f32]),
-        ];
+        let data = arr3(&[
+            [[1f32, 2.5f32], [3f32, 4.5f32]],
+            [[10f32, 20.5f32], [30f32, 40.5f32]],
+        ]);
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
 
@@ -949,10 +836,10 @@ chain,sample,dim_0,dim_1
     /// to ensure `T: Into<f64> + Copy` is satisfied with different numeric types.
     #[test]
     fn test_save_arrow_integer_data() {
-        let data = vec![
-            na::dmatrix![100, 200, 300, 400, 500, 600],
-            na::dmatrix![700, 800, 900, 1000, 1100, 1200],
-        ];
+        let data = arr3(&[
+            [[100, 200, 300], [400, 500, 600]],
+            [[700, 800, 900], [1000, 1100, 1200]],
+        ]);
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -965,69 +852,13 @@ chain,sample,dim_0,dim_1
 
         let metadata = fs::metadata(filename).unwrap();
         assert!(metadata.len() > 0);
-        // (Optional) read back and verify numeric values the same way shown above
-    }
-
-    /// Test error when chain lengths are inconsistent.
-    #[test]
-    fn test_save_arrow_inconsistent_chain_lengths() {
-        // Chain 0 has 2 samples, chain 1 has 1 sample
-        let data = vec![na::dmatrix![1f64, 2f64], na::dmatrix![3f64]];
-
-        let file = NamedTempFile::new().expect("Could not create temp file");
-        let filename = file.path().to_str().unwrap();
-
-        let result = save_arrow(&data, filename);
-        assert!(
-            result.is_err(),
-            "Expected an error due to inconsistent samples per chain"
-        );
-    }
-
-    /// Test error when dimension lengths are inconsistent.
-    #[test]
-    fn test_save_arrow_inconsistent_dimensions() {
-        // The second sample in chain 0 has only 1 dimension,
-        // but the first sample had 2 dimensions.
-        let data = vec![na::dmatrix![1f64, 2f64], na::dmatrix![3f64]];
-
-        let file = NamedTempFile::new().expect("Could not create temp file");
-        let filename = file.path().to_str().unwrap();
-
-        let result = save_arrow(&data, filename);
-        assert!(
-            result.is_err(),
-            "Expected an error due to inconsistent dimension lengths"
-        );
-    }
-
-    /// Test that save_arrow returns an error when one chain has a different number of samples.
-    #[test]
-    fn test_save_arrow_inconsistent_chain_rows() {
-        // Create two chains:
-        // chain0 has 2 samples (rows) and 2 dimensions (columns)
-        let chain0 = na::DMatrix::<f64>::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
-        // chain1 has 1 sample (row) and 2 dimensions (columns)
-        let chain1 = na::DMatrix::<f64>::from_row_slice(1, 2, &[5.0, 6.0]);
-        let data = vec![chain0, chain1];
-
-        let file = NamedTempFile::new().expect("Failed to create temp file");
-        let filename = file.path().to_str().unwrap();
-        let result = save_arrow(&data, filename);
-        assert!(
-            result.is_err(),
-            "Expected error due to inconsistent number of samples among chains"
-        );
-
-        let err_msg = result.err().unwrap().to_string();
-        assert_eq!(err_msg, "Inconsistent number of samples among chains");
     }
 
     /// Test saving empty data to Parquet (zero chains).
     #[test]
     fn test_save_parquet_empty_data() -> Result<(), Box<dyn Error>> {
-        let data: Vec<na::DMatrix<f64>> = vec![]; // no chains
-                                                  // let file = NamedTempFile::new()?;
+        let data = arr3::<f32, 0, 0>(&[]); // no chains
+                                           // let file = NamedTempFile::new()?;
         let file = NamedTempFile::new().expect("Could not create temp file");
         let filename = file.path().to_str().unwrap();
 
@@ -1052,7 +883,7 @@ chain,sample,dim_0,dim_1
     /// Test saving a single chain, single sample (one dimension).
     #[test]
     fn test_save_parquet_single_chain_single_sample() -> Result<(), Box<dyn Error>> {
-        let data = vec![na::dmatrix![42f64]]; // chain=0, sample=0, dim_0=42
+        let data = arr3(&[[[42f64]]]); // chain=0, sample=0, dim_0=42
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
 
@@ -1101,10 +932,7 @@ chain,sample,dim_0,dim_1
         // data[chain][sample][dim]
         // chain=0 => sample=0 => [1.0, 2.0], sample=1 => [3.0, 4.0]
         // chain=1 => sample=0 => [10.0, 20.0], sample=1 => [30.0, 40.0]
-        let data = vec![
-            na::DMatrix::<f64>::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]),
-            na::DMatrix::<f64>::from_row_slice(2, 2, &[10.0, 20.0, 30.0, 40.0]),
-        ];
+        let data = arr3(&[[[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]]]);
 
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
@@ -1171,58 +999,6 @@ chain,sample,dim_0,dim_1
         assert!((dim1_array.value(3) - 40.0).abs() < f64::EPSILON);
 
         Ok(())
-    }
-
-    /// Test error when chain lengths are inconsistent.
-    #[test]
-    fn test_save_parquet_inconsistent_chain_lengths() {
-        // Chain 0 has 2 samples, chain 1 has 1 sample
-        let data = vec![na::dmatrix![1f64, 2f64], na::dmatrix![3f64]];
-
-        let file = NamedTempFile::new().expect("Could not create temp file");
-        let filename = file.path().to_str().unwrap();
-
-        let result = save_parquet(&data, filename);
-        assert!(
-            result.is_err(),
-            "Expected an error due to inconsistent samples per chain"
-        );
-    }
-
-    /// Test error when dimension lengths are inconsistent.
-    #[test]
-    fn test_save_parquet_inconsistent_dimensions() {
-        // The second sample in chain 0 has only 1 dimension,
-        // but the first sample had 2 dimensions.
-        let data = vec![na::dmatrix![1, 2], na::dmatrix![3]];
-
-        let file = NamedTempFile::new().expect("Could not create temp file");
-        let filename = file.path().to_str().unwrap();
-
-        let result = save_parquet(&data, filename);
-        assert!(
-            result.is_err(),
-            "Expected an error due to inconsistent dimension lengths"
-        );
-    }
-
-    /// Test that save_parquet returns an error when one chain has a different number of samples.
-    #[test]
-    fn test_save_parquet_inconsistent_chain_rows() {
-        // Create two chains:
-        // chain0 has 2 samples (rows) and 2 dimensions (columns)
-        let chain0 = na::DMatrix::<f64>::from_row_slice(2, 2, &[1.0, 2.0, 3.0, 4.0]);
-        // chain1 has 1 sample (row) and 2 dimensions (columns)
-        let chain1 = na::DMatrix::<f64>::from_row_slice(1, 2, &[5.0, 6.0]);
-        let data = vec![chain0, chain1];
-
-        let file = NamedTempFile::new().expect("Failed to create temp file");
-        let filename = file.path().to_str().unwrap();
-        let result = save_parquet(&data, filename);
-        assert!(
-            result.is_err(),
-            "Expected error due to inconsistent number of samples among chains"
-        );
     }
 
     #[test]

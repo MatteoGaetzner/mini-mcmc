@@ -2,131 +2,88 @@
 //!
 //! Instead of using a KS test, we now compare the sample means and covariance matrices.
 
-use mini_mcmc::core::ChainRunner;
-use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use nalgebra as na;
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use mini_mcmc::core::ChainRunner;
     use mini_mcmc::distributions::Proposal;
-    use mini_mcmc::stats::cov;
+    use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use mini_mcmc::metropolis_hastings::MetropolisHastings;
+    use ndarray::{arr1, arr2, Axis};
+    use ndarray_stats::CorrelationExt;
+    use ndarray_stats::QuantileExt;
 
-    /// Checks that the Metropolis-Hastings sampler produces samples whose
-    /// mean and covariance match the given target distribution.
+    // Shared constants.
+    const SAMPLE_SIZE: usize = 10_000;
+    const BURNIN: usize = 2_500;
+    const SEED: u64 = 42;
+    const INITIAL_STATE: [f64; 2] = [10.0, 12.0];
+
+    /// Runs the Metropolis-Hastings sampler with the provided target distribution,
+    /// and returns the samples reshaped into a (SAMPLE_SIZE, 2) array.
+    fn run_sampler(target: &Gaussian2D<f64>) -> ndarray::Array2<f64> {
+        let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
+        let mut mh =
+            MetropolisHastings::new(target.clone(), proposal, &INITIAL_STATE, 1).set_seed(SEED);
+        let samples = mh.run(SAMPLE_SIZE + BURNIN, BURNIN).unwrap();
+        samples.to_shape((SAMPLE_SIZE, 2)).unwrap().to_owned()
+    }
+
+    /// Checks that the sampler produces samples with mean and covariance close to the target.
     #[test]
     fn test_two_d_gaussian_accept() {
-        const SAMPLE_SIZE: usize = 10_000;
-        const BURNIN: usize = 2_500;
-        const SEED: u64 = 42;
-
         // Set up the target distribution.
         let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[4.0, 2.0], [2.0, 3.0]].into(),
+            mean: arr1(&[0.0, 0.0]),
+            cov: arr2(&[[4.0, 2.0], [2.0, 3.0]]),
         };
 
-        // Initialize the sampler.
-        let initial_state = [10.0, 12.0];
-        let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
-        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(SEED);
+        let samples = run_sampler(&target);
 
-        // Run the MCMC sampler (including burn-in).
-        let mut samples = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
-        mh.run(SAMPLE_SIZE + BURNIN, BURNIN)
-            .into_iter()
-            .enumerate()
-            .for_each(|(i, chain_samples)| {
-                // Copy each batch of samples into our full sample matrix.
-                samples
-                    .rows_mut(i * chain_samples.nrows(), chain_samples.nrows())
-                    .copy_from(&chain_samples)
-            });
+        // Compute sample mean and covariance.
+        let mean_mcmc = samples.mean_axis(Axis(0)).unwrap();
+        let cov_mcmc = samples.t().cov(1.0).unwrap();
 
-        // Compute sample mean and covariance (over all samples).
-        let mean_mcmc = samples.row_mean();
-        let cov_mcmc = cov(&samples).expect("Failed to compute covariance");
-
-        // --- Check the sample mean ---
-        // Create a 1×2 matrix from the target mean.
-        let target_mean = na::DMatrix::from_column_slice(1, 2, target.mean.as_slice());
-        let mean_diff = (target_mean - mean_mcmc).map(|x| x.abs());
-
-        // We require that each component differs by less than 0.5.
+        // Check the sample mean (each component should differ by less than 0.5).
+        let mean_diff = (mean_mcmc - target.mean).abs();
         assert!(
-            mean_diff[(0, 0)] < 0.5 && mean_diff[(0, 1)] < 0.5,
-            "Mean deviation too large: {:?}",
+            mean_diff[0] < 0.5 && mean_diff[1] < 0.5,
+            "Mean deviation too large: {}",
             mean_diff
         );
 
-        // --- Check the sample covariance ---
-        let target_cov = na::DMatrix::from_column_slice(2, 2, target.cov.as_slice());
-        let cov_diff = (target_cov - cov_mcmc).map(|x| x.abs());
+        // Compute the maximum absolute difference in covariance.
+        let max_diff = *(cov_mcmc - target.cov).abs().max().unwrap();
 
-        // Check each element difference is below the threshold.
-        for i in 0..2 {
-            for j in 0..2 {
-                assert!(
-                    cov_diff[(i, j)] < 0.5,
-                    "Covariance deviation at ({}, {}) too large: {}",
-                    i,
-                    j,
-                    cov_diff[(i, j)]
-                );
-            }
-        }
+        assert!(
+            max_diff < 0.5,
+            "Covariance of false target samples is unexpectedly close to true target covariance. max_diff: {}",
+            max_diff
+        );
     }
 
-    /// Checks that when running the sampler with a wrong target distribution,
-    /// the sample covariance (computed from the chain) is significantly different
-    /// from that of the correct target.
+    /// Checks that when using a false target distribution, the sample covariance differs
+    /// significantly from that of the correct target.
     #[test]
     fn test_two_d_gaussian_reject() {
-        const SAMPLE_SIZE: usize = 10_000;
-        const BURNIN: usize = 2_500;
-        const SEED: u64 = 42;
-
-        // The correct target (only used for comparison) has a different covariance.
+        // The correct target (for comparison) has the following covariance.
         let target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[4.0, 2.0], [2.0, 3.0]].into(),
+            mean: arr1(&[0.0, 0.0]),
+            cov: arr2(&[[4.0, 2.0], [2.0, 3.0]]),
         };
 
-        // The false target has an identity covariance.
+        // The false target uses an identity covariance.
         let false_target = Gaussian2D {
-            mean: [0.0, 0.0].into(),
-            cov: [[1.0, 0.0], [0.0, 1.0]].into(),
+            mean: arr1(&[0.0, 0.0]),
+            cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
         };
 
-        // Initialize the sampler with the false target.
-        let initial_state = [10.0, 12.0];
-        let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
-        let mut mh =
-            MetropolisHastings::new(false_target, proposal, &initial_state, 1).set_seed(SEED);
+        let samples = run_sampler(&false_target);
+        let cov_mcmc = samples.t().cov(1.0).unwrap();
 
-        // Run the sampler.
-        let mut samples = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
-        mh.run(SAMPLE_SIZE + BURNIN, BURNIN)
-            .into_iter()
-            .enumerate()
-            .for_each(|(i, chain_samples)| {
-                samples
-                    .rows_mut(i * chain_samples.nrows(), chain_samples.nrows())
-                    .copy_from(&chain_samples)
-            });
+        // Compute the maximum absolute difference in covariance.
+        let max_diff = *(cov_mcmc - target.cov).abs().max().unwrap();
 
-        // Compute the sample covariance from the chain.
-        let cov_mcmc = cov(&samples).expect("Failed to compute covariance");
-
-        // Compute the absolute differences between the target covariance and the samples.
-        let target_cov = na::DMatrix::from_column_slice(2, 2, target.cov.as_slice());
-        let cov_diff = (target_cov - cov_mcmc).map(|x| x.abs());
-
-        // Since both targets share the same mean, we focus on covariance.
-        // For the correct target, differences in each element were below 0.5.
-        // Here we expect at least one element to differ by more than 1.0.
-        let max_diff = cov_diff.max();
+        // Expect at least one element to differ by more than 1.0.
         assert!(
             max_diff > 1.0,
             "Covariance of false target samples is unexpectedly close to true target covariance. max_diff: {}",

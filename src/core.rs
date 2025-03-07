@@ -13,6 +13,7 @@ Any type implementing `HasChains<T>` (with the required trait bounds) automatica
 This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
 
+use crate::stats::ChainTracker;
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::{prelude::*, LinalgScalar, ShapeError};
@@ -21,6 +22,7 @@ use rayon::prelude::*;
 use std::cmp::PartialEq;
 use std::collections::VecDeque;
 use std::marker::Send;
+use std::time::Instant;
 
 /// A trait that abstracts a single MCMC chain.
 ///
@@ -183,7 +185,7 @@ where
             .collect();
         let views: Vec<ArrayView2<T>> = results
             .iter()
-            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..discard + n_steps)))
+            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..n_steps)))
             .collect();
         let out: Array3<T> = stack(Axis(0), views.as_slice())?;
         Ok(out)
@@ -210,6 +212,21 @@ where
             .unwrap()
             .progress_chars("=>-");
 
+        if n_steps < 50 {
+            return self.run(n_steps, discard);
+        }
+
+        let chains = self.chains_mut();
+        let n_dims = chains[0].current_state().len();
+
+        let start = Instant::now();
+        // let first_results: Vec<Array2<T>> = chains
+        //     .par_iter_mut()
+        //     .map(|chain| run_chain(chain, 50))
+        //     .collect();
+        // let ms_per_step = (Instant::now() - start).as_millis() / 50;
+        // let mut trackers = vec![ChainTracker::new(n_dims); chains.len()];
+
         // Run each chain in parallel
         let results: Vec<Array2<T>> = self
             .chains_mut()
@@ -228,7 +245,7 @@ where
 
         let views: Vec<ArrayView2<T>> = results
             .iter()
-            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..discard + n_steps)))
+            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..n_steps)))
             .collect();
         let out: Array3<T> = stack(Axis(0), views.as_slice())?;
         Ok(out)

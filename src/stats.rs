@@ -5,7 +5,57 @@ use ndarray_stats::QuantileExt;
 use num_traits::Num;
 use std::error::Error;
 
-pub struct PotentialScaleReduction {
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainTracker {
+    n: usize,
+    mean: Array1<f64>,    // n_params
+    mean_sq: Array1<f64>, // n_params
+    n_params: usize,
+}
+
+impl ChainTracker {
+    pub fn new(n_params: usize) -> Self {
+        let mean_sq = Array1::<f64>::zeros(n_params);
+        let mean = Array1::<f64>::zeros(n_params);
+        Self {
+            n: 0,
+            mean,
+            mean_sq,
+            n_params,
+        }
+    }
+
+    pub fn step<T>(&mut self, x: &[T]) -> Result<(), Box<dyn Error>>
+    where
+        T: Num
+            + num_traits::ToPrimitive
+            + num_traits::FromPrimitive
+            + std::clone::Clone
+            + std::cmp::PartialOrd,
+    {
+        self.n += 1;
+
+        let n = self.n as f64;
+        let x_arr =
+            ndarray::ArrayView1::<T>::from_shape(self.n_params, x)?.mapv(|x| x.to_f64().unwrap());
+
+        self.mean = (self.mean.clone() * (n - 1.0) + x_arr.clone()) / n;
+        if self.n == 1 {
+            self.mean_sq = x_arr.pow2();
+        } else {
+            self.mean_sq = (self.mean_sq.clone() * (n - 1.0) + (x_arr.pow2())) / n;
+        };
+        Ok(())
+    }
+
+    pub fn sm2(&self) -> Array1<f64> {
+        let n = self.n as f64;
+        (self.mean_sq.clone() - self.mean.pow2()) * n / (n - 1.0)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct RhatMulti {
     n: usize,
     mean: Array2<f64>,    // n_chains x n_params
     mean_sq: Array2<f64>, // n_chains x n_params
@@ -13,7 +63,7 @@ pub struct PotentialScaleReduction {
     n_params: usize,
 }
 
-impl PotentialScaleReduction {
+impl RhatMulti {
     pub fn new(n_chains: usize, n_params: usize) -> Self {
         let mean_sq = Array2::<f64>::zeros((n_chains, n_params));
         Self {
@@ -36,14 +86,14 @@ impl PotentialScaleReduction {
         self.n += 1;
 
         let n = self.n as f64;
-        let x_conv = ndarray::ArrayView2::<T>::from_shape((self.n_chains, self.n_params), x)?
+        let x_arr = ndarray::ArrayView2::<T>::from_shape((self.n_chains, self.n_params), x)?
             .mapv(|x| x.to_f64().unwrap());
 
-        self.mean = (self.mean.clone() * (n - 1.0) + x_conv.clone()) / n;
+        self.mean = (self.mean.clone() * (n - 1.0) + x_arr.clone()) / n;
         if self.n == 1 {
-            self.mean_sq = x_conv.pow2();
+            self.mean_sq = x_arr.pow2();
         } else {
-            self.mean_sq = (self.mean_sq.clone() * (n - 1.0) + (x_conv.pow2())) / n;
+            self.mean_sq = (self.mean_sq.clone() * (n - 1.0) + (x_arr.pow2())) / n;
         };
         Ok(())
     }
@@ -87,7 +137,7 @@ mod tests {
     where
         T: ndarray::NdFloat + num_traits::FromPrimitive,
     {
-        let mut psr = PotentialScaleReduction::new(3, 4);
+        let mut psr = RhatMulti::new(3, 4);
         psr.step(data0.as_slice().unwrap()).unwrap();
         psr.step(data1.as_slice().unwrap()).unwrap();
         let rhat = psr.all().unwrap();

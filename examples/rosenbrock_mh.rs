@@ -5,8 +5,8 @@ use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
 use mini_mcmc::io::save_parquet;
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use nalgebra as na;
 
+use ndarray::Axis;
 use num_traits::Float;
 use plotters::chart::ChartBuilder;
 use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
@@ -59,18 +59,17 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
 
     // Generate samples
-    let samples = mh.run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN);
-    let mut pooled = na::DMatrix::<f64>::zeros(SAMPLE_SIZE, 2);
-    samples.iter().enumerate().for_each(|(i, x)| {
-        pooled
-            .rows_mut(i * x.nrows(), x.nrows())
-            .copy_from_slice(x.as_slice())
-    });
+    let samples = mh
+        .run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN)
+        .expect("Expected generating samples to succeed");
+    let pooled = samples
+        .to_shape((SAMPLE_SIZE, 2))
+        .expect("Expected reshaping to succeed");
 
-    println!("Generated {} samples", pooled.nrows());
+    println!("Generated {:?} samples", pooled.shape()[0]);
 
     // Basic statistics
-    let row_mean = pooled.row_mean();
+    let row_mean = pooled.mean_axis(Axis(0)).unwrap();
     println!(
         "Mean after burn-in: ({:.2}, {:.2})",
         row_mean[0], row_mean[1]
@@ -104,7 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .bold_line_style(BLACK.mix(0.5))
         .draw()?;
 
-    chart.draw_series(pooled.row_iter().map(|point| {
+    chart.draw_series(pooled.axis_iter(Axis(0)).map(|point| {
         Circle::new(
             (point[0], point[1]),
             2,

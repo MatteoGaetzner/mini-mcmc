@@ -98,15 +98,15 @@ mod tests {
         let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
 
         // Sample
-        let samples_per_chain = mh.run(20_000, 2_000);
-        let samples = &samples_per_chain[0]; // single chain
+        let samples = mh.run(20_000, 2_000).unwrap();
+        let samples = samples.to_shape(20_000 - 2_000).unwrap(); // single chain
 
         // Build a histogram of sample frequencies for k in [0..10]
         let mut counts: HashMap<i32, usize> = HashMap::new();
-        for &s in samples {
+        for s in &samples {
             // For demonstration, we'll only look up to k=10
-            if (0..=10).contains(&s) {
-                *counts.entry(s).or_default() += 1;
+            if (0..=10).contains(s) {
+                *counts.entry(*s).or_default() += 1;
             }
         }
 
@@ -223,12 +223,12 @@ mod tests {
 
         let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
 
-        let samples_per_chain = mh.run(20_000, 2_000);
-        let samples = &samples_per_chain[0];
+        let samples = mh.run(20_000, 2_000).unwrap();
+        let samples = samples.to_shape(20_000 - 2_000).unwrap();
 
         let mut counts: HashMap<i32, usize> = HashMap::new();
-        for &s in samples {
-            *counts.entry(s).or_default() += 1;
+        for s in &samples {
+            *counts.entry(*s).or_default() += 1;
         }
 
         let total = samples.len() as f64;
