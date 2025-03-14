@@ -6,38 +6,48 @@ use num_traits::Num;
 use std::error::Error;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChainTracker {
-    n: usize,
-    mean: Array1<f64>,    // n_params
-    mean_sq: Array1<f64>, // n_params
+pub struct ChainTracker<T> {
     n_params: usize,
+    n: u64,
+    p_accept: f32,
+    mean: Array1<f32>,    // n_params
+    mean_sq: Array1<f32>, // n_params
+    last_state: Vec<T>,
 }
 
-impl ChainTracker {
-    pub fn new(n_params: usize) -> Self {
-        let mean_sq = Array1::<f64>::zeros(n_params);
-        let mean = Array1::<f64>::zeros(n_params);
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChainStats {
+    pub n: u64,
+    pub p_accept: f32,
+    pub mean: Array1<f32>, // n_params
+    pub sm2: Array1<f32>,  // n_params
+}
+
+impl<T: std::clone::Clone> ChainTracker<T> {
+    pub fn new(n_params: usize, initial_state: &[T]) -> Self {
+        let mean_sq = Array1::<f32>::zeros(n_params);
+        let mean = Array1::<f32>::zeros(n_params);
         Self {
+            n_params,
             n: 0,
+            p_accept: 1.0,
             mean,
             mean_sq,
-            n_params,
+            last_state: Vec::<T>::from(initial_state),
         }
     }
 
-    pub fn step<T>(&mut self, x: &[T]) -> Result<(), Box<dyn Error>>
+    pub fn step(&mut self, x: &[T]) -> Result<(), Box<dyn Error>>
     where
-        T: Num
-            + num_traits::ToPrimitive
-            + num_traits::FromPrimitive
-            + std::clone::Clone
-            + std::cmp::PartialOrd,
+        T: std::clone::Clone + num_traits::ToPrimitive, //+ num_traits::FromPrimitive , // + std::cmp::PartialOrd,
     {
         self.n += 1;
 
-        let n = self.n as f64;
+        // TODO: Update p_accept and last_state
+
+        let n = self.n as f32;
         let x_arr =
-            ndarray::ArrayView1::<T>::from_shape(self.n_params, x)?.mapv(|x| x.to_f64().unwrap());
+            ndarray::ArrayView1::<T>::from_shape(self.n_params, x)?.mapv(|x| x.to_f32().unwrap());
 
         self.mean = (self.mean.clone() * (n - 1.0) + x_arr.clone()) / n;
         if self.n == 1 {
@@ -45,12 +55,22 @@ impl ChainTracker {
         } else {
             self.mean_sq = (self.mean_sq.clone() * (n - 1.0) + (x_arr.pow2())) / n;
         };
+
         Ok(())
     }
 
-    pub fn sm2(&self) -> Array1<f64> {
-        let n = self.n as f64;
+    pub fn sm2(&self) -> Array1<f32> {
+        let n = self.n as f32;
         (self.mean_sq.clone() - self.mean.pow2()) * n / (n - 1.0)
+    }
+
+    pub fn stats(&self) -> ChainStats {
+        ChainStats {
+            n: self.n,
+            p_accept: self.p_accept,
+            mean: self.mean.clone(),
+            sm2: self.sm2(),
+        }
     }
 }
 

@@ -24,7 +24,7 @@ mod tests {
         let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
         let mut mh =
             MetropolisHastings::new(target.clone(), proposal, &INITIAL_STATE, 1).set_seed(SEED);
-        let samples = mh.run(SAMPLE_SIZE + BURNIN, BURNIN).unwrap();
+        let samples = mh.run(SAMPLE_SIZE, BURNIN).unwrap();
         samples.to_shape((SAMPLE_SIZE, 2)).unwrap().to_owned()
     }
 

@@ -364,11 +364,10 @@ mod tests {
 
         // Generate samples
         let samples = if use_progress {
-            mh.run_progress(sample_size / n_chains + BURNIN, BURNIN)
+            mh.run_progress(sample_size / n_chains, BURNIN).unwrap()
         } else {
-            mh.run(sample_size / n_chains + BURNIN, BURNIN)
-        }
-        .expect("Sampling failed");
+            mh.run(sample_size / n_chains, BURNIN).unwrap()
+        };
 
         // Reshape samples into a [sample_size, 2] array
         let stacked = samples
@@ -389,17 +388,32 @@ mod tests {
 
     #[test]
     fn test_4_chains() {
-        run_gaussian_2d_test(10_000, 1, false);
+        run_gaussian_2d_test(40_000, 4, false);
+    }
+
+    #[test]
+    fn test_4_chains_long() {
+        run_gaussian_2d_test(800_000, 4, false);
     }
 
     #[test]
     fn test_progress_1_chain() {
-        run_gaussian_2d_test(40_000, 4, true);
+        run_gaussian_2d_test(10_000, 1, true);
     }
 
     #[test]
     fn test_progress_4_chains() {
         run_gaussian_2d_test(40_000, 4, true);
+    }
+
+    #[test]
+    fn test_progress_4_chains_long() {
+        run_gaussian_2d_test(800_000, 4, true);
+    }
+
+    #[test]
+    fn test_progress_16_chains_long() {
+        run_gaussian_2d_test(8_000_000, 16, true);
     }
 
     /// This test remains separate because it's exercising the "example usage"

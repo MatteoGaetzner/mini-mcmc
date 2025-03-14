@@ -4,7 +4,7 @@
 This module provides core functionality for running Markov Chain Monte Carlo (MCMC) chains in parallel.
 It includes:
 - The [`MarkovChain<T>`] trait, which abstracts a single MCMC chain.
-- Utility functions [`run_chain`] and [`run_chain_with_progress`] for executing a single chain and collecting its states.
+- Utility functions [`run_chain`] and [`run_chain_progress`] for executing a single chain and collecting its states.
 - The [`HasChains<T>`] trait for types that own multiple Markov chains.
 - The [`ChainRunner<T>`] trait that extends `HasChains<T>` with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
 
@@ -13,16 +13,18 @@ Any type implementing `HasChains<T>` (with the required trait bounds) automatica
 This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
 
-use crate::stats::ChainTracker;
+use crate::stats::{ChainStats, ChainTracker};
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
+use ndarray::stack;
 use ndarray::{prelude::*, LinalgScalar, ShapeError};
-use ndarray::{stack, Slice};
 use rayon::prelude::*;
 use std::cmp::PartialEq;
-use std::collections::VecDeque;
+use std::error::Error;
 use std::marker::Send;
-use std::time::Instant;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::{self};
+use std::time::{Duration, Instant};
 
 /// A trait that abstracts a single MCMC chain.
 ///
@@ -51,18 +53,21 @@ pub trait MarkovChain<T> {
 ///
 /// A [`ndarray::Array2<T>`] where the number of rows equals `n_steps` and the number of columns equals
 /// the dimensionality of the chain's state.
-pub fn run_chain<T, M>(chain: &mut M, n_steps: usize) -> Array2<T>
+pub fn run_chain<T, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<T>
 where
     M: MarkovChain<T>,
     T: LinalgScalar,
 {
     let dim = chain.current_state().len();
-    let mut out = Array2::<T>::zeros((n_steps, dim));
+    let mut out = Array2::<T>::zeros((n_collect, dim));
+    let total = n_collect + n_discard;
 
-    for i in 0..n_steps {
+    for i in 0..total {
         let state = chain.step();
-        let state_arr = ArrayView::from_shape(state.len(), state.as_slice()).unwrap();
-        out.row_mut(i).assign(&state_arr);
+        if i >= n_discard {
+            let state_arr = ArrayView::from_shape(state.len(), state.as_slice()).unwrap();
+            out.row_mut(i - n_discard).assign(&state_arr);
+        }
     }
 
     out
@@ -82,62 +87,103 @@ where
 /// # Returns
 ///
 /// A [`ndarray::Array2<T>`] containing the chain's states (one row per iteration).
-pub fn run_chain_with_progress<T, M>(chain: &mut M, n_steps: usize, pb: &ProgressBar) -> Array2<T>
+pub fn run_chain_progress<T, M>(
+    chain: &mut M,
+    n_collect: usize,
+    n_discard: usize,
+    tx: Sender<ChainStats>,
+) -> Result<Array2<T>, String>
 where
     M: MarkovChain<T>,
-    T: LinalgScalar + PartialEq,
+    T: LinalgScalar + PartialEq + num_traits::ToPrimitive,
 {
-    let dim = chain.current_state().len();
-    let mut out = Array2::<T>::zeros((n_steps, dim));
+    let n_params = chain.current_state().len();
+    let mut out = Array2::<T>::zeros((n_collect, n_params));
 
-    pb.set_length(n_steps as u64);
-    let mut n_accept = 0;
-    let mut accept_q = VecDeque::<bool>::new();
-    let mut last_state = chain.current_state().clone();
-    let mut pbar_update_mod: usize = 0;
+    let mut tracker = ChainTracker::new(n_params, chain.current_state());
+    let mut last = Instant::now();
+    let freq = Duration::from_millis(50);
+    let total = n_discard + n_collect;
 
-    for i in 0..n_steps {
+    for i in 0..total {
         let current_state = chain.step();
-        if last_state != *current_state {
-            n_accept += 1;
-            accept_q.push_front(true)
-        } else {
-            accept_q.push_front(false)
-        }
-        if i >= 50 {
-            if accept_q
-                .pop_back()
-                .expect("Expected popping back to yield something")
-            {
-                n_accept -= 1;
-            }
+        tracker.step(current_state).map_err(|e| {
+            let msg = format!(
+            "Chain statistics tracker caused error: {}.\nAborting generation of further samples.",
+            e
+            );
+            println!("{}", msg);
+            msg
+        })?;
 
-            if pbar_update_mod == 0 {
-                // updates_per_sec = iter_per_sec / pbar_update_mod
-                // <=> pbar_update_mod = iter_per_sec / updates_per_sec
-                // pbar_update_mod =
-                let iter_per_sec = (i as f32) / (pb.elapsed().as_secs() as f32);
-                pbar_update_mod = (iter_per_sec / 10.0).ceil() as usize;
+        let now = Instant::now();
+        if (now >= last + freq) | (i == total - 1) {
+            if let Err(e) = tx.send(tracker.stats()) {
+                eprintln!("Sending chain statistics failed: {e}");
             }
-
-            if i % pbar_update_mod == 0 {
-                let p_accept = n_accept as f32 / 50.0;
-                pb.set_message(format!("p(accept) ≈ {p_accept}"));
-            }
+            last = now;
         }
 
-        out.row_mut(i).assign(
-            &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
-        );
-
-        // Update progress bar
-        pb.inc(1);
-        last_state.clone_from(chain.current_state());
+        if i >= n_discard {
+            out.row_mut(i - n_discard).assign(
+                &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
+            );
+        }
     }
 
-    out
+    Ok(out)
 }
 
+// pub fn run_chain_progress<T, M>(
+//     chain: &mut M,
+//     n_steps: usize,
+//     tx: Sender<ChainStats>,
+// ) -> Array2<T>
+// where
+//     M: MarkovChain<T>,
+//     T: LinalgScalar + PartialEq + num_traits::ToPrimitive,
+// {
+//     let n_params = chain.current_state().len();
+//     let mut out = Array2::<T>::zeros((n_steps, n_params));
+//
+//     let mut n_accept = 0;
+//     let mut accept_q = VecDeque::<bool>::new();
+//     let mut last_state = chain.current_state().clone();
+//     let mut tracker = ChainTracker::new(n_params, &last_state);
+//
+//     for i in 0..n_steps {
+//         let current_state = chain.step();
+//         tracker.step(current_state);
+//         if last_state != *current_state {
+//             n_accept += 1;
+//             accept_q.push_front(true)
+//         } else {
+//             accept_q.push_front(false)
+//         }
+//         if i >= 50 {
+//             if accept_q
+//                 .pop_back()
+//                 .expect("Expected popping back to yield something")
+//             {
+//                 n_accept -= 1;
+//             }
+//
+//             if i % pbar_update_mod == 0 {
+//                 let p_accept = n_accept as f32 / 50.0;
+//                 pb.set_message(format!("p(accept) ≈ {p_accept}"));
+//             }
+//         }
+//
+//         out.row_mut(i).assign(
+//             &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
+//         );
+//
+//         last_state.clone_from(chain.current_state());
+//     }
+//
+//     out
+// }
+//
 /// A trait for types that own multiple MCMC chains.
 ///
 /// - `T` is the type of the state elements (e.g., `f64`).
@@ -163,7 +209,7 @@ pub trait HasChains<S> {
 /// `ChainRunner<T>`.
 pub trait ChainRunner<T>: HasChains<T>
 where
-    T: LinalgScalar + PartialEq + Send,
+    T: LinalgScalar + PartialEq + Send + num_traits::ToPrimitive,
 {
     /// Runs all chains in parallel, discarding the first `discard` iterations (burn-in).
     ///
@@ -176,18 +222,15 @@ where
     ///
     /// A [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
     /// step and the last one the parameter dimension.
-    fn run(&mut self, n_steps: usize, discard: usize) -> Result<Array3<T>, ShapeError> {
+    fn run(&mut self, n_collect: usize, n_discard: usize) -> Result<Array3<T>, ShapeError> {
         // Run them all in parallel
         let results: Vec<Array2<T>> = self
             .chains_mut()
             .par_iter_mut()
-            .map(|chain| run_chain(chain, n_steps))
+            .map(|chain| run_chain(chain, n_collect, n_discard))
             .collect();
-        let views: Vec<ArrayView2<T>> = results
-            .iter()
-            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..n_steps)))
-            .collect();
-        let out: Array3<T> = stack(Axis(0), views.as_slice())?;
+        let views: Vec<ArrayView2<T>> = results.iter().map(|x| x.view()).collect();
+        let out: Array3<T> = stack(Axis(0), &views)?;
         Ok(out)
     }
 
@@ -205,51 +248,148 @@ where
     ///
     /// Returns a [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
     /// step and the last one the parameter dimension.
-    fn run_progress(&mut self, n_steps: usize, discard: usize) -> Result<Array3<T>, ShapeError> {
-        let multi = MultiProgress::new();
-        let pb_style = ProgressStyle::default_bar()
-            .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.white} {pos}/{len} {msg}")
-            .unwrap()
-            .progress_chars("=>-");
-
-        if n_steps < 50 {
-            return self.run(n_steps, discard);
+    fn run_progress(
+        &mut self,
+        n_collect: usize,
+        n_discard: usize,
+    ) -> Result<Array3<T>, Box<dyn Error>> {
+        if n_collect < 50 {
+            let out = self.run(n_collect, n_discard)?;
+            return Ok(out);
         }
 
+        // Channels.
+        // Each chain gets its own channel. Hence, we have `n_chains` channels.
+        // The objects sent over channels are Array2<f32>s ($s_m^2$, $\bar{\theta}_m^{(\bullet)}$).
+        // The child thread sends it's respective one to the parent thread.
+        // The parent thread assemples the tuples it receives to compute Rhat.
+
         let chains = self.chains_mut();
-        let n_dims = chains[0].current_state().len();
 
-        let start = Instant::now();
-        // let first_results: Vec<Array2<T>> = chains
-        //     .par_iter_mut()
-        //     .map(|chain| run_chain(chain, 50))
-        //     .collect();
-        // let ms_per_step = (Instant::now() - start).as_millis() / 50;
-        // let mut trackers = vec![ChainTracker::new(n_dims); chains.len()];
+        let mut rxs: Vec<Receiver<ChainStats>> = vec![];
+        let mut txs: Vec<Sender<ChainStats>> = vec![];
+        (0..chains.len()).for_each(|_| {
+            let (tx, rx) = mpsc::channel();
+            rxs.push(rx);
+            txs.push(tx);
+        });
 
-        // Run each chain in parallel
-        let results: Vec<Array2<T>> = self
-            .chains_mut()
-            .par_iter_mut()
-            .map(|chain| {
-                let pb = multi.add(ProgressBar::new(n_steps as u64));
-                pb.set_style(pb_style.clone());
+        let progress_handle = thread::spawn(move || {
+            let sleep_ms = Duration::from_millis(50);
+            let timeout_ms = Duration::from_millis(0);
+            let multi = MultiProgress::new();
 
-                let samples = run_chain_with_progress(chain, n_steps, &pb);
+            let pb_style = ProgressStyle::default_bar()
+                .template("{prefix:8} {bar:40.white} ETA {eta:3} | {msg}")
+                .unwrap()
+                .progress_chars("=>-");
+            let total: u64 = (n_collect + n_discard).try_into().unwrap();
 
-                pb.finish_with_message("Done!");
+            // Global Progress bar
+            let global_pb = multi.add(ProgressBar::new((rxs.len() as u64) * total));
+            global_pb.set_style(pb_style.clone());
+            global_pb.set_prefix("Global");
 
-                samples
-            })
-            .collect();
+            let mut active: Vec<(usize, ProgressBar)> = (0..rxs.len().min(5))
+                .map(|chain_idx| {
+                    let pb = multi.add(ProgressBar::new(total));
+                    pb.set_style(pb_style.clone());
+                    pb.set_prefix(format!("Chain {chain_idx}"));
+                    (chain_idx, pb)
+                })
+                .collect();
+            let mut next_active = active.len();
+            let mut n_finished = 0;
+            let mut most_recent = vec![None; rxs.len()];
+            let mut total_progress;
 
-        let views: Vec<ArrayView2<T>> = results
-            .iter()
-            .map(|x| x.slice_axis(Axis(0), Slice::from(discard..n_steps)))
-            .collect();
-        let out: Array3<T> = stack(Axis(0), views.as_slice())?;
+            loop {
+                for (i, rx) in rxs.iter().enumerate() {
+                    if let Ok(stats) = rx.recv_timeout(timeout_ms) {
+                        most_recent[i] = Some(stats)
+                    }
+                }
+
+                total_progress = 0;
+                for stats in most_recent.iter().flatten() {
+                    total_progress += stats.n;
+                }
+                global_pb.set_position(total_progress);
+                global_pb.tick();
+
+                let mut to_replace = vec![false; active.len()];
+                for (vec_idx, (i, pb)) in active.iter().enumerate() {
+                    if let Some(stats) = &most_recent[*i] {
+                        pb.set_position(stats.n);
+
+                        if stats.n == total {
+                            to_replace[vec_idx] = true;
+                            n_finished += 1;
+                        }
+                    }
+                }
+
+                let mut to_remove = vec![];
+                for (i, replace) in to_replace.iter().enumerate() {
+                    if *replace && next_active < most_recent.len() {
+                        let pb = multi.add(ProgressBar::new(total));
+                        pb.set_style(pb_style.clone());
+                        pb.set_prefix(format!("Chain {next_active}"));
+                        active[i] = (next_active, pb);
+                        next_active += 1;
+                    } else if *replace {
+                        to_remove.push(i);
+                    }
+                }
+
+                to_remove.sort();
+                for i in to_remove.iter().rev() {
+                    active.remove(*i);
+                }
+
+                if n_finished >= most_recent.len() {
+                    break;
+                }
+                std::thread::sleep(sleep_ms);
+            }
+        });
+
+        let samples: Vec<Array2<T>> = thread::scope(|s| {
+            let handles: Vec<thread::ScopedJoinHandle<Array2<T>>> = chains
+                .iter_mut()
+                .zip(txs)
+                .map(|(chain, tx)| {
+                    std::thread::sleep(Duration::from_millis(50));
+                    s.spawn(|| {
+                        run_chain_progress(chain, n_collect, n_discard, tx)
+                            .expect("Expected running chain to succeed.")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .expect("Expected thread to succeed in generating sample.")
+                })
+                .collect()
+        });
+        let out: Array3<T> = stack(
+            Axis(0),
+            &samples
+                .iter()
+                .map(|x| x.view())
+                .collect::<Vec<ArrayView2<T>>>(),
+        )?;
+
+        if let Err(e) = progress_handle.join() {
+            println!("Progress bar thread emitted error message: {:?}", e);
+        }
         Ok(out)
     }
 }
 
-impl<T: LinalgScalar + Send + PartialEq, R: HasChains<T>> ChainRunner<T> for R {}
+impl<T: LinalgScalar + Send + PartialEq + num_traits::ToPrimitive, R: HasChains<T>> ChainRunner<T>
+    for R
+{
+}
