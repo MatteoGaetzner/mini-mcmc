@@ -99,7 +99,7 @@ mod tests {
 
         // Sample
         let samples = mh.run(20_000, 2_000).unwrap();
-        let samples = samples.to_shape(20_000 - 2_000).unwrap(); // single chain
+        let samples = samples.to_shape(20_000).unwrap(); // single chain
 
         // Build a histogram of sample frequencies for k in [0..10]
         let mut counts: HashMap<i32, usize> = HashMap::new();
@@ -224,7 +224,7 @@ mod tests {
         let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
 
         let samples = mh.run(20_000, 2_000).unwrap();
-        let samples = samples.to_shape(20_000 - 2_000).unwrap();
+        let samples = samples.to_shape(20_000).unwrap();
 
         let mut counts: HashMap<i32, usize> = HashMap::new();
         for s in &samples {

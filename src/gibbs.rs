@@ -309,13 +309,13 @@ mod tests {
         let initial_state = [0.0, 0.0];
         // Create a sampler with 4 chains.
         let mut sampler = GibbsSampler::new(conditional, &initial_state, 4);
-        // Run each chain for 10 steps and discard the first 5 as burn-in.
+        // Run each chain for 15 steps and discard the first 5 as burn-in.
         let samples = sampler.run(10, 5).unwrap();
         let shape = samples.shape();
         assert_eq!(shape[0], 4);
-        assert_eq!(shape[1], 5);
+        assert_eq!(shape[1], 10);
         assert_eq!(shape[2], 2);
-        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 5, 2), 42.0));
+        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 10, 2), 42.0));
     }
 
     /// Test the run_progress method on the GibbsSampler.
@@ -327,13 +327,13 @@ mod tests {
         let initial_state = [0.0, 0.0];
         // Create a sampler with 4 chains.
         let mut sampler = GibbsSampler::new(conditional, &initial_state, 4);
-        // Run each chain for 10 steps and discard the first 5 as burn-in.
+        // Run each chain for 15 steps and discard the first 5 as burn-in.
         let samples = sampler.run_progress(10, 5).unwrap();
         let shape = samples.shape();
         assert_eq!(shape[0], 4);
-        assert_eq!(shape[1], 5);
+        assert_eq!(shape[1], 10);
         assert_eq!(shape[2], 2);
-        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 5, 2), 42.0));
+        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 10, 2), 42.0));
     }
 
     /// Helper function that runs a GibbsSampler for a mixture distribution

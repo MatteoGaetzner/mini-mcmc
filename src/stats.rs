@@ -3,7 +3,7 @@
 use ndarray::prelude::*;
 use ndarray_stats::QuantileExt;
 use num_traits::Num;
-use std::error::Error;
+use std::{collections::VecDeque, error::Error};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChainTracker<T> {
@@ -13,6 +13,7 @@ pub struct ChainTracker<T> {
     mean: Array1<f32>,    // n_params
     mean_sq: Array1<f32>, // n_params
     last_state: Vec<T>,
+    accept_queue: VecDeque<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -23,17 +24,19 @@ pub struct ChainStats {
     pub sm2: Array1<f32>,  // n_params
 }
 
-impl<T: std::clone::Clone> ChainTracker<T> {
+impl<T: Clone + Copy + PartialEq> ChainTracker<T> {
     pub fn new(n_params: usize, initial_state: &[T]) -> Self {
         let mean_sq = Array1::<f32>::zeros(n_params);
         let mean = Array1::<f32>::zeros(n_params);
+        let accept_queue = VecDeque::new();
         Self {
             n_params,
             n: 0,
-            p_accept: 1.0,
+            p_accept: 0.0,
             mean,
             mean_sq,
             last_state: Vec::<T>::from(initial_state),
+            accept_queue,
         }
     }
 
@@ -44,6 +47,19 @@ impl<T: std::clone::Clone> ChainTracker<T> {
         self.n += 1;
 
         // TODO: Update p_accept and last_state
+        let accepted = self.last_state.iter().eq(x.iter());
+        let old_aq_len = self.accept_queue.len() as f32;
+        self.accept_queue.push_back(accepted);
+        let removed = if old_aq_len > 100.0 {
+            self.accept_queue.pop_front().unwrap()
+        } else {
+            false
+        };
+        let new_aq_len = self.accept_queue.len() as f32;
+        self.p_accept = (self.p_accept * old_aq_len + (accepted as i32) as f32
+            - (removed as i32) as f32)
+            / new_aq_len;
+        self.last_state.copy_from_slice(x);
 
         let n = self.n as f32;
         let x_arr =
@@ -72,6 +88,31 @@ impl<T: std::clone::Clone> ChainTracker<T> {
             sm2: self.sm2(),
         }
     }
+}
+
+pub fn collect_rhat(all_chain_stats: &[&ChainStats]) -> Array1<f32> {
+    let means: Vec<ArrayView1<f32>> = all_chain_stats.iter().map(|x| x.mean.view()).collect();
+    let means = ndarray::stack(Axis(0), &means).expect("Expected stacking means to succeed");
+    let sm2s: Vec<ArrayView1<f32>> = all_chain_stats.iter().map(|x| x.sm2.view()).collect();
+    let sm2s = ndarray::stack(Axis(0), &sm2s).expect("Expected stacking sm2 arrays to succeed");
+
+    let w = sm2s
+        .mean_axis(Axis(0))
+        .expect("Expected computing within-chain variances to succeed");
+    let global_means = means
+        .mean_axis(Axis(0))
+        .expect("Expected computing global means to succeed");
+    let diffs: Array2<f32> = (means.clone()
+        - global_means
+            .broadcast(means.shape())
+            .expect("Expected broadcasting to succeed"))
+    .into_dimensionality()
+    .expect("Expected casting dimensionality to Array1 to succeed");
+    let b = diffs.pow2().sum_axis(Axis(0)) / (diffs.len() - 1) as f32;
+
+    let n: f32 =
+        all_chain_stats.iter().map(|x| x.n as f32).sum::<f32>() / all_chain_stats.len() as f32;
+    ((b + w.clone() * ((n - 1.0) / n)) / w).sqrt()
 }
 
 #[derive(Debug, Clone, PartialEq)]

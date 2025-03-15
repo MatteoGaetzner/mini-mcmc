@@ -261,7 +261,7 @@ where
             let avg_accept_rate: f32 =
                 accept_window.iter().sum::<f32>() / accept_window.len() as f32;
             pb.set_message(format!(
-                "p(accept) ≈ {:.2} | max rhat ≈ {:.2}.",
+                "p(accept) ≈ {:.2} | max(rhat) ≈ {:.2}.",
                 avg_accept_rate, maxrhat
             ));
         }

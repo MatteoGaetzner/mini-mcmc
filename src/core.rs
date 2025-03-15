@@ -13,11 +13,12 @@ Any type implementing `HasChains<T>` (with the required trait bounds) automatica
 This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
 
-use crate::stats::{ChainStats, ChainTracker};
+use crate::stats::{collect_rhat, ChainStats, ChainTracker};
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::stack;
 use ndarray::{prelude::*, LinalgScalar, ShapeError};
+use ndarray_stats::QuantileExt;
 use rayon::prelude::*;
 use std::cmp::PartialEq;
 use std::error::Error;
@@ -102,7 +103,7 @@ where
 
     let mut tracker = ChainTracker::new(n_params, chain.current_state());
     let mut last = Instant::now();
-    let freq = Duration::from_millis(50);
+    let freq = Duration::from_secs(1);
     let total = n_discard + n_collect;
 
     for i in 0..total {
@@ -134,56 +135,6 @@ where
     Ok(out)
 }
 
-// pub fn run_chain_progress<T, M>(
-//     chain: &mut M,
-//     n_steps: usize,
-//     tx: Sender<ChainStats>,
-// ) -> Array2<T>
-// where
-//     M: MarkovChain<T>,
-//     T: LinalgScalar + PartialEq + num_traits::ToPrimitive,
-// {
-//     let n_params = chain.current_state().len();
-//     let mut out = Array2::<T>::zeros((n_steps, n_params));
-//
-//     let mut n_accept = 0;
-//     let mut accept_q = VecDeque::<bool>::new();
-//     let mut last_state = chain.current_state().clone();
-//     let mut tracker = ChainTracker::new(n_params, &last_state);
-//
-//     for i in 0..n_steps {
-//         let current_state = chain.step();
-//         tracker.step(current_state);
-//         if last_state != *current_state {
-//             n_accept += 1;
-//             accept_q.push_front(true)
-//         } else {
-//             accept_q.push_front(false)
-//         }
-//         if i >= 50 {
-//             if accept_q
-//                 .pop_back()
-//                 .expect("Expected popping back to yield something")
-//             {
-//                 n_accept -= 1;
-//             }
-//
-//             if i % pbar_update_mod == 0 {
-//                 let p_accept = n_accept as f32 / 50.0;
-//                 pb.set_message(format!("p(accept) ≈ {p_accept}"));
-//             }
-//         }
-//
-//         out.row_mut(i).assign(
-//             &ArrayView1::from_shape(current_state.len(), current_state.as_slice()).unwrap(),
-//         );
-//
-//         last_state.clone_from(chain.current_state());
-//     }
-//
-//     out
-// }
-//
 /// A trait for types that own multiple MCMC chains.
 ///
 /// - `T` is the type of the state elements (e.g., `f64`).
@@ -275,7 +226,7 @@ where
         });
 
         let progress_handle = thread::spawn(move || {
-            let sleep_ms = Duration::from_millis(50);
+            let sleep_ms = Duration::from_millis(250);
             let timeout_ms = Duration::from_millis(0);
             let multi = MultiProgress::new();
 
@@ -310,23 +261,40 @@ where
                     }
                 }
 
-                total_progress = 0;
-                for stats in most_recent.iter().flatten() {
-                    total_progress += stats.n;
-                }
-                global_pb.set_position(total_progress);
-                global_pb.tick();
-
+                // Update chain progress bar messages
+                // and compute average acceptance probability
                 let mut to_replace = vec![false; active.len()];
+                let mut avg_p_accept = 0.0;
+                let mut n_available_stats = 0.0;
                 for (vec_idx, (i, pb)) in active.iter().enumerate() {
                     if let Some(stats) = &most_recent[*i] {
                         pb.set_position(stats.n);
+                        pb.set_message(format!("p(accept)≈{:.2}", stats.p_accept));
+                        avg_p_accept += stats.p_accept;
+                        n_available_stats += 1.0;
 
                         if stats.n == total {
                             to_replace[vec_idx] = true;
                             n_finished += 1;
                         }
                     }
+                }
+                avg_p_accept /= n_available_stats;
+
+                // Update global progress bar
+                total_progress = 0;
+                for stats in most_recent.iter().flatten() {
+                    total_progress += stats.n;
+                }
+                global_pb.set_position(total_progress);
+                let valid: Vec<&ChainStats> = most_recent.iter().flatten().collect();
+                if valid.len() >= 2 {
+                    let rhats = collect_rhat(valid.as_slice());
+                    let max = rhats.max_skipnan();
+                    global_pb.set_message(format!(
+                        "p(accept)≈{:.2} max(rhat)≈{:.2}.",
+                        avg_p_accept, max
+                    ))
                 }
 
                 let mut to_remove = vec![];

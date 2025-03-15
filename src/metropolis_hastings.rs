@@ -412,6 +412,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "Slow test: run only when explicitly requested"]
     fn test_progress_16_chains_long() {
         run_gaussian_2d_test(8_000_000, 16, true);
     }
@@ -430,11 +431,11 @@ mod tests {
         // Create a MH sampler with 4 parallel chains
         let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
 
-        // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
+        // Run the sampler for 1100 steps, discarding the first 100 as burn-in
         let samples = mh.run(1000, 100).unwrap();
 
         // We should have 900 * 4 = 3600 samples
         assert_eq!(samples.shape()[0], 4);
-        assert_eq!(samples.shape()[1], 900);
+        assert_eq!(samples.shape()[1], 1000);
     }
 }
