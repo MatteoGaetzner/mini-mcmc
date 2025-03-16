@@ -12,7 +12,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mini-mcmc = "0.4.2"
+mini-mcmc = "0.4.3"
 ```
 
 Then `use mini_mcmc` in your Rust code.
