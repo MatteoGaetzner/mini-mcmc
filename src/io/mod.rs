@@ -1,3 +1,7 @@
+/*!
+Helper functions for saving samples to disk.
+*/
+
 #[cfg(feature = "arrow")]
 pub mod arrow;
 

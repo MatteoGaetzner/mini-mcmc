@@ -1,7 +1,6 @@
 /*!
-Defines target and proposal distributions for Markov chain Monte Carlo, including
-a **2D Gaussian** with a full covariance matrix, an **isotropic Gaussian** that
-can be used in any dimension, and a **categorical** (discrete) distribution.
+Traits for defining continuous and discrete proposal- and target distributions.
+Includes an implementations of commonly used distributions.
 
 This module is generic over the floating-point precision (e.g. `f32` or `f64`)
 using [`num_traits::Float`]. It also defines several traits:
@@ -50,7 +49,7 @@ use rand_distr::{Distribution, Normal};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
-/// A trait for generating proposals in Metropolis–Hastings or similar algorithms.
+/// A trait for generating proposals Metropolis–Hastings-like algorithms.
 /// The state type `T` is typically a vector of continuous values.
 pub trait Proposal<T, F: Float> {
     /// Samples a new point from q(x' | x).
@@ -70,7 +69,7 @@ pub trait Target<T, F: Float> {
     fn unnorm_log_prob(&self, theta: &[T]) -> F;
 }
 
-/// A trait for distributions that provide a normalized log-density (e.g., for diagnostics).
+/// A trait for distributions that provide a normalized log-density (e.g. for diagnostics).
 pub trait Normalized<T, F: Float> {
     /// Returns the normalized log-density for state `theta`.
     fn log_prob(&self, theta: &[T]) -> F;
@@ -83,10 +82,10 @@ pub trait Normalized<T, F: Float> {
  // Create a categorical distribution over three categories.
  let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
  let sample = cat.sample();
- println!("Sampled category: {}", sample);
+ println!("Sampled category: {}", sample); // E.g. 1usize
 
  let logp = cat.log_prob(sample);
- println!("Log-probability of sampled category: {}", logp);
+ println!("Log-probability of sampled category: {}", logp); // E.g. 0.3f64
 ```
 */
 pub trait Discrete<T: Float> {
@@ -591,7 +590,7 @@ mod categorical_tests {
     fn test_target_for_categorical_out_of_range() {
         let probs = vec![0.2_f64, 0.3, 0.5];
         let cat = Categorical::new(probs);
-        // Calling unnorm_log_prob with an index that's out of bounds (e.g., 3)
+        // Calling unnorm_log_prob with an index that's out of bounds (e.g. 3)
         // should return negative infinity.
         let logp = cat.unnorm_log_prob(&[3]);
         assert_eq!(

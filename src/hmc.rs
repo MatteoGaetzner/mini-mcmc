@@ -1,4 +1,4 @@
-//! A simple Hamiltonian (Hybrid) Monte Carlo sampler using the `burn` crate for autodiff.
+//! Hamiltonian Monte Carlo (HMC) sampler.
 //!
 //! This is modeled similarly to a Metropolis–Hastings sampler but uses gradient-based proposals
 //! for improved efficiency. The sampler works in a data-parallel fashion and can update multiple
