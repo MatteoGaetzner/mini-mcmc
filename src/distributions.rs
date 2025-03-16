@@ -569,43 +569,57 @@ mod categorical_tests {
         );
     }
 
-    #[cfg(test)]
-    mod target_tests {
-        use super::*;
-        use crate::distributions::Target;
-        use std::f64;
+    #[test]
+    fn test_target_for_categorical_in_range() {
+        // Create a categorical distribution with known probabilities.
+        let probs = vec![0.2_f64, 0.3, 0.5];
+        let cat = Categorical::new(probs.clone());
+        // Call unnorm_log_prob with a valid index (say, index 1).
+        let logp = cat.unnorm_log_prob(&[1]);
+        // The expected log probability is ln(0.3).
+        let expected = 0.3_f64.ln();
+        let tol = 1e-7;
+        assert!(
+            (logp - expected).abs() < tol,
+            "For index 1, expected ln(0.3) ~ {}, got {}",
+            expected,
+            logp
+        );
+    }
 
-        #[test]
-        fn test_target_for_categorical_in_range() {
-            // Create a categorical distribution with known probabilities.
-            let probs = vec![0.2_f64, 0.3, 0.5];
-            let cat = Categorical::new(probs.clone());
-            // Call unnorm_log_prob with a valid index (say, index 1).
-            let logp = cat.unnorm_log_prob(&[1]);
-            // The expected log probability is ln(0.3).
-            let expected = 0.3_f64.ln();
-            let tol = 1e-7;
-            assert!(
-                (logp - expected).abs() < tol,
-                "For index 1, expected ln(0.3) ~ {}, got {}",
-                expected,
-                logp
-            );
-        }
+    #[test]
+    fn test_target_for_categorical_out_of_range() {
+        let probs = vec![0.2_f64, 0.3, 0.5];
+        let cat = Categorical::new(probs);
+        // Calling unnorm_log_prob with an index that's out of bounds (e.g., 3)
+        // should return negative infinity.
+        let logp = cat.unnorm_log_prob(&[3]);
+        assert_eq!(
+            logp,
+            f64::NEG_INFINITY,
+            "Expected negative infinity for out-of-range index, got {}",
+            logp
+        );
+    }
 
-        #[test]
-        fn test_target_for_categorical_out_of_range() {
-            let probs = vec![0.2_f64, 0.3, 0.5];
-            let cat = Categorical::new(probs);
-            // Calling unnorm_log_prob with an index that's out of bounds (e.g., 3)
-            // should return negative infinity.
-            let logp = cat.unnorm_log_prob(&[3]);
-            assert_eq!(
-                logp,
-                f64::NEG_INFINITY,
-                "Expected negative infinity for out-of-range index, got {}",
-                logp
-            );
-        }
+    #[test]
+    fn test_gaussian2d_log_prob() {
+        let mean = arr1(&[0.0, 0.0]);
+        let cov = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
+        let gauss = Gaussian2D { mean, cov };
+
+        let theta = vec![0.5, -0.5];
+        let computed_logp = gauss.log_prob(&theta);
+
+        let expected_logp = -2.0878770664093453;
+
+        let tol = 1e-10;
+        assert!(
+            (computed_logp - expected_logp).abs() < tol,
+            "Computed log probability ({}) differs from expected ({}) by more than tolerance ({})",
+            computed_logp,
+            expected_logp,
+            tol
+        );
     }
 }

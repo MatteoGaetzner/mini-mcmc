@@ -348,7 +348,7 @@ where
         )?;
 
         if let Err(e) = progress_handle.join() {
-            println!("Progress bar thread emitted error message: {:?}", e);
+            eprintln!("Progress bar thread emitted error message: {:?}", e);
         }
         Ok(out)
     }
