@@ -1,16 +1,16 @@
 /*!
-# Gibbs Sampling
+# Gibbs Sampling Sampler.
 
 This module implements Gibbs sampling for MCMC. In this context, the target distribution
 is specified via a trait [`Conditional`], which provides the full conditional distribution for
 each coordinate of the state. The module defines:
 
-- **`GibbsMarkovChain<S, D>`**: A single chain that performs a full Gibbs sweep (updating each coordinate in turn).
-- **`GibbsSampler<S, D>`**: A sampler that maintains multiple parallel Gibbs chains, each initialized with
+- [`GibbsMarkovChain<S, D>`]: A single chain that performs a full Gibbs sweep (updating each coordinate in turn).
+- [`GibbsSampler<S, D>`]: A sampler that maintains multiple parallel Gibbs chains, each initialized with
   the same starting state. A global seed is provided and each chain is assigned a unique seed.
 
-The [`MarkovChain`] trait is implemented for `GibbsMarkovChain` so that generic chain-running
-functions (e.g. via the [`ChainRunner`] extension) work with Gibbs chains.
+The [`MarkovChain`] trait is implemented for [`GibbsMarkovChain`] so that generic chain-running
+functions (e.g. via the [`crate::core::ChainRunner`] extension) work with Gibbs chains.
 */
 
 use ndarray::LinalgScalar;
@@ -196,7 +196,7 @@ where
 
     /// Returns a mutable reference to the internal vector of Gibbs chains.
     ///
-    /// This method is used by generic chain-running utilities (such as those in [`ChainRunner`])
+    /// This method is used by generic chain-running utilities (such as those in [`crate::core::ChainRunner`])
     /// to access and manage the sampler's chains.
     fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
         &mut self.chains

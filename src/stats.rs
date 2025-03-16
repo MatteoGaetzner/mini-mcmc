@@ -1,4 +1,5 @@
-//! Provides a functions for computing and MCMC statistics.
+//! Computation and tracking of MCMC statistics like acceptance probability and Potential Scale
+//! Reduction.
 
 use ndarray::prelude::*;
 use ndarray_stats::QuantileExt;

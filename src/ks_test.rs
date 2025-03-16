@@ -1,5 +1,5 @@
 /*!
-A minimal two-sample Kolmogorov–Smirnov test implementation.
+Two-sample Kolmogorov–Smirnov test.
 
 This module provides functionality to perform a two-sample KS test,
 adapted from the [`kolmogorov_smirnov`](https://crates.io/crates/kolmogorov_smirnov)

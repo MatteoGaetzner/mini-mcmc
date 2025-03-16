@@ -1,5 +1,5 @@
 /*!
-# Metropolis–Hastings Sampler
+# Metropolis–Hastings Sampler.
 
 This module implements a generic Metropolis–Hastings sampler that can work with any
 target distribution `D` and proposal distribution `Q` that implement the corresponding

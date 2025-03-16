@@ -1,14 +1,14 @@
 /*!
-# Core MCMC Utilities
+# Core MCMC Utilities.
 
 This module provides core functionality for running Markov Chain Monte Carlo (MCMC) chains in parallel.
 It includes:
 - The [`MarkovChain<T>`] trait, which abstracts a single MCMC chain.
 - Utility functions [`run_chain`] and [`run_chain_progress`] for executing a single chain and collecting its states.
 - The [`HasChains<T>`] trait for types that own multiple Markov chains.
-- The [`ChainRunner<T>`] trait that extends `HasChains<T>` with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
+- The [`ChainRunner<T>`] trait that extends [`HasChains<T>`] with methods to run chains in parallel (using Rayon), discarding burn-in and optionally displaying progress bars.
 
-Any type implementing `HasChains<T>` (with the required trait bounds) automatically implements `ChainRunner<T>` via a blanket implementation.
+Any type implementing [`HasChains<T>`] (with the required trait bounds) automatically implements [`ChainRunner<T>`] via a blanket implementation.
 
 This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 
 /// A trait that abstracts a single MCMC chain.
 ///
-/// A type implementing `MarkovChain<T>` must provide:
+/// A type implementing [`MarkovChain<T>`] must provide:
 /// - `step()`: advances the chain one iteration and returns a reference to the updated state.
 /// - `current_state()`: returns a reference to the current state without modifying the chain.
 pub trait MarkovChain<T> {
@@ -85,7 +85,7 @@ where
 /// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
 /// * `n_collect` - The number of samples to collect and return.
 /// * `n_discard` - The number of samples to discard (burn-in).
-/// * `tx` - A [`Sender`] end of a channel for sending [`ChainStats`].
+/// * `tx` - A [`Sender<ChainStats>`] object for communication with chains-managing parent thread.
 ///
 /// # Returns
 ///
@@ -142,7 +142,7 @@ where
 ///
 /// - `T` is the type of the state elements (e.g., `f64`).
 /// - `Chain` is the concrete type of the individual chain, which must implement [`MarkovChain<T>`]
-///   and be `Send`.
+///   and be [`Send`].
 ///
 /// Implementors must provide a method to access the internal vector of chains.
 pub trait HasChains<S> {
@@ -154,13 +154,13 @@ pub trait HasChains<S> {
 
 /// An extension trait for types that own multiple MCMC chains.
 ///
-/// `ChainRunner<T>` extends [`HasChains<T>`] by providing default methods to run all chains
+/// [`ChainRunner<T>`] extends [`HasChains<T>`] by providing default methods to run all chains
 /// in parallel. These methods allow you to:
 /// - Run all chains, collect `n_collect` samples and discard `n_discard` initial burn-in samples.
 /// - Optionally display progress bars for each chain during execution.
 ///
 /// Any type that implements [`HasChains<T>`] (with appropriate bounds on `T`) automatically implements
-/// `ChainRunner<T>`.
+/// [`ChainRunner<T>`].
 pub trait ChainRunner<T>: HasChains<T>
 where
     T: LinalgScalar + PartialEq + Send + num_traits::ToPrimitive,
