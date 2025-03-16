@@ -1,10 +1,10 @@
 [package]
 name = "mini-mcmc"
-version = "0.4.2"
+version = "0.4.3"
 edition = "2021"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
 license = "Apache-2.0" 
-description = "A small Rust library for Markov Chain Monte Carlo methods."
+description = "A compact Rust library for Markov Chain Monte Carlo (MCMC) methods with GPU support."
 repository = "https://github.com/MatteoGaetzner/mini-mcmc"
 readme = "README.md"
 documentation = "https://docs.rs/mini-mcmc"

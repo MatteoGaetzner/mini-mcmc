@@ -282,12 +282,12 @@ This library provides implementations of
 
 with
 
-- **Implementations of Common Distributions**: handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
-- **Parallelization**: run multiple chains in parallel.
-- **Progress Bars**: show progress of MCMC algorithms with convergence
+- **Implementations of Common Distributions**: featuring handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
+- **Parallelization**: for running multiple Markov chains in parallel.
+- **Progress Bars**: that show progress of MCMC algorithms with convergence
   statistics and acceptance rates.
-- **Support for Discrete & Continuous Distributions**: Metropolis-Hastings and Gibbs sampling support continuous and discrete distributions.
-- **Generic Datatypes**: Support sampling vectors of various integer or floating point types.
+- **Support for Discrete & Continuous Distributions**: for example, Metropolis-Hastings- and Gibbs Samplers can sample from continuous and discrete target distributions.
+- **Generic Datatypes**: enable sampling of vectors with various integer or floating point types.
 
 ## Roadmap
 
