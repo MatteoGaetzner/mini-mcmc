@@ -2,4 +2,4 @@
 all-features = true
 
 [advisories]
-unmaintained = 'workspace'
+unmaintained = "workspace"
