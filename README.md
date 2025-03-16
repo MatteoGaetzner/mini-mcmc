@@ -20,8 +20,8 @@ Then `use mini_mcmc` in your Rust code.
 
 ```rust
 use mini_mcmc::core::ChainRunner;
-use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use ndarray::{arr1, arr2};
 
 fn main() {
@@ -35,12 +35,12 @@ fn main() {
     // Create a MH sampler with 4 parallel chains
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
 
-    // Run the sampler for 1,000 steps, discarding the first 100 as burn-in
+    // Run the sampler for 1,100 steps, discarding the first 100 as burn-in
     let samples = mh.run(1000, 100).unwrap();
 
-    // We should have 900 * 4 = 3600 samples
+    // We should have 1000 * 4 = 3600 samples
     assert_eq!(samples.shape()[0], 4);
-    assert_eq!(samples.shape()[1], 900);
+    assert_eq!(samples.shape()[1], 1000);
 }
 ```
 
@@ -152,22 +152,24 @@ fn main() {
     // Create Metropolis–Hastings with 1 chain (or more, up to you)
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
 
-    // Run 10_000 steps, discarding first 1_000
-    let samples = mh.run(10_000, 1_000);
-    let chain0 = &samples[0];
-    println!("Chain shape = {} x {}", chain0.nrows(), chain0.ncols());
+    // Collect 10,000 samples and use 1,000 for burn-in (not returned).
+    let samples = mh
+        .run(10_000, 1_000)
+        .expect("Expected generating samples to succeed");
+    let chain0 = samples.to_shape(10_000).unwrap();
+    println!("Elements in chain: {}", chain0.len());
 
     // Tally frequencies of each k up to some cutoff
     let cutoff = 20; // enough to see the mass near lambda=4
     let mut counts = vec![0usize; cutoff + 1];
-    for row in chain0.row_iter() {
-        let k = row[0];
+    for row in chain0.iter() {
+        let k = *row;
         if k <= cutoff {
             counts[k] += 1;
         }
     }
 
-    let total = chain0.nrows();
+    let total = chain0.len();
     println!("Frequencies for k=0..{cutoff}, from chain after burn-in:");
     for (k, &cnt) in counts.iter().enumerate() {
         let freq = cnt as f64 / total as f64;
@@ -196,7 +198,7 @@ You can also find this example at `examples/poisson_mh.rs`.
     impossible moves.
 
 - **Usage**:  
-  We start the chain at $k=0$, run 10,000 iterations discarding 1,000 as burn-in, and tally the final sample frequencies for $k=0 \dots 20$. They should approximate the Poisson(4.0) distribution (peak around $k=4$).
+  We start the chain at $k=0$, run 11,000 iterations discarding 1,000 as burn-in, and tally the final sample frequencies for $k=0 \dots 20$. They should approximate the Poisson(4.0) distribution (peak around $k=4$).
 
 With this example, you can see how to use **mini_mcmc** for **unbounded** discrete distributions via a custom random-walk proposal and a log‐PMF.
 
@@ -261,7 +263,7 @@ fn main() {
         50,
     );
 
-    // Run the sampler for 1000 iterations, discard 100
+    // Run the sampler for 1100 iterations, discard 100
     let samples = sampler.run(1000, 100);
 
     // Print the shape of the collected samples.
@@ -271,21 +273,28 @@ fn main() {
 
 ## Overview
 
-This library provides:
+This library provides implementations of
 
-- **Metropolis-Hastings**: A generic implementation suitable for various target distributions and proposal mechanisms.
-- **Distributions**: Handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
+- **Hamiltonian Monte Carlo (HMC)**: an MCMC method that efficiently samples by simulating Hamiltonian dynamics using gradients of the target distribution.
+- **Metropolis-Hastings**: an MCMC algorithm that samples from a distribution by proposing candidates and probabilistically accepting or rejecting them.
+- **Gibbs Sampling**: an MCMC method that iteratively samples each variable from its conditional distribution given all other variables.
+
+with
+
+- **Implementations of Common Distributions**: handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
+- **Parallelization**: run multiple chains in parallel.
+- **Progress Bars**: show progress of MCMC algorithms with convergence
+  statistics and acceptance rates.
+- **Support for Discrete & Continuous Distributions**: Metropolis-Hastings and Gibbs sampling support continuous and discrete distributions.
+- **Generic Datatypes**: Support sampling vectors of various integer or floating point types.
 
 ## Roadmap
 
-- **Parallel Chains**: Run multiple Metropolis-Hastings Markov chains in parallel. ✅
-- **Discrete & Continuous Distributions**: Get Metropolis-Hastings to work for continuous and discrete distributions. ✅
-- **Generic Datatypes**: Support sampling vectors of arbitrary integer or floating point types. ✅
-- **Gibbs Sampling**: A component-wise MCMC approach for higher-dimensional problems. ✅
-- **Hamiltonian Monte Carlo (HMC)**: A gradient-based method for efficient exploration. ✅
 - **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
 - **Rank Normalized Rhat**: Modern convergence diagnostic, see [paper](https://arxiv.org/abs/1903.08008).
 - **Ensemble Slice Sampling (ESS)**: Efficient gradient-free sampler, see [paper](https://arxiv.org/abs/2002.06212).
+- **Effective Size Estimation**: Online estimation of effective sample size for
+  early stopping.
 
 ## Structure
 
@@ -293,7 +302,10 @@ This library provides:
 - **`src/distributions.rs`**: Target distributions (e.g., multivariate Gaussians) and proposal distributions.
 - **`src/metropolis_hastings.rs`**: The Metropolis-Hastings algorithm implementation.
 - **`src/gibbs.rs`**: The Gibbs sampling algorithm implementation.
-- **`examples/demo.rs`**: Example usage demonstrating 2D Gaussian sampling and plotting.
+- **`examples/`**: Examples on how to use this library.
+- **`src/io/arrow.rs`**: Helper functions for saving samples as Apache Arrow files. Enable via `arrow` feature.
+- **`src/io/parquet.rs`**: Helper functions for saving samples as Apache Parquet files. Enable via `parquet` feature.
+- **`src/io/csv.rs`**: Helper functions for saving samples as Apache Parquet files. Enable via `csv` feature.
 
 ## Usage (Local)
 
@@ -305,7 +317,7 @@ This library provides:
 
 2. **Run the Demo**:
    ```sh
-   cargo run --release --example gauss_mh
+   cargo run --release --example gauss_mh --features parquet
    ```
    Prints basic statistics of the MCMC chain (e.g., estimated mean).
    Saves a scatter plot of sampled points in `scatter_plot.png` and a Parquet file `samples.parquet`.
@@ -314,7 +326,8 @@ This library provides:
 
 - `csv`: Enables CSV I/O for samples.
 - `arrow` / `parquet`: Enables Apache Arrow / Parquet I/O.
-- By default, all features are enabled. You can disable them if you want a smaller build.
+- `wgpu`: Enables sampling from gradient based samplers using burn's WGPU backend.
+- By default, all features are **disabled**.
 
 ## License
 

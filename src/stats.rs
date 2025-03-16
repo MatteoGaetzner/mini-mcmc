@@ -1,4 +1,4 @@
-//! Provides a function to compute the sample covariance matrix for a set of data points.
+//! Provides a functions for computing and MCMC statistics.
 
 use ndarray::prelude::*;
 use ndarray_stats::QuantileExt;

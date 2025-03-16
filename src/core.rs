@@ -43,16 +43,17 @@ pub trait MarkovChain<T> {
 /// Runs a single MCMC chain for a specified number of steps.
 ///
 /// This function repeatedly calls the chain's `step()` method and collects each state into a
-/// [`ndarray::Array2<T>`], where each row corresponds to one iteration of the chain.
+/// [`ndarray::Array2<T>`], where each row corresponds to one collected state of the chain.
 ///
 /// # Arguments
 ///
 /// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
-/// * `n_steps` - The total number of iterations to run.
+/// * `n_collect` - The number of samples to collect and return.
+/// * `n_discard` - The number of samples to discard (burn-in).
 ///
 /// # Returns
 ///
-/// A [`ndarray::Array2<T>`] where the number of rows equals `n_steps` and the number of columns equals
+/// A [`ndarray::Array2<T>`] where the number of rows equals `n_collect` and the number of columns equals
 /// the dimensionality of the chain's state.
 pub fn run_chain<T, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<T>
 where
@@ -74,7 +75,7 @@ where
     out
 }
 
-/// Runs a single MCMC chain for a specified number of steps while displaying progress.
+/// Runs a single MCMC chain for a `n_collect` + `n_discard` number of steps while displaying progress.
 ///
 /// This function is similar to [`run_chain`], but it accepts an [`indicatif::ProgressBar`]
 /// that is updated as the chain advances.
@@ -82,12 +83,13 @@ where
 /// # Arguments
 ///
 /// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
-/// * `n_steps` - The total number of iterations to run.
-/// * `pb` - A progress bar used to display progress.
+/// * `n_collect` - The number of samples to collect and return.
+/// * `n_discard` - The number of samples to discard (burn-in).
+/// * `tx` - A [`Sender`] end of a channel for sending [`ChainStats`].
 ///
 /// # Returns
 ///
-/// A [`ndarray::Array2<T>`] containing the chain's states (one row per iteration).
+/// A [`ndarray::Array2<T>`] containing the chain's states with `n_collect` number of rows.
 pub fn run_chain_progress<T, M>(
     chain: &mut M,
     n_collect: usize,
@@ -132,6 +134,7 @@ where
         }
     }
 
+    // TODO: Somehow save state of the chains and enable continuing runs
     Ok(out)
 }
 
@@ -152,8 +155,8 @@ pub trait HasChains<S> {
 /// An extension trait for types that own multiple MCMC chains.
 ///
 /// `ChainRunner<T>` extends [`HasChains<T>`] by providing default methods to run all chains
-/// in parallel using Rayon. These methods allow you to:
-/// - Run all chains for a specified number of iterations and discard an initial burn-in period.
+/// in parallel. These methods allow you to:
+/// - Run all chains, collect `n_collect` samples and discard `n_discard` initial burn-in samples.
 /// - Optionally display progress bars for each chain during execution.
 ///
 /// Any type that implements [`HasChains<T>`] (with appropriate bounds on `T`) automatically implements
@@ -166,8 +169,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `n_steps` - The total number of iterations to run for each chain.
-    /// * `discard` - The number of initial iterations to discard from each chain.
+    /// * `n_collect` - The number of samples to collect and return.
+    /// * `n_discard` - The number of samples to discard (burn-in).
     ///
     /// # Returns
     ///
@@ -187,13 +190,13 @@ where
 
     /// Runs all chains in parallel with progress bars, discarding the burn-in.
     ///
-    /// Each chain is run concurrently with its own progress bar. After execution, the first `discard`
+    /// Each chain is run in parallel with its own progress bar. After execution, the first `discard`
     /// iterations are discarded.
     ///
     /// # Arguments
     ///
-    /// * `n_steps` - The total number of iterations to run for each chain.
-    /// * `discard` - The number of initial iterations to discard.
+    /// * `n_collect` - The number of samples to collect and return.
+    /// * `n_discard` - The number of samples to discard (burn-in).
     ///
     /// # Returns
     ///
@@ -204,11 +207,6 @@ where
         n_collect: usize,
         n_discard: usize,
     ) -> Result<Array3<T>, Box<dyn Error>> {
-        if n_collect < 50 {
-            let out = self.run(n_collect, n_discard)?;
-            return Ok(out);
-        }
-
         // Channels.
         // Each chain gets its own channel. Hence, we have `n_chains` channels.
         // The objects sent over channels are Array2<f32>s ($s_m^2$, $\bar{\theta}_m^{(\bullet)}$).
@@ -256,7 +254,7 @@ where
 
             loop {
                 for (i, rx) in rxs.iter().enumerate() {
-                    if let Ok(stats) = rx.recv_timeout(timeout_ms) {
+                    while let Ok(stats) = rx.recv_timeout(timeout_ms) {
                         most_recent[i] = Some(stats)
                     }
                 }
@@ -292,7 +290,7 @@ where
                     let rhats = collect_rhat(valid.as_slice());
                     let max = rhats.max_skipnan();
                     global_pb.set_message(format!(
-                        "p(accept)≈{:.2} max(rhat)≈{:.2}.",
+                        "p(accept)≈{:.2} max(rhat)≈{:.2}",
                         avg_p_accept, max
                     ))
                 }
@@ -327,7 +325,6 @@ where
                 .iter_mut()
                 .zip(txs)
                 .map(|(chain, tx)| {
-                    std::thread::sleep(Duration::from_millis(50));
                     s.spawn(|| {
                         run_chain_progress(chain, n_collect, n_discard, tx)
                             .expect("Expected running chain to succeed.")

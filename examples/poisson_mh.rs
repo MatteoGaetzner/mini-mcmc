@@ -99,11 +99,11 @@ fn main() {
     // Create Metropolis–Hastings with 1 chain (or more, up to you)
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
 
-    // Run 10_000 steps, discarding first 1_000
+    // Collect 10,000 samples and use 1,000 for burn-in (not returned).
     let samples = mh
         .run(10_000, 1_000)
         .expect("Expected generating samples to succeed");
-    let chain0 = samples.to_shape(9_000).unwrap();
+    let chain0 = samples.to_shape(10_000).unwrap();
     println!("Elements in chain: {}", chain0.len());
 
     // Tally frequencies of each k up to some cutoff

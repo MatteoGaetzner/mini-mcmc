@@ -1,6 +1,6 @@
 [package]
 name = "mini-mcmc"
-version = "0.3.1"
+version = "0.4.1"
 edition = "2021"
 authors = ["Matteo Gätzner <matteo.gatzner@gmail.com>"]
 license = "Apache-2.0" 
@@ -23,23 +23,25 @@ num-traits = "0.2"
 csv = {version="1.3", optional=true}
 arrow = {version="54.1", optional=true}
 parquet = {version="54.1", optional=true}
-burn = { version = "0.16.0", features = ["autodiff", "ndarray", "wgpu"] }
+burn = { version = "0.16.0", features = ["autodiff", "ndarray"] }
 ndarray = { version = "0.16.1"}
 ndarray-stats = "0.6.0"
 approx = "0.5.1"
 
 [features]
-default = ["csv", "arrow", "parquet"]
+default = []
+wgpu = ["burn/wgpu"]
 csv = ["dep:csv"]
 arrow = ["dep:arrow"]
-parquet = ["dep:parquet"]
+parquet = ["dep:parquet", "dep:arrow"]
 
 [dev-dependencies]
-plotters = "0.3"
 plotly = "0.12.1"
 kolmogorov_smirnov = "1.1.0"
 tempfile = "3.16"
 ndarray = {version = "0.16.1", features = ["approx"] }
+# TODO: Get rid of plotters dependency; i.e. make examples/mixture_gibbs.rs, examples/rosenbrock_mh.rs, examples/gauss_mh.rs use plotly instead.
+plotters = "0.3" 
 
 [profile.dev]
 debug = true

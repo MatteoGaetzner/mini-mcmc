@@ -413,8 +413,14 @@ mod tests {
 
     #[test]
     #[ignore = "Slow test: run only when explicitly requested"]
+    fn test_16_chains_long() {
+        run_gaussian_2d_test(80_000_000, 16, false);
+    }
+
+    #[test]
+    #[ignore = "Slow test: run only when explicitly requested"]
     fn test_progress_16_chains_long() {
-        run_gaussian_2d_test(8_000_000, 16, true);
+        run_gaussian_2d_test(80_000_000, 16, true);
     }
 
     /// This test remains separate because it's exercising the "example usage"

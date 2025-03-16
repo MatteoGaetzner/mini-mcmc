@@ -103,7 +103,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Generate samples.
     let samples = sampler.run(TOTAL_STEPS, BURNIN).unwrap();
-    let pooled = samples.to_shape((((TOTAL_STEPS - BURNIN) * 4), 2)).unwrap();
+    let pooled = samples.to_shape((TOTAL_STEPS * 4, 2)).unwrap();
     println!("Generated {} samples", pooled.len());
 
     // Compute basic statistics.
@@ -178,8 +178,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!("Saved scatter plot to gibbs_scatter_plot.png");
 
     // Optionally, save samples to file (if you have an IO module).
-    let _ = mini_mcmc::io::save_parquet(&samples, "gibbs_samples.parquet");
-    println!("Saved samples to gibbs_samples.parquet.");
+    // let _ = mini_mcmc::io::save_parquet(&samples, "gibbs_samples.parquet");
+    // println!("Saved samples to gibbs_samples.parquet.");
 
     Ok(())
 }

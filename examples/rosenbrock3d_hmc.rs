@@ -39,7 +39,7 @@ where
     }
 }
 
-/// Plots a 3D scatter plot of HMC samples (shape: [n_steps, n_chains, 3])
+/// Plots a 3D scatter plot of HMC samples (shape: [n_collect, n_chains, 3])
 /// using the plotly crate and saves the interactive plot as "hmc_scatter_plot.html".
 ///
 /// Each chain is rendered as a separate trace with its own transparent color (50% opaque).
@@ -47,9 +47,9 @@ fn plot_samples_from_tensor<B>(samples: &Tensor<B, 3>) -> Result<(), Box<dyn Err
 where
     B: burn::tensor::backend::Backend,
 {
-    // Get the dimensions: samples has shape [n_steps, n_chains, 3].
+    // Get the dimensions: samples has shape [n_collect, n_chains, 3].
     let dims = samples.dims();
-    let n_steps = dims[0];
+    let n_collect = dims[0];
     let n_chains = dims[1];
     let dim = dims[2];
     assert_eq!(dim, 3, "Expected 3D positions for plotting");
@@ -60,13 +60,13 @@ where
     // Reconstruct per-chain vectors for x, y, and z coordinates.
     let mut chains: Vec<(Vec<f32>, Vec<f32>, Vec<f32>)> = vec![
         (
-            Vec::with_capacity(n_steps),
-            Vec::with_capacity(n_steps),
-            Vec::with_capacity(n_steps)
+            Vec::with_capacity(n_collect),
+            Vec::with_capacity(n_collect),
+            Vec::with_capacity(n_collect)
         );
         n_chains
     ];
-    for step in 0..n_steps {
+    for step in 0..n_collect {
         (0..n_chains).for_each(|chain_idx| {
             let base = step * n_chains * dim + chain_idx * dim;
             let x = flat[base];
@@ -134,7 +134,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Define 6 chains, each initialized to a 3D point (e.g., [1.0, 2.0, 3.0]).
     let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
-    let n_steps = 1000;
+    let n_collect = 1000;
 
     // Create the data-parallel HMC sampler.
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
@@ -145,8 +145,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let start = Instant::now();
-    // Run HMC for n_steps, collecting samples as a 3D tensor.
-    let samples = sampler.run_progress(n_steps, 100).unwrap();
+    // Run HMC for n_collect, collecting samples as a 3D tensor.
+    let samples = sampler.run_progress(n_collect, 100).unwrap();
     let duration = start.elapsed();
     println!(
         "HMC sampler: generating {} samples took {:?}",

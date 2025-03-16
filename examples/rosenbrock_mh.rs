@@ -3,8 +3,10 @@
 
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
-use mini_mcmc::io::save_parquet;
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
+
+// Optionally, save samples to file (if you have an IO module).
+// use mini_mcmc::io::save_parquet;
 
 use ndarray::Axis;
 use num_traits::Float;
@@ -60,7 +62,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Generate samples
     let samples = mh
-        .run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN)
+        .run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN)
         .expect("Expected generating samples to succeed");
     let pooled = samples
         .to_shape((SAMPLE_SIZE, 2))
@@ -129,8 +131,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Saved scatter plot to rosenbrock_scatter_plot.png");
 
-    let _ = save_parquet(&samples, "rosenbrock_samples.parquet");
-    println!("Saved samples in file rosenbrock_samples.parquet.");
+    // Optionally, save samples to file (if you have an IO module).
+    // let _ = save_parquet(&samples, "rosenbrock_samples.parquet");
+    // println!("Saved samples in file rosenbrock_samples.parquet.");
 
     Ok(())
 }

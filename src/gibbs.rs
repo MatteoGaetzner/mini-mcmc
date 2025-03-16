@@ -346,8 +346,8 @@ mod tests {
         sigma1: f64,
         pi0: f64,
         n_chains: usize,
-        n_steps: usize,
-        burn_in: usize,
+        n_collect: usize,
+        n_discard: usize,
         seed: u64,
     ) {
         // Compute theoretical marginal mean and variance for x.
@@ -365,7 +365,7 @@ mod tests {
         };
         let initial_state = [0.0, 0.0];
         let mut sampler = GibbsSampler::new(conditional, &initial_state, n_chains).set_seed(seed);
-        let samples = sampler.run(n_steps, burn_in).unwrap();
+        let samples = sampler.run(n_collect, n_discard).unwrap();
 
         // Collect all x-values from all chains.
         let x = samples.index_axis(Axis(2), 0);
@@ -397,8 +397,8 @@ mod tests {
             1.5,    // sigma1
             0.5,    // pi0
             4,      // n_chains
-            40_000, // n_steps
-            1000,   // burn_in
+            40_000, // n_collect
+            1000,   // n_discard
             42,     // seed
         );
     }
@@ -413,8 +413,8 @@ mod tests {
             2.0,     // sigma1
             0.123,   // pi0
             4,       // n_chains
-            100_000, // n_steps
-            10_000,  // burn_in
+            100_000, // n_collect
+            10_000,  // n_discard
             42,      // seed
         );
     }

@@ -136,32 +136,32 @@ where
         self
     }
 
-    /// Run the HMC sampler for a specified number of steps.
+    /// Run the HMC sampler for `n_collect` + `n_discard` steps.
     ///
-    /// First, the sampler discards a specified number of steps (burn-in), then collects
-    /// samples for the remaining steps. The samples for each step are stored in a 3D tensor of shape
-    /// `[n_steps, n_chains, D]`.
+    /// First, the sampler takes `n_discard` burn-in steps, then takes
+    /// `n_collect` further steps and collects those samples in a 3D tensor of
+    /// shape `[n_collect, n_chains, D]`.
     ///
     /// # Parameters
     ///
-    /// * `n_steps`: The number of sampling steps to run (after burn-in).
-    /// * `discard`: The number of initial steps to discard as burn-in.
+    /// * `n_collect` - The number of samples to collect and return.
+    /// * `n_discard` - The number of samples to discard (burn-in).
     ///
     /// # Returns
     ///
     /// A tensor containing the collected samples.
-    pub fn run(&mut self, n_steps: usize, discard: usize) -> Tensor<B, 3> {
+    pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
         let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
         let mut out = Tensor::<B, 3>::empty(
-            [n_steps, n_chains, self.positions.dims()[1]],
+            [n_collect, n_chains, self.positions.dims()[1]],
             &B::Device::default(),
         );
 
         // Discard the first `discard` positions.
-        (0..discard).for_each(|_| self.step());
+        (0..n_discard).for_each(|_| self.step());
 
         // Collect samples.
-        for step in 1..(n_steps + 1) {
+        for step in 1..(n_collect + 1) {
             self.step();
             out.inplace(|_out| {
                 _out.slice_assign(
@@ -173,45 +173,49 @@ where
         out
     }
 
-    /// Runs the HMC sampler for a specified number of steps with progress updates,
-    /// discarding the first `discard` iterations as burn-in.
+    /// Run the HMC sampler for `n_collect` + `n_discard` steps and displays progress with
+    /// convergence statistics.
+    ///
+    /// First, the sampler takes `n_discard` burn-in steps, then takes
+    /// `n_collect` further steps and collects those samples in a 3D tensor of
+    /// shape `[n_collect, n_chains, D]`.
     ///
     /// This function displays a progress bar (using the `indicatif` crate) that is updated
-    /// with an approximate acceptance probability computed over a sliding window of 50 iterations
+    /// with an approximate acceptance probability computed over a sliding window of 100 iterations
     /// as well as the potential scale reduction factor, see [Stan Reference Manual.][1]
     ///
     /// # Parameters
     ///
-    /// * `n_steps` - The number of sampling steps to run (after burn-in).
-    /// * `discard` - The number of initial iterations to discard.
+    /// * `n_collect` - The number of samples to collect and return.
+    /// * `n_discard` - The number of samples to discard (burn-in).
     ///
     /// # Returns
     ///
-    /// A tensor of shape `[n_steps, n_chains, D]` containing the collected samples.
+    /// A tensor of shape `[n_collect, n_chains, D]` containing the collected samples.
     ///
     /// [1]: https://mc-stan.org/docs/2_18/reference-manual/notation-for-samples-chains-and-draws.html
     pub fn run_progress(
         &mut self,
-        n_steps: usize,
-        discard: usize,
+        n_collect: usize,
+        n_discard: usize,
     ) -> Result<Tensor<B, 3>, Box<dyn Error>> {
         // Discard initial burn-in samples.
-        (0..discard).for_each(|_| self.step());
+        (0..n_discard).for_each(|_| self.step());
 
         let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
-        let mut out = Tensor::<B, 3>::empty([n_steps, n_chains, dim], &B::Device::default());
+        let mut out = Tensor::<B, 3>::empty([n_collect, n_chains, dim], &B::Device::default());
 
-        let pb = ProgressBar::new(n_steps as u64);
+        let pb = ProgressBar::new(n_collect as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{prefix} [{elapsed_precise}, {eta}] {bar:40.white} {pos}/{len} {msg}")
+                .template("{prefix:8} {bar:40.white} ETA {eta:3} | {msg}")
                 .unwrap()
                 .progress_chars("=>-"),
         );
         pb.set_prefix("HMC");
 
-        // Use a sliding window of 50 iterations to estimate the acceptance probability.
-        let window_size = 50;
+        // Use a sliding window of 100 iterations to estimate the acceptance probability.
+        let window_size = 100;
         let mut accept_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
 
         let mut psr = RhatMulti::new(n_chains, dim);
@@ -221,7 +225,7 @@ where
         let mut last_state_data = last_state.to_data();
         psr.step(last_state_data.as_slice::<T>().unwrap())?;
 
-        for i in 0..n_steps {
+        for i in 0..n_collect {
             self.step();
             let current_state = self.positions.clone();
 
@@ -261,7 +265,7 @@ where
             let avg_accept_rate: f32 =
                 accept_window.iter().sum::<f32>() / accept_window.len() as f32;
             pb.set_message(format!(
-                "p(accept) ≈ {:.2} | max(rhat) ≈ {:.2}.",
+                "p(accept)≈{:.2} max(rhat)≈{:.2}",
                 avg_accept_rate, maxrhat
             ));
         }
@@ -483,7 +487,7 @@ mod tests {
 
         // Define initial positions for a single chain (2-dimensional).
         let initial_positions = vec![vec![0.0_f32, 0.0]];
-        let n_steps = 3;
+        let n_collect = 3;
 
         // Create the HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -494,9 +498,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run the sampler for n_steps with no discard.
+        // Run the sampler for n_collect steps.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run(n_steps, 0);
+        let samples: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
@@ -516,7 +520,7 @@ mod tests {
 
         // Define 10 chains all initialized to (1.0, 2.0).
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 10];
-        let n_steps = 1000;
+        let n_collect = 1000;
 
         // Create the HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -527,9 +531,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run the sampler for n_steps with no discard.
+        // Run the sampler for n_collect.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run(n_steps, 0);
+        let samples: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
@@ -549,7 +553,7 @@ mod tests {
 
         // Define 10 chains all initialized to (1.0, 2.0).
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 10];
-        let n_steps = 1000;
+        let n_collect = 1000;
 
         // Create the HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -560,9 +564,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run the sampler for n_steps with no discard.
+        // Run the sampler for n_collect with no discard.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_steps, 100).unwrap();
+        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 100).unwrap();
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
@@ -583,7 +587,7 @@ mod tests {
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
-        let n_steps = 5000;
+        let n_collect = 5000;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -594,10 +598,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run HMC for n_steps, collecting samples.
+        // Run HMC for `n_collect` steps.
         let mut timer = Timer::new();
-        let samples = sampler.run(n_steps, 0);
-        // let samples = sampler.run_progress(n_steps, 0).unwrap();
+        let samples = sampler.run(n_collect, 0);
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
@@ -618,7 +621,7 @@ mod tests {
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
-        let n_steps = 5000;
+        let n_collect = 5000;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -629,10 +632,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run HMC for n_steps, collecting samples.
+        // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_steps, 0).unwrap();
-        // let samples = sampler.run_progress(n_steps, 0).unwrap();
+        let samples = sampler.run_progress(n_collect, 0).unwrap();
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
@@ -652,7 +654,7 @@ mod tests {
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions: Vec<Vec<f32>> =
             vec![rng.sample_iter(StandardNormal).take(d).collect(); 6];
-        let n_steps = 500;
+        let n_collect = 500;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
@@ -663,9 +665,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run HMC for n_steps, collecting samples.
+        // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run(n_steps, 0);
+        let samples = sampler.run(n_collect, 0);
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
@@ -674,6 +676,7 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
+    #[cfg(feature = "wgpu")]
     fn test_progress_10000d_bench() {
         type BackendType = Autodiff<burn::backend::Wgpu>;
 
@@ -684,7 +687,7 @@ mod tests {
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions: Vec<Vec<f32>> =
             vec![rng.sample_iter(StandardNormal).take(d).collect(); 6];
-        let n_steps = 5000;
+        let n_collect = 5000;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
@@ -695,9 +698,9 @@ mod tests {
         )
         .set_seed(42);
 
-        // Run HMC for n_steps, collecting samples.
+        // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_steps, 0).unwrap();
+        let samples = sampler.run_progress(n_collect, 0).unwrap();
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()

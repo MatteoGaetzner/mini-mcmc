@@ -2,7 +2,6 @@
 
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
-use mini_mcmc::io::save_parquet;
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 
 use ndarray::{arr1, arr2, Axis};
@@ -11,6 +10,9 @@ use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
 use plotters::style::{Color, RGBAColor, BLACK, RED, WHITE};
 use rand::{thread_rng, Rng};
 use std::error::Error;
+
+#[cfg(feature = "parquet")]
+use mini_mcmc::io::parquet::save_parquet;
 
 /// Main entry point: sets up a 2D Gaussian target, runs Metropolis-Hastings,
 /// computes summary statistics, and generates a scatter plot of the samples.
@@ -30,9 +32,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
 
     // Generate samples
-    let samples = mh
-        .run_progress(BURNIN + SAMPLE_SIZE / N_CHAINS, BURNIN)
-        .unwrap();
+    let samples = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
     let pooled = samples.to_shape((SAMPLE_SIZE, 2)).unwrap();
 
     println!("Generated {} samples", pooled.shape()[0]);
@@ -107,8 +107,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("Saved scatter plot to scatter_plot.png");
 
-    let _ = save_parquet(&samples, "samples.parquet");
-    println!("Saved sampels in file samples.parquet.");
+    #[cfg(feature = "parquet")]
+    {
+        let _ = save_parquet(&samples, "samples.parquet");
+        println!("Saved sampels in file samples.parquet.");
+    }
 
     Ok(())
 }
