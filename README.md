@@ -3,7 +3,8 @@
 ![tests](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/general.yml/badge.svg)
 ![security](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/audit.yml/badge.svg)
 [![codecov](https://codecov.io/gh/MatteoGaetzner/mini-mcmc/graph/badge.svg?token=IDLWGMMUFI)](https://codecov.io/gh/MatteoGaetzner/mini-mcmc)
-A small (and growing) Rust library for **Markov Chain Monte Carlo (MCMC)** methods.
+
+A Rust library for **Markov Chain Monte Carlo (MCMC)** methods.
 
 ## Installation
 
