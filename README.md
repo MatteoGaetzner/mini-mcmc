@@ -327,7 +327,18 @@ with
 
 - `csv`: Enables CSV I/O for samples.
 - `arrow` / `parquet`: Enables Apache Arrow / Parquet I/O.
-- `wgpu`: Enables sampling from gradient based samplers using burn's WGPU backend.
+- `wgpu`: Enables GPU accelerated sampling for gradient based samplers using burn's WGPU backend.
+  In the HMC example above, you only have to replace line
+  ```rust
+  type BackendType = Autodiff<burn::backend::NdArray>;
+  ```
+  with
+  ```rust
+  type BackendType = Autodiff<burn::backend::Wgpu>;
+  ```
+  Depending on the number of parallel chains, dimensionality of your
+  sample space and complexity of evaluating the unnormalized log density of
+  your target distribution it might be more efficient to stick with the CPU (NdArray) backend.
 - By default, all features are **disabled**.
 
 ## License
