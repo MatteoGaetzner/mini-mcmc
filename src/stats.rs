@@ -4,6 +4,8 @@
 use ndarray::prelude::*;
 use ndarray_stats::QuantileExt;
 use num_traits::Num;
+use rayon::prelude::*;
+use rustfft::{num_complex::Complex, FftPlanner};
 use std::{collections::VecDeque, error::Error};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -188,9 +190,128 @@ impl RhatMulti {
     }
 }
 
+pub fn autocorr(sample: ArrayView2<f32>) -> Array2<f32> {
+    if sample.nrows() <= 100 {
+        autocorr_bf(sample)
+    } else {
+        autocorr_fft(sample)
+    }
+}
+
+/// Compute the autocorrelation of multiple sequences (each column represents a distinct sequence)
+/// using FFT for efficient calculation.
+///
+/// # Arguments
+///
+/// * `sample` - A 2-dimensional array view (`ArrayView2<f32>`) of shape `(n, d)`, where:
+///     - `n`: length of each sequence.
+///     - `d`: number of sequences (each column is treated independently).
+///
+/// # Returns
+///
+/// An `Array2<f32>` of shape `(n, d)` containing the autocorrelation results.
+/// Each column contains the autocorrelation values for the corresponding input sequence.
+///
+/// # Notes
+///
+/// * Uses zero-padding to avoid circular convolution effects (wrap-around).
+/// * FFT and inverse FFT are performed using the `rustfft` crate.
+/// * Computation is parallelized across sequences using Rayon.
+/// * Normalization (`1/n_padded`) is applied explicitly, as `rustfft` does not normalize results.
+fn autocorr_fft(sample: ArrayView2<f32>) -> Array2<f32> {
+    let mut planner = FftPlanner::new();
+    let (n, d) = (sample.shape()[0], sample.shape()[1]);
+
+    // Next power of 2 >= 2*n - 1 for zero-padding to avoid wrap-around.
+    let mut n_padded = 1;
+    while n_padded < 2 * n - 1 {
+        n_padded <<= 1;
+    }
+    let fft = planner.plan_fft_forward(n_padded);
+    let ffti = planner.plan_fft_inverse(n_padded);
+    let out: Vec<f32> = sample
+        .axis_iter(Axis(1))
+        .into_par_iter()
+        .map(|traj| {
+            let mut x: Vec<Complex<f32>> = traj
+                .iter()
+                .map(|xi| Complex {
+                    re: *xi,
+                    im: 0.0f32,
+                })
+                .chain(
+                    [Complex {
+                        re: 0.0f32,
+                        im: 0.0f32,
+                    }]
+                    .repeat(n_padded - n),
+                )
+                .collect();
+            fft.process(x.as_mut_slice());
+            x.iter_mut().for_each(|xi| {
+                *xi *= xi.conj();
+            });
+            ffti.process(x.as_mut_slice());
+            x.iter_mut()
+                .take(n)
+                .map(|xi| xi.re / n_padded as f32) // rustfft doens't normalize for us
+                .collect::<Vec<f32>>()
+        })
+        .flatten_iter()
+        .collect();
+    let out = Array2::from_shape_vec((d, n), out).expect("Expected creating dxn array to succeed");
+    out.t().to_owned()
+}
+
+/// Brute force autocorrelation on a 2D array of shape (n, d).
+/// - `n` = number of time points (rows)
+/// - `d` = number of parameters (columns)
+///
+/// For each column `col` and each lag `lag` (0..n), the function
+/// computes:
+/// $$
+///    sum_{t=0..(n - lag - 1)} [ data[t, col] * data[t + lag, col] ]
+/// $$
+/// and stores it in `out[lag, col]`.
+fn autocorr_bf(data: ArrayView2<f32>) -> Array2<f32> {
+    let (n, d) = data.dim();
+    let mut out = Array2::<f32>::zeros((n, d));
+
+    out.axis_iter_mut(Axis(1)) // mutable view of each column in `out`
+        .into_par_iter() // make it parallel
+        .enumerate() // get (col_index, col_view_mut)
+        .for_each(|(col_idx, mut out_col)| {
+            let col_data = data.column(col_idx);
+
+            // For each lag, compute sum_{t=0..(n-lag-1)} [ data[t, col] * data[t + lag, col] ]
+            for lag in 0..n {
+                let mut sum_lag = 0.0;
+                for t in 0..(n - lag) {
+                    sum_lag += col_data[t] * col_data[t + lag];
+                }
+                // Write result into the current column
+                out_col[lag] = sum_lag;
+            }
+        });
+    // for lag in 0..n {
+    //     let mut acor_lag = out.row_mut(lag);
+    //     for t in 0..(n - lag) {
+    //         Zip::from(&mut acor_lag)
+    //             .and(data.row(t))
+    //             .and(data.row(t + lag))
+    //             .for_each(|o, &a, &b| *o += a * b);
+    //     }
+    // }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use std::f64;
+    use std::io::Write;
+    use std::{f64, fs::File, time::Instant};
+
+    use approx::assert_abs_diff_eq;
+    use rand::Rng;
 
     use super::*;
 
@@ -262,5 +383,115 @@ mod tests {
         ]);
         let expected = array![f64::consts::FRAC_1_SQRT_2, 0.74535599, 1.0, 1.5];
         run_rhat_test_generic(data_step_0, data_step_1, expected, 1e-7);
+    }
+
+    // A helper function that runs one test case on any given autocorr function.
+    ///  - `autocorr_func` is either `autocorr_bf` or `autocorr_fft`
+    ///  - `data` is the input
+    ///  - `expected` is the known correct result
+    ///  - `test_name` is a label for the panic message if it fails
+    fn run_test_case(
+        autocorr_func: &dyn Fn(ArrayView2<f32>) -> Array2<f32>,
+        data: &Array2<f32>,
+        expected: &Array2<f32>,
+        test_name: &str,
+    ) {
+        let result = autocorr_func(data.view());
+        assert_eq!(
+            result.dim(),
+            expected.dim(),
+            "{}: shape mismatch; got {:?}, expected {:?}",
+            test_name,
+            result.dim(),
+            expected.dim()
+        );
+
+        assert_abs_diff_eq!(result, *expected, epsilon = 1e-6);
+    }
+
+    // ----------------------------------------------------------
+    // Test: single parameter, small integer sequence
+    // ----------------------------------------------------------
+    #[test]
+    fn test_single_param_small() {
+        let data = array![[1.0], [2.0], [3.0], [4.0],];
+        let expected = array![[30.0], [20.0], [11.0], [4.0],];
+
+        // Compare brute force
+        run_test_case(&autocorr_bf, &data, &expected, "BF: single_param_small");
+        // Compare FFT-based
+        run_test_case(&autocorr_fft, &data, &expected, "FFT: single_param_small");
+    }
+
+    // ----------------------------------------------------------
+    // Test: two parameters, 4 time points
+    // ----------------------------------------------------------
+    #[test]
+    fn test_two_params_small() {
+        let data = array![[1.0, -1.0], [2.0, 2.0], [3.0, 0.0], [4.0, -2.0],];
+        let expected = array![[30.0, 9.0], [20.0, -2.0], [11.0, -4.0], [4.0, 2.0],];
+
+        // Compare brute force
+        run_test_case(&autocorr_bf, &data, &expected, "BF: two_params_small");
+        // Compare FFT-based
+        run_test_case(&autocorr_fft, &data, &expected, "FFT: two_params_small");
+    }
+
+    // ----------------------------------------------------------
+    // Test: multiple columns, slightly larger example
+    // ----------------------------------------------------------
+    #[test]
+    fn test_larger_example() {
+        let data = array![[0.5, 1.5], [-1.0, 2.0], [0.0, 3.0], [2.0, -1.0],];
+        let expected = array![[5.25, 16.25], [-0.50, 6.00], [-2.00, 2.50], [1.00, -1.50],];
+
+        // Compare brute force
+        run_test_case(&autocorr_bf, &data, &expected, "BF: larger_example");
+        // Compare FFT-based
+        run_test_case(&autocorr_fft, &data, &expected, "FFT: larger_example");
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_autocorr_perf_comp() {
+        // Create output CSV
+        let mut file =
+            File::create("runtime_results.csv").expect("Unable to create runtime_results.csv");
+        // Write header row
+        writeln!(file, "length,rep,time,algorithm").expect("Unable to write CSV header");
+
+        let mut rng = rand::thread_rng();
+
+        for exp in 0..10 {
+            let n = 1 << exp; // 2^exp
+            for rep in 1..=10 {
+                // Generate random data of size (n x 1)
+                let sample_data: Vec<f32> = (0..n * 1000).map(|_| rng.gen()).collect();
+                let sample = Array2::from_shape_vec((n, 1000), sample_data)
+                    .expect("Failed to create Array2");
+
+                // Measure FFT-based implementation
+                let start_fft = Instant::now();
+                autocorr_fft(sample.view());
+                let fft_time = start_fft.elapsed().as_nanos();
+
+                // Measure brute-force implementation
+                let start_brute = Instant::now();
+                autocorr_bf(sample.view());
+                let brute_time = start_brute.elapsed().as_nanos();
+
+                // Log results to CSV
+                writeln!(file, "{},{},{},fft", n, rep, fft_time)
+                    .expect("Unable to write test results to CSV");
+                writeln!(file, "{},{},{},brute force", n, rep, brute_time)
+                    .expect("Unable to write test results to CSV");
+
+                // Print results for convenience
+                println!(
+                    "Length: {} | Rep: {} | FFT: {} ns | Brute: {} ns",
+                    n, rep, fft_time, brute_time
+                );
+            }
+        }
     }
 }

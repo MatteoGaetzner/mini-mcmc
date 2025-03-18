@@ -27,6 +27,7 @@ burn = { version = "0.16.0", features = ["autodiff", "ndarray"] }
 ndarray = { version = "0.16.1"}
 ndarray-stats = "0.6.0"
 approx = "0.5.1"
+rustfft = "6.2.0"
 
 [features]
 default = []
