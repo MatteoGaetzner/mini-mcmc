@@ -9,7 +9,7 @@
 //! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
 //! validation.
 
-use crate::stats::RhatMulti;
+use crate::stats::MultiChainTracker;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::cast::ToElement;
@@ -41,7 +41,7 @@ pub trait GradientTarget<T: Float, B: AutodiffBackend> {
     /// # Returns
     ///
     /// A 1D tensor of shape `[n_chains]` containing the log probabilities for each chain.
-    fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1>;
+    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
 /// A data-parallel Hamiltonian Monte Carlo (HMC) sampler.
@@ -140,7 +140,7 @@ where
     ///
     /// First, the sampler takes `n_discard` burn-in steps, then takes
     /// `n_collect` further steps and collects those samples in a 3D tensor of
-    /// shape `[n_collect, n_chains, D]`.
+    /// shape `[n_chains, n_collect, D]`.
     ///
     /// # Parameters
     ///
@@ -170,7 +170,7 @@ where
                 )
             });
         }
-        out
+        out.permute([1, 0, 2])
     }
 
     /// Run the HMC sampler for `n_collect` + `n_discard` steps and displays progress with
@@ -178,7 +178,7 @@ where
     ///
     /// First, the sampler takes `n_discard` burn-in steps, then takes
     /// `n_collect` further steps and collects those samples in a 3D tensor of
-    /// shape `[n_collect, n_chains, D]`.
+    /// shape `[n_chains, n_collect, D]`.
     ///
     /// This function displays a progress bar (using the `indicatif` crate) that is updated
     /// with an approximate acceptance probability computed over a sliding window of 100 iterations
@@ -191,7 +191,7 @@ where
     ///
     /// # Returns
     ///
-    /// A tensor of shape `[n_collect, n_chains, D]` containing the collected samples.
+    /// A tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
     ///
     /// [1]: https://mc-stan.org/docs/2_18/reference-manual/notation-for-samples-chains-and-draws.html
     pub fn run_progress(
@@ -218,7 +218,7 @@ where
         let window_size = 100;
         let mut accept_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
 
-        let mut psr = RhatMulti::new(n_chains, dim);
+        let mut psr = MultiChainTracker::new(n_chains, dim);
 
         let mut last_state = self.positions.clone();
 
@@ -270,7 +270,7 @@ where
             ));
         }
         pb.finish_with_message("Done!");
-        Ok(out)
+        Ok(out.permute([1, 0, 2]))
     }
 
     /// Perform one batched HMC update for all chains in parallel.
@@ -293,7 +293,7 @@ where
         );
 
         // Current log probability: shape [n_chains]
-        let logp_current = self.target.log_prob_batch(&self.positions);
+        let logp_current = self.target.log_prob_batch(self.positions.clone());
 
         // Compute kinetic energy: 0.5 * sum_{d} (p^2) for each chain.
         let ke_current = momentum_0
@@ -376,7 +376,7 @@ where
             pos = pos.detach().require_grad();
 
             // Compute gradient of log probability with respect to pos (batched over chains).
-            let logp = self.target.log_prob_batch(&pos); // shape [n_chains]
+            let logp = self.target.log_prob_batch(pos.clone()); // shape [n_chains]
             let grads = pos.grad(&logp.backward()).unwrap();
 
             // Update momentum by a half-step using the computed gradients.
@@ -394,7 +394,7 @@ where
             });
 
             // Compute gradient at the new positions.
-            let logp2 = self.target.log_prob_batch(&pos);
+            let logp2 = self.target.log_prob_batch(pos.clone());
             let grads2 = pos.grad(&logp2.backward()).unwrap();
 
             // Update momentum by another half-step using the new gradients.
@@ -406,7 +406,7 @@ where
         }
 
         // Compute final log probability at the updated positions.
-        let logp_final = self.target.log_prob_batch(&pos);
+        let logp_final = self.target.log_prob_batch(pos.clone());
         (pos.detach(), mom.detach(), logp_final.detach())
     }
 }
@@ -435,7 +435,7 @@ mod tests {
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1> {
+        fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
             let n = positions.dims()[0] as i64;
             let x = positions.clone().slice([(0, n), (0, 1)]);
             let y = positions.clone().slice([(0, n), (1, 2)]);
@@ -461,7 +461,7 @@ mod tests {
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn log_prob_batch(&self, positions: &Tensor<B, 2>) -> Tensor<B, 1> {
+        fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
             let k = positions.dims()[0] as i64;
             let n = positions.dims()[1] as i64;
             let low = positions.clone().slice([(0, k), (0, (n - 1))]);
@@ -504,7 +504,8 @@ mod tests {
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
-        ))
+        ));
+        assert_eq!(samples.dims(), [1, 3, 2]);
     }
 
     #[test]
@@ -537,7 +538,8 @@ mod tests {
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
-        ))
+        ));
+        assert_eq!(samples.dims(), [10, 1000, 2]);
     }
 
     #[test]
@@ -570,7 +572,8 @@ mod tests {
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
-        ))
+        ));
+        assert_eq!(samples.dims(), [10, 1000, 2]);
     }
 
     #[test]
@@ -604,7 +607,8 @@ mod tests {
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
-        ))
+        ));
+        assert_eq!(samples.dims(), [6, 5000, 2]);
     }
 
     #[test]
@@ -638,7 +642,8 @@ mod tests {
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
-        ))
+        ));
+        assert_eq!(samples.dims(), [6, 5000, 2]);
     }
 
     #[test]
@@ -671,7 +676,8 @@ mod tests {
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
-        ))
+        ));
+        assert_eq!(samples.dims(), [6, 500, 10000]);
     }
 
     #[test]
@@ -704,6 +710,7 @@ mod tests {
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
-        ))
+        ));
+        assert_eq!(samples.dims(), [6, 5000, 10000]);
     }
 }
