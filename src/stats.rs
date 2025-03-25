@@ -1,13 +1,15 @@
 //! Computation and tracking of MCMC statistics like acceptance probability and Potential Scale
 //! Reduction.
 
-use burn::{backend::ndarray::NdArrayTensor, prelude::*};
+use burn::prelude::*;
 use ndarray::{prelude::*, stack};
 use ndarray_stats::QuantileExt;
 use num_traits::Num;
 use rayon::prelude::*;
 use rustfft::{num_complex::Complex, FftPlanner};
-use std::{collections::VecDeque, error::Error};
+use std::{cmp::Ordering, error::Error};
+
+const ALPHA: f32 = 0.01;
 
 /// Tracks statistics for a single MCMC chain.
 ///
@@ -20,14 +22,13 @@ use std::{collections::VecDeque, error::Error};
 /// - `last_state`: Last state of the chain.
 /// - `accept_queue`: Queue tracking acceptance history.
 #[derive(Debug, Clone, PartialEq)]
-pub struct ChainTracker<T> {
+pub struct ChainTracker {
     n_params: usize,
     n: u64,
     p_accept: f32,
+    last_state: Array1<f32>,
     mean: Array1<f32>,    // n_params
     mean_sq: Array1<f32>, // n_params
-    last_state: Vec<T>,
-    accept_queue: VecDeque<bool>,
 }
 
 /// Statistics of an MCMC chain.
@@ -45,7 +46,7 @@ pub struct ChainStats {
     pub sm2: Array1<f32>,  // n_params
 }
 
-impl<T: Clone + Copy + PartialEq> ChainTracker<T> {
+impl ChainTracker {
     /// Creates a new `ChainTracker` with the given number of parameters and initial state.
     ///
     /// # Arguments
@@ -54,18 +55,26 @@ impl<T: Clone + Copy + PartialEq> ChainTracker<T> {
     ///
     /// # Returns
     /// A new `ChainTracker` instance.
-    pub fn new(n_params: usize, initial_state: &[T]) -> Self {
+    pub fn new<T>(n_params: usize, initial_state: &[T]) -> Self
+    where
+        T: num_traits::ToPrimitive + Clone,
+    {
         let mean_sq = Array1::<f32>::zeros(n_params);
         let mean = Array1::<f32>::zeros(n_params);
-        let accept_queue = VecDeque::new();
+        let last_state = ArrayView1::from_shape(n_params, initial_state)
+            .expect("Expected being able to convert initial state to a NdArray")
+            .mapv(|x| {
+                x.to_f32()
+                    .expect("Expected conversion of elements to f32's to succeed")
+            });
+
         Self {
             n_params,
             n: 0,
-            p_accept: 0.0,
+            p_accept: -1.0,
+            last_state,
             mean,
             mean_sq,
-            last_state: Vec::<T>::from(initial_state),
-            accept_queue,
         }
     }
 
@@ -76,26 +85,11 @@ impl<T: Clone + Copy + PartialEq> ChainTracker<T> {
     ///
     /// # Returns
     /// `Ok(())` if successful; an error otherwise.
-    pub fn step(&mut self, x: &[T]) -> Result<(), Box<dyn Error>>
+    pub fn step<T>(&mut self, x: &[T]) -> Result<(), Box<dyn Error>>
     where
-        T: std::clone::Clone + num_traits::ToPrimitive, //+ num_traits::FromPrimitive , // + std::cmp::PartialOrd,
+        T: num_traits::ToPrimitive + Clone,
     {
         self.n += 1;
-
-        // TODO: Update p_accept and last_state
-        let accepted = self.last_state.iter().eq(x.iter());
-        let old_aq_len = self.accept_queue.len() as f32;
-        self.accept_queue.push_back(accepted);
-        let removed = if old_aq_len > 100.0 {
-            self.accept_queue.pop_front().unwrap()
-        } else {
-            false
-        };
-        let new_aq_len = self.accept_queue.len() as f32;
-        self.p_accept = (self.p_accept * old_aq_len + (accepted as i32) as f32
-            - (removed as i32) as f32)
-            / new_aq_len;
-        self.last_state.copy_from_slice(x);
 
         let n = self.n as f32;
         let x_arr =
@@ -107,6 +101,25 @@ impl<T: Clone + Copy + PartialEq> ChainTracker<T> {
         } else {
             self.mean_sq = (self.mean_sq.clone() * (n - 1.0) + (x_arr.pow2())) / n;
         };
+
+        //  x_1 = (1 - a) x_0 + a x_1
+        // <=> x_1 (1 - a) = (1 - a) x_0
+        // <=> x_1 = x_0
+        // So set initial p_accept to 1 if the transition state was an 'accept' and 0 otherwise
+        let p_start = if self.p_accept >= 0.0 {
+            self.p_accept
+        } else {
+            x_arr
+                .index_axis(Axis(0), 0)
+                .ne(&self.last_state.index_axis(Axis(0), 0)) as i32 as f32
+        };
+        self.p_accept = ndarray::Zip::from(x_arr.rows())
+            .and(self.last_state.rows())
+            .fold(p_start, |p_accept, a, b| {
+                let accepted = (a.ne(&b) as i32) as f32;
+                (1.0 - ALPHA) * p_accept + ALPHA * accepted
+            });
+        self.last_state = x_arr;
 
         Ok(())
     }
@@ -174,6 +187,8 @@ fn within_and_var(chain_stats: &[&ChainStats]) -> (Array1<f32>, Array1<f32>) {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MultiChainTracker {
     n: usize,
+    pub p_accept: f32,
+    last_state: Array2<f32>,
     mean: Array2<f32>,    // n_chains x n_params
     mean_sq: Array2<f32>, // n_chains x n_params
     n_chains: usize,
@@ -193,6 +208,8 @@ impl MultiChainTracker {
         let mean_sq = Array2::<f32>::zeros((n_chains, n_params));
         Self {
             n: 0,
+            p_accept: 0.0,
+            last_state: Array2::<f32>::zeros((n_chains, n_params)),
             mean: Array2::<f32>::zeros((n_chains, n_params)),
             mean_sq,
             n_chains,
@@ -227,14 +244,64 @@ impl MultiChainTracker {
         } else {
             self.mean_sq = (self.mean_sq.clone() * (n - 1.0) + (x_arr.pow2())) / n;
         };
+
+        // Update self.p_accept and last state
+        self.p_accept = ndarray::Zip::from(x_arr.rows())
+            .and(self.last_state.rows())
+            .fold(self.p_accept, |p_accept, a, b| {
+                let accepted = (a.ne(&b) as i32) as f32;
+                (1.0 - ALPHA) * p_accept + ALPHA * accepted
+            });
+        self.last_state = x_arr;
+
         Ok(())
+    }
+
+    pub fn ess<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<Array1<f32>, Box<dyn Error>> {
+        ess_from_tensor(sample, self)
+    }
+
+    pub fn ess_stats<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<EssStats, Box<dyn Error>> {
+        let mut ess = ess_from_tensor(sample, self)?;
+        ess.as_slice_mut()
+            .unwrap()
+            .sort_by(|a, b| match b.partial_cmp(a) {
+                Some(x) => x,
+                None => Ordering::Equal,
+            });
+        let (min, median, max) = (
+            *ess.first()
+                .expect("Expected getting first element from ess array succeed"),
+            ess[ess.len() / 2],
+            *ess.last()
+                .expect("Expected getting last element from ess array succeed"),
+        );
+        let mean = ess.mean().expect("Expected computing mean ess to succeed");
+        let std = ess.std(1.0);
+        Ok(EssStats {
+            min,
+            median,
+            max,
+            mean,
+            std,
+        })
+    }
+
+    /// Computes the maximum R-hat value across all parameters.
+    ///
+    /// # Returns
+    /// The maximum R-hat value, or an error if computation fails.
+    pub fn max_rhat(&self) -> Result<f32, Box<dyn Error>> {
+        let all: Array1<f32> = self.rhat()?;
+        let max = *all.max()?;
+        Ok(max)
     }
 
     /// Computes the R-hat values for all parameters.
     ///
     /// # Returns
     /// An array containing the R-hat values for each parameter, or an error if computation fails.
-    pub fn all(&self) -> Result<Array1<f32>, Box<dyn Error>> {
+    pub fn rhat(&self) -> Result<Array1<f32>, Box<dyn Error>> {
         let (within, var) = self.within_and_var()?;
         let rhat = (var / within).sqrt();
         Ok(rhat)
@@ -259,16 +326,15 @@ impl MultiChainTracker {
         let var = within.clone() * ((n - 1.0) / n) + between * (1.0 / n);
         Ok((within, var))
     }
+}
 
-    /// Computes the maximum R-hat value across all parameters.
-    ///
-    /// # Returns
-    /// The maximum R-hat value, or an error if computation fails.
-    pub fn max(&self) -> Result<f32, Box<dyn Error>> {
-        let all: Array1<f32> = self.all()?;
-        let max = *all.max()?;
-        Ok(max)
-    }
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub struct EssStats {
+    pub min: f32,
+    pub median: f32,
+    pub max: f32,
+    pub mean: f32,
+    pub std: f32,
 }
 
 /// Computes the Effective Sample Size (ESS) from chain statistics.
@@ -297,13 +363,15 @@ pub fn ess_from_tensor<B: Backend>(
     tracker: &MultiChainTracker,
 ) -> Result<Array1<f32>, Box<dyn Error>> {
     let (within, var) = tracker.within_and_var()?;
-    let sample_ndarray = NdArrayTensor::from_data(sample.to_data());
-    let sample_ndarray = sample_ndarray.array.to_shape(sample.dims())?;
+    let sample_data = sample.to_data();
+    let sample_ndarray = ArrayView3::from_shape(sample.dims(), sample_data.as_slice().unwrap())?;
     Ok(ess(sample_ndarray.view(), within, var))
 }
 
 fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1<f32> {
-    let chain_rho: Vec<Array2<f32>> = (0..sample.shape()[0])
+    let shape = sample.shape();
+    let (n_chains, n_steps, n_params) = (shape[0], shape[1], shape[2]);
+    let chain_rho: Vec<Array2<f32>> = (0..n_chains)
         .map(|c| {
             let chain_samples = sample.index_axis(Axis(0), c);
             autocorr(chain_samples)
@@ -315,10 +383,14 @@ fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1
     let avg_rho = chain_rho.sum_axis(Axis(0));
     let diff = -avg_rho
         + within
-            .broadcast(0)
+            .broadcast((n_steps, n_params))
             .expect("Expected broadcasting to succeed");
-    let rho = -(diff / var.broadcast(0).expect("Expected broadcasting to succeed")) + 1.0;
-    let tau: Vec<f32> = (0..rho.shape()[1])
+    let rho = -(diff
+        / var
+            .broadcast((n_steps, n_params))
+            .expect("Expected broadcasting to succeed"))
+        + 1.0;
+    let tau: Vec<f32> = (0..n_params)
         .into_par_iter()
         .map(|d| {
             let rho_d = rho.index_axis(Axis(1), d).to_owned();
@@ -339,7 +411,7 @@ fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1
         })
         .collect();
     let tau = Array1::from_vec(tau);
-    tau.recip() * sample.shape()[0] as f32 * sample.shape()[1] as f32
+    tau.recip() * n_chains as f32 * n_steps as f32
 }
 
 fn autocorr(sample: ArrayView2<f32>) -> Array2<f32> {
@@ -466,7 +538,7 @@ mod tests {
         let mut psr = MultiChainTracker::new(3, 4);
         psr.step(data0.as_slice().unwrap()).unwrap();
         psr.step(data1.as_slice().unwrap()).unwrap();
-        let rhat = psr.all().unwrap();
+        let rhat = psr.rhat().unwrap();
         let diff = *(rhat.clone() - expected.clone()).abs().max().unwrap();
         assert!(
             diff < tol,

@@ -12,14 +12,12 @@
 use crate::stats::MultiChainTracker;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::cast::ToElement;
 use burn::tensor::Tensor;
 use indicatif::{ProgressBar, ProgressStyle};
 use num_traits::Float;
 use rand::prelude::*;
 use rand::Rng;
 use rand_distr::StandardNormal;
-use std::collections::VecDeque;
 use std::error::Error;
 
 /// A batched target trait for computing the unnormalized log probability (and gradients) for a
@@ -214,38 +212,18 @@ where
         );
         pb.set_prefix("HMC");
 
-        // Use a sliding window of 100 iterations to estimate the acceptance probability.
-        let window_size = 100;
-        let mut accept_window: VecDeque<f32> = VecDeque::with_capacity(window_size);
-
         let mut psr = MultiChainTracker::new(n_chains, dim);
 
         let mut last_state = self.positions.clone();
 
         let mut last_state_data = last_state.to_data();
-        psr.step(last_state_data.as_slice::<T>().unwrap())?;
+        if let Err(e) = psr.step(last_state_data.as_slice::<T>().unwrap()) {
+            eprintln!("Warning: Shown progress statistics may be unreliable since updating them failed with: {}", e);
+        }
 
         for i in 0..n_collect {
             self.step();
             let current_state = self.positions.clone();
-
-            // For each chain, check if its state changed.
-            let accepted_count = last_state
-                .clone()
-                .not_equal(current_state.clone())
-                .all_dim(1)
-                .int()
-                .sum()
-                .into_scalar()
-                .to_f32();
-
-            let iter_accept_rate = accepted_count / n_chains as f32;
-
-            // Update the sliding window.
-            accept_window.push_front(iter_accept_rate);
-            if accept_window.len() > window_size {
-                accept_window.pop_back();
-            }
 
             // Store the current state.
             out.inplace(|_out| {
@@ -258,19 +236,38 @@ where
             last_state = current_state;
 
             last_state_data = last_state.to_data();
-            psr.step(last_state_data.as_slice::<T>().unwrap())?;
-            let maxrhat = psr.max()?;
+            if let Err(e) = psr.step(last_state_data.as_slice::<T>().unwrap()) {
+                eprintln!("Warning: Shown progress statistics may be unreliable since updating them failed with: {}", e);
+            }
 
-            // Compute average acceptance rate over the sliding window.
-            let avg_accept_rate: f32 =
-                accept_window.iter().sum::<f32>() / accept_window.len() as f32;
-            pb.set_message(format!(
-                "p(accept)≈{:.2} max(rhat)≈{:.2}",
-                avg_accept_rate, maxrhat
-            ));
+            match psr.max_rhat() {
+                Err(e) => {
+                    eprintln!("Computing max(rhat) failed with: {}", e);
+                }
+                Ok(max_rhat) => {
+                    pb.set_message(format!(
+                        "p(accept)≈{:.2} max(rhat)≈{:.2}",
+                        psr.p_accept, max_rhat
+                    ));
+                }
+            }
         }
         pb.finish_with_message("Done!");
-        Ok(out.permute([1, 0, 2]))
+        let sample = out.permute([1, 0, 2]);
+
+        match psr.ess_stats(sample.clone()) {
+            Ok(stats) => {
+                println!(
+                    "ESS in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
+                    stats.min, stats.max, stats.median, stats.mean, stats.std
+                );
+            }
+            Err(e) => {
+                eprintln!("Getting ESS statistics failed with: {}", e);
+            }
+        }
+
+        Ok(sample)
     }
 
     /// Perform one batched HMC update for all chains in parallel.
