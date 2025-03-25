@@ -109,38 +109,37 @@ save_csv_tensor::<NdArray, _, f32>(&tensor, "/tmp/output.csv")?;
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
 */
-pub fn save_csv_tensor<B, K, T>(
+pub fn save_csv_tensor<B, K>(
     tensor: &burn::tensor::Tensor<B, 3, K>,
     filename: &str,
 ) -> Result<(), Box<dyn Error>>
 where
     B: Backend,
-    K: burn::tensor::TensorKind<B>,
-    T: burn::tensor::Element,
     K: burn::tensor::BasicOps<B>,
 {
     use csv::Writer;
     use std::fs::File;
+    // TODO: Make sure to adjust naming 'observations' vs. 'samples'
     // Extract data as TensorData and convert to a flat Vec<T>
-    let shape = tensor.dims(); // expected to be [num_samples, num_chains, num_dimensions]
+    let shape = tensor.dims(); // expected to be [num_chains, num_obs, num_dimensions]
     let data = tensor.to_data();
-    let (num_samples, num_chains, num_dims) = (shape[0], shape[1], shape[2]);
-    let flat = data
-        .to_vec::<T>()
+    let (num_chains, num_obs, num_dims) = (shape[0], shape[1], shape[2]);
+    let flat: Vec<f32> = data
+        .to_vec()
         .map_err(|e| format!("Converting data to Vec failed.\nData: {data:?}.\nError: {e:?}"))?;
 
     let mut wtr = Writer::from_writer(File::create(filename)?);
 
-    // Build header: "sample", "chain", "dim_0", "dim_1", ...
-    let mut header = vec!["sample".to_string(), "chain".to_string()];
+    // Build header: "obs", "chain", "dim_0", "dim_1", ...
+    let mut header = vec!["obs".to_string(), "chain".to_string()];
     header.extend((0..num_dims).map(|i| format!("dim_{}", i)));
     wtr.write_record(&header)?;
 
     // Iterate over sample and chain indices; each row corresponds to one data point.
-    for sample in 0..num_samples {
-        for chain in 0..num_chains {
+    for chain in 0..num_chains {
+        for sample in 0..num_obs {
             let mut row = vec![sample.to_string(), chain.to_string()];
-            let offset = sample * num_chains * num_dims + chain * num_dims;
+            let offset = chain * num_obs * num_dims + sample * num_dims;
             let row_slice = &flat[offset..offset + num_dims];
             row.extend(row_slice.iter().map(|v| v.to_string()));
             wtr.write_record(&row)?;
@@ -226,13 +225,13 @@ chain,sample,dim_0,dim_1
     #[test]
     fn test_save_csv_tensor_data() -> Result<(), Box<dyn std::error::Error>> {
         // Create a tensor with shape [2, 2, 2]: 2 samples, 2 chains, 2 dimensions.
-        let tensor = Tensor::<NdArray, 3>::from_floats(
+        let tensor = Tensor::<NdArray, 3, burn::tensor::Float>::from_floats(
             [[[1.0, 2.0], [3.0, 4.0]], [[1.1, 2.1], [3.1, 4.1]]],
             &NdArrayDevice::Cpu,
         );
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
-        save_csv_tensor::<NdArray, _, f32>(&tensor, filename)?;
+        save_csv_tensor::<NdArray, burn::tensor::Float>(&tensor, filename)?;
         let contents = fs::read_to_string(filename)?;
 
         // Use csv::Reader to parse the CSV file.

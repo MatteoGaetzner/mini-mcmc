@@ -410,7 +410,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dev_tools::Timer;
+    use crate::{dev_tools::Timer, io::csv::save_csv_tensor};
 
     use super::*;
     use burn::{
@@ -613,6 +613,7 @@ mod tests {
     fn test_progress_bench() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<burn::backend::NdArray>;
+        BackendType::seed(42);
 
         // Create the Rosenbrock target (a = 1, b = 100)
         let target = Rosenbrock2D {
@@ -640,6 +641,15 @@ mod tests {
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
         ));
+        save_csv_tensor(&samples, "data.csv").expect("Expected to successfully save data");
+        println!(
+            "Chain 1, first 10: {}",
+            samples.clone().slice([(0, 1), (0, 10), (0, 1)])
+        );
+        println!(
+            "Chain 2, first 10: {}",
+            samples.clone().slice([(2, 3), (0, 10), (0, 1)])
+        );
         assert_eq!(samples.dims(), [6, 5000, 2]);
     }
 

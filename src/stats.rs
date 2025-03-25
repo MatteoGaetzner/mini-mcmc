@@ -369,18 +369,21 @@ pub fn ess_from_tensor<B: Backend>(
 }
 
 fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1<f32> {
+    dbg!(&within, &var);
     let shape = sample.shape();
     let (n_chains, n_steps, n_params) = (shape[0], shape[1], shape[2]);
     let chain_rho: Vec<Array2<f32>> = (0..n_chains)
         .map(|c| {
             let chain_samples = sample.index_axis(Axis(0), c);
-            autocorr(chain_samples)
+            autocov(chain_samples)
         })
         .collect();
+    dbg!(&chain_rho[0]);
     let chain_rho: Vec<ArrayView2<f32>> = chain_rho.iter().map(|x| x.view()).collect();
     let chain_rho = stack(Axis(0), &chain_rho)
-        .expect("Expected stacking chain-specific autocorrelation matrices to succeed");
-    let avg_rho = chain_rho.sum_axis(Axis(0));
+        .expect("Expected stacking chain-specific autocovariance matrices to succeed");
+    let avg_rho = chain_rho.mean_axis(Axis(0)).unwrap();
+    dbg!(&avg_rho);
     let diff = -avg_rho
         + within
             .broadcast((n_steps, n_params))
@@ -390,39 +393,52 @@ fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1
             .broadcast((n_steps, n_params))
             .expect("Expected broadcasting to succeed"))
         + 1.0;
+    dbg!(&rho);
     let tau: Vec<f32> = (0..n_params)
         .into_par_iter()
         .map(|d| {
             let rho_d = rho.index_axis(Axis(1), d).to_owned();
-            let mut min = rho_d[[0]];
+
+            let mut min = if rho_d.len() >= 2 {
+                rho_d[[0]] + rho_d[[1]]
+            } else {
+                0.0
+            };
+
             let mut out = 0.0;
+            dbg!(&rho_d);
             for rho_t in rho_d.windows_with_stride(2, 2) {
+                dbg!(&rho_t);
                 let mut p_t = rho_t[0] + rho_t[1];
+                dbg!(&p_t);
                 if p_t <= 0.0 {
                     break;
                 }
                 if p_t > min {
                     p_t = min;
                 }
+                dbg!(&p_t);
                 min = p_t;
                 out += p_t;
+                dbg!(out);
             }
             -1.0 + 2.0 * out
         })
         .collect();
     let tau = Array1::from_vec(tau);
+    dbg!(&tau, n_chains as f32 * n_steps as f32);
     tau.recip() * n_chains as f32 * n_steps as f32
 }
 
-fn autocorr(sample: ArrayView2<f32>) -> Array2<f32> {
+fn autocov(sample: ArrayView2<f32>) -> Array2<f32> {
     if sample.nrows() <= 100 {
-        autocorr_bf(sample)
+        autocov_bf(sample)
     } else {
-        autocorr_fft(sample)
+        autocov_fft(sample)
     }
 }
 
-/// Compute the autocorrelation of multiple sequences (each column represents a distinct sequence)
+/// Compute the autocovariance of multiple sequences (each column represents a distinct sequence)
 /// using FFT for efficient calculation.
 ///
 /// # Arguments
@@ -433,8 +449,8 @@ fn autocorr(sample: ArrayView2<f32>) -> Array2<f32> {
 ///
 /// # Returns
 ///
-/// An `Array2<f32>` of shape `(n, d)` containing the autocorrelation results.
-/// Each column contains the autocorrelation values for the corresponding input sequence.
+/// An `Array2<f32>` of shape `(n, d)` containing the autocovariance results.
+/// Each column contains the autocovariance values for the corresponding input sequence.
 ///
 /// # Notes
 ///
@@ -442,9 +458,9 @@ fn autocorr(sample: ArrayView2<f32>) -> Array2<f32> {
 /// * FFT and inverse FFT are performed using the `rustfft` crate.
 /// * Computation is parallelized across sequences using Rayon.
 /// * Normalization (`1/n_padded`) is applied explicitly, as `rustfft` does not normalize results.
-fn autocorr_fft(sample: ArrayView2<f32>) -> Array2<f32> {
-    let mut planner = FftPlanner::new();
+fn autocov_fft(sample: ArrayView2<f32>) -> Array2<f32> {
     let (n, d) = (sample.shape()[0], sample.shape()[1]);
+    let mut planner = FftPlanner::new();
 
     // Next power of 2 >= 2*n - 1 for zero-padding to avoid wrap-around.
     let mut n_padded = 1;
@@ -457,10 +473,11 @@ fn autocorr_fft(sample: ArrayView2<f32>) -> Array2<f32> {
         .axis_iter(Axis(1))
         .into_par_iter()
         .map(|traj| {
+            let traj_mean = traj.sum() / traj.len() as f32;
             let mut x: Vec<Complex<f32>> = traj
                 .iter()
                 .map(|xi| Complex {
-                    re: *xi,
+                    re: (*xi - traj_mean),
                     im: 0.0f32,
                 })
                 .chain(
@@ -478,7 +495,7 @@ fn autocorr_fft(sample: ArrayView2<f32>) -> Array2<f32> {
             ffti.process(x.as_mut_slice());
             x.iter_mut()
                 .take(n)
-                .map(|xi| xi.re / n_padded as f32) // rustfft doens't normalize for us
+                .map(|xi| xi.re / n_padded as f32 / n as f32) // rustfft doens't normalize for us
                 .collect::<Vec<f32>>()
         })
         .flatten_iter()
@@ -487,7 +504,7 @@ fn autocorr_fft(sample: ArrayView2<f32>) -> Array2<f32> {
     out.t().to_owned()
 }
 
-/// Brute force autocorrelation on a 2D array of shape (n, d).
+/// Brute force autocovariance on a 2D array of shape (n, d).
 /// - `n` = number of time points (rows)
 /// - `d` = number of parameters (columns)
 ///
@@ -497,7 +514,7 @@ fn autocorr_fft(sample: ArrayView2<f32>) -> Array2<f32> {
 ///    sum_{t=0..(n - lag - 1)} [ data[t, col] * data[t + lag, col] ]
 /// $$
 /// and stores it in `out[lag, col]`.
-fn autocorr_bf(data: ArrayView2<f32>) -> Array2<f32> {
+fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
     let (n, d) = data.dim();
     let mut out = Array2::<f32>::zeros((n, d));
 
@@ -506,6 +523,8 @@ fn autocorr_bf(data: ArrayView2<f32>) -> Array2<f32> {
         .enumerate() // get (col_index, col_view_mut)
         .for_each(|(col_idx, mut out_col)| {
             let col_data = data.column(col_idx);
+            let col_data = col_data.to_owned() - col_data.mean().unwrap();
+            dbg!(&col_data);
 
             // For each lag, compute sum_{t=0..(n-lag-1)} [ data[t, col] * data[t + lag, col] ]
             for lag in 0..n {
@@ -514,7 +533,7 @@ fn autocorr_bf(data: ArrayView2<f32>) -> Array2<f32> {
                     sum_lag += col_data[t] * col_data[t + lag];
                 }
                 // Write result into the current column
-                out_col[lag] = sum_lag;
+                out_col[lag] = sum_lag / n as f32;
             }
         });
     out
@@ -600,18 +619,13 @@ mod tests {
         run_rhat_test_generic(data_step_0, data_step_1, expected, f32::EPSILON * 10.0);
     }
 
-    // A helper function that runs one test case on any given autocorr function.
-    ///  - `autocorr_func` is either `autocorr_bf` or `autocorr_fft`
-    ///  - `data` is the input
-    ///  - `expected` is the known correct result
-    ///  - `test_name` is a label for the panic message if it fails
     fn run_test_case(
-        autocorr_func: &dyn Fn(ArrayView2<f32>) -> Array2<f32>,
+        autocov_func: &dyn Fn(ArrayView2<f32>) -> Array2<f32>,
         data: &Array2<f32>,
         expected: &Array2<f32>,
         test_name: &str,
     ) {
-        let result = autocorr_func(data.view());
+        let result = autocov_func(data.view());
         assert_eq!(
             result.dim(),
             expected.dim(),
@@ -622,53 +636,114 @@ mod tests {
         );
 
         assert_abs_diff_eq!(result, *expected, epsilon = 1e-6);
+        println!("Test: {test_name} succeeded");
     }
 
     // ----------------------------------------------------------
     // Test: single parameter, small integer sequence
     // ----------------------------------------------------------
     #[test]
-    fn test_single_param_small() {
+    fn test_single_param() {
         let data = array![[1.0], [2.0], [3.0], [4.0],];
-        let expected = array![[30.0], [20.0], [11.0], [4.0],];
+        let expected = array![[1.0], [0.25], [-0.3], [-0.45],];
 
         // Compare brute force
-        run_test_case(&autocorr_bf, &data, &expected, "BF: single_param_small");
+        run_test_case(&autocov_bf, &data, &expected, "BF: single_param_small");
+
+        println!("Doing FFT test");
         // Compare FFT-based
-        run_test_case(&autocorr_fft, &data, &expected, "FFT: single_param_small");
+        run_test_case(&autocov_fft, &data, &expected, "FFT: single_param_small");
+        println!("FFT test succeeded");
     }
 
     // ----------------------------------------------------------
     // Test: two parameters, 4 time points
     // ----------------------------------------------------------
     #[test]
-    fn test_two_params_small() {
-        let data = array![[1.0, -1.0], [2.0, 2.0], [3.0, 0.0], [4.0, -2.0],];
-        let expected = array![[30.0, 9.0], [20.0, -2.0], [11.0, -4.0], [4.0, 2.0],];
+    fn test_two_params_1() {
+        let data = array![[1.0, 0.3], [2.0, 2.0], [3.0, -2.0], [4.0, 5.0],];
+        let expected = array![
+            [1.0, 1.0],
+            [0.25, -0.58139925],
+            [-0.3, 0.2259039],
+            [-0.45, -0.14450465],
+        ];
 
         // Compare brute force
-        run_test_case(&autocorr_bf, &data, &expected, "BF: two_params_small");
+        run_test_case(&autocov_bf, &data, &expected, "BF: two_params_small");
         // Compare FFT-based
-        run_test_case(&autocorr_fft, &data, &expected, "FFT: two_params_small");
+        run_test_case(&autocov_fft, &data, &expected, "FFT: two_params_small");
     }
 
     // ----------------------------------------------------------
-    // Test: multiple columns, slightly larger example
+    // Test: two datasets, 4 time points each (nested arrays)
     // ----------------------------------------------------------
     #[test]
-    fn test_larger_example() {
-        let data = array![[0.5, 1.5], [-1.0, 2.0], [0.0, 3.0], [2.0, -1.0],];
-        let expected = array![[5.25, 16.25], [-0.50, 6.00], [-2.00, 2.50], [1.00, -1.50],];
+    fn test_two_params_2() {
+        let data = array![[1.0, 3.0], [-1.0, 2.0], [1.0, 1.0], [-1.0, 0.0]];
+        let expected = array![[1.0, 1.0], [-0.75, 0.25], [0.5, -0.3], [-0.25, -0.45],];
 
         // Compare brute force
-        run_test_case(&autocorr_bf, &data, &expected, "BF: larger_example");
+        run_test_case(&autocov_bf, &data, &expected, "BF: two_datasets_small");
+
         // Compare FFT-based
-        run_test_case(&autocorr_fft, &data, &expected, "FFT: larger_example");
+        run_test_case(&autocov_fft, &data, &expected, "FFT: two_datasets_small");
+    }
+
+    #[test]
+    fn ess_1() {
+        // let data = array![
+        //     [-2.55298982, 0.6536186, 0.8644362, -0.74216502, 2.26975462],
+        //     [-1.45436567, 0.04575852, -0.18718385, 1.53277921, 1.46935877],
+        //     [
+        //         0.15494743,
+        //         0.37816252,
+        //         -0.88778575,
+        //         -1.98079647,
+        //         -0.34791215
+        //     ],
+        //     [0.15634897, 1.23029068, 1.20237985, -0.38732682, -0.30230275]
+        // ];
+        // Dimensions
+        let m = 4;
+        let n = 1000;
+
+        // Initialize an empty 4 x 100 array
+        let mut data = Array2::<f32>::zeros((m, n));
+
+        // Use the built-in RNG to generate each row separately
+        let mut rng = rand::thread_rng();
+        for mut row in data.rows_mut() {
+            for elem in row.iter_mut() {
+                *elem = rng.gen::<f32>(); // generates uniform random number between 0 and 1
+            }
+        }
+        let chain_means = data.mean_axis(Axis(1)).unwrap();
+        dbg!(&chain_means);
+        let overall_mean = data.mean().unwrap();
+        let b = (chain_means.clone() - overall_mean).pow2().sum() * (n as f32 / (m - 1) as f32);
+        dbg!(&chain_means, m, n);
+        let big_chain_means_t = chain_means.broadcast((n, m)).unwrap();
+        let squares = (data.clone() - big_chain_means_t.t())
+            .pow2()
+            .mean_axis(Axis(1))
+            .unwrap();
+        let within = squares.mean().unwrap();
+        let var = ((n as f32 - 1.0) / (n as f32)) * within + b / (n as f32);
+
+        let within = array![within];
+        let var = array![var];
+        let data = data
+            .to_shape((data.shape()[0], data.shape()[1], 1))
+            .unwrap();
+        let ess = ess(data.view(), within, var);
+        println!("Samples: {}", m * n);
+        println!("ESS: {ess}");
     }
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_autocorr_perf_comp() {
+    fn test_autocov_perf_comp() {
         // Create output CSV
         let mut file =
             File::create("runtime_results.csv").expect("Unable to create runtime_results.csv");
@@ -687,12 +762,12 @@ mod tests {
 
                 // Measure FFT-based implementation
                 let start_fft = Instant::now();
-                autocorr_fft(sample.view());
+                autocov_fft(sample.view());
                 let fft_time = start_fft.elapsed().as_nanos();
 
                 // Measure brute-force implementation
                 let start_brute = Instant::now();
-                autocorr_bf(sample.view());
+                autocov_bf(sample.view());
                 let brute_time = start_brute.elapsed().as_nanos();
 
                 // Log results to CSV
