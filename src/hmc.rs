@@ -418,7 +418,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{dev_tools::Timer, io::csv::save_csv_tensor};
+    use crate::dev_tools::Timer;
 
     use super::*;
     use burn::{
@@ -657,7 +657,11 @@ mod tests {
             "Chain 2, first 10: {}",
             samples.clone().slice([(2, 3), (0, 10), (0, 1)])
         );
-        save_csv_tensor(samples.clone(), "data.csv").expect("Expected saving to succeed");
+
+        #[cfg(feature = "arrow")]
+        crate::io::csv::save_csv_tensor(samples.clone(), "data.csv")
+            .expect("Expected saving to succeed");
+
         assert_eq!(samples.dims(), [6, 5000, 2]);
     }
 
