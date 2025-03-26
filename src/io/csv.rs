@@ -110,7 +110,7 @@ save_csv_tensor::<NdArray, _, f32>(&tensor, "/tmp/output.csv")?;
 ```
 */
 pub fn save_csv_tensor<B, K>(
-    tensor: &burn::tensor::Tensor<B, 3, K>,
+    tensor: burn::tensor::Tensor<B, 3, K>,
     filename: &str,
 ) -> Result<(), Box<dyn Error>>
 where
@@ -231,7 +231,7 @@ chain,sample,dim_0,dim_1
         );
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
-        save_csv_tensor::<NdArray, burn::tensor::Float>(&tensor, filename)?;
+        save_csv_tensor::<NdArray, burn::tensor::Float>(tensor, filename)?;
         let contents = fs::read_to_string(filename)?;
 
         // Use csv::Reader to parse the CSV file.

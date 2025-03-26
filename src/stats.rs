@@ -2,7 +2,7 @@
 //! Reduction.
 
 use burn::prelude::*;
-use ndarray::{prelude::*, stack};
+use ndarray::{concatenate, prelude::*, stack};
 use ndarray_stats::QuantileExt;
 use num_traits::Num;
 use rayon::prelude::*;
@@ -147,11 +147,11 @@ impl ChainTracker {
 /// # Returns
 /// An array containing the R-hat values for each parameter.
 pub fn collect_rhat(chain_stats: &[&ChainStats]) -> Array1<f32> {
-    let (within, var) = within_and_var(chain_stats);
+    let (within, var) = withinvar_from_cs(chain_stats);
     (var / within).sqrt()
 }
 
-fn within_and_var(chain_stats: &[&ChainStats]) -> (Array1<f32>, Array1<f32>) {
+fn withinvar_from_cs(chain_stats: &[&ChainStats]) -> (Array1<f32>, Array1<f32>) {
     let means: Vec<ArrayView1<f32>> = chain_stats.iter().map(|x| x.mean.view()).collect();
     let means = ndarray::stack(Axis(0), &means).expect("Expected stacking means to succeed");
     let sm2s: Vec<ArrayView1<f32>> = chain_stats.iter().map(|x| x.sm2.view()).collect();
@@ -257,34 +257,14 @@ impl MultiChainTracker {
         Ok(())
     }
 
-    pub fn ess<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<Array1<f32>, Box<dyn Error>> {
-        ess_from_tensor(sample, self)
-    }
-
-    pub fn ess_stats<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<EssStats, Box<dyn Error>> {
-        let mut ess = ess_from_tensor(sample, self)?;
-        ess.as_slice_mut()
-            .unwrap()
-            .sort_by(|a, b| match b.partial_cmp(a) {
-                Some(x) => x,
-                None => Ordering::Equal,
-            });
-        let (min, median, max) = (
-            *ess.first()
-                .expect("Expected getting first element from ess array succeed"),
-            ess[ess.len() / 2],
-            *ess.last()
-                .expect("Expected getting last element from ess array succeed"),
-        );
-        let mean = ess.mean().expect("Expected computing mean ess to succeed");
-        let std = ess.std(1.0);
-        Ok(EssStats {
-            min,
-            median,
-            max,
-            mean,
-            std,
-        })
+    pub fn stats<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<RunStats, Box<dyn Error>> {
+        let sample_data = sample.to_data();
+        let sample_ndarray =
+            ArrayView3::from_shape(sample.dims(), sample_data.as_slice().unwrap())?;
+        let (rhat, ess) = split_rhat_mean_ess(sample_ndarray);
+        let ess = basic_stats(ess);
+        let rhat = basic_stats(rhat);
+        Ok(RunStats { ess, rhat })
     }
 
     /// Computes the maximum R-hat value across all parameters.
@@ -328,13 +308,123 @@ impl MultiChainTracker {
     }
 }
 
+fn basic_stats(data: Array1<f32>) -> BasicStats {
+    let mut data = data.clone();
+    data.as_slice_mut()
+        .unwrap()
+        .sort_by(|a, b| match b.partial_cmp(a) {
+            Some(x) => x,
+            None => Ordering::Equal,
+        });
+    let (min, median, max) = (
+        *data
+            .last()
+            .expect("Expected getting first element from ess array succeed"),
+        data[data.len() / 2],
+        *data
+            .first()
+            .expect("Expected getting last element from ess array succeed"),
+    );
+    let mean = data.mean().expect("Expected computing mean ess to succeed");
+    let std = data.std(1.0);
+    BasicStats {
+        min,
+        median,
+        max,
+        mean,
+        std,
+    }
+}
+
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
-pub struct EssStats {
+pub struct RunStats {
+    pub ess: BasicStats,
+    pub rhat: BasicStats,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub struct BasicStats {
     pub min: f32,
     pub median: f32,
     pub max: f32,
     pub mean: f32,
     pub std: f32,
+}
+
+/// Takes a (chains, samples, parameters) view and returns a new
+/// (2*chains, samples/2, parameters) array by splitting each chain in half.
+fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
+    let n = sample.shape()[1];
+    let half = (n / 2) as i32;
+    let half_1 = sample.slice(s![.., ..half, ..]);
+    let half_2 = sample.slice(s![.., -half.., ..]);
+    concatenate(Axis(0), &[half_1, half_2]).expect("Expected stacking two halves to succeed")
+}
+
+pub fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
+    let c = sample.shape()[0];
+    let n = sample.shape()[1];
+    let p = sample.shape()[2];
+
+    // 2) For each parameter, compute the chain-split stats
+    //    shape for data_p is (2c, n/2)
+    let (within, var): (Vec<f32>, Vec<f32>) = (0..p)
+        .into_par_iter()
+        .map(|param_idx| {
+            let data_p = sample.slice(s![.., .., param_idx]);
+
+            // chain means => shape (2c,)
+            let chain_means = data_p.mean_axis(Axis(1)).unwrap();
+            let overall_mean = chain_means.mean().unwrap();
+
+            // B => between chain var
+            //   = (n/2 / (2c - 1)) * sum( (chain_means - overall_mean)^2 )
+            // (We assume 2c > 1)
+            let diff = &chain_means - overall_mean;
+            let b = diff.pow2().sum() * ((n as f32) / ((c - 1) as f32));
+            dbg!(param_idx, &chain_means, &overall_mean, &diff, b);
+
+            // within => we broadcast chain_means to shape (2c, n/2) to subtract
+            // but an easier approach might be:
+            // squares[i] = mean over that chain's (x_i - chain_mean[i])^2
+            // then average squares across all chains
+            let mut squares = Vec::with_capacity(c);
+            for chain_i in 0..c {
+                let row = data_p.slice(s![chain_i, ..]);
+                let cm = chain_means[chain_i];
+                let sq = row.iter().map(|v| (v - cm) * (v - cm)).sum::<f32>() / (n as f32);
+                squares.push(sq);
+            }
+            let squares = Array1::from(squares); // shape (2c,)
+            let w = squares.mean().unwrap(); // within = average across chains
+                                             // var => ((n/2 - 1)/(n/2)) * w + b/(n/2)
+            let v = ((n as f32 - 1.0) / (n as f32)) * w + b / (n as f32);
+
+            (w, v)
+        })
+        .collect::<Vec<(f32, f32)>>()
+        .into_iter()
+        .fold((vec![], vec![]), |(mut within, mut var), (w, v)| {
+            within.push(w);
+            var.push(v);
+            (within, var)
+        });
+    (Array1::from_vec(within), Array1::from_vec(var))
+}
+
+/// Computes ESS after splitting each chain into two halves.
+pub fn split_rhat_mean_ess(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
+    let splitted = splitcat(sample); // shape: (2c, n/2, p)
+    let (within, var) = withinvar(splitted.view());
+    dbg!(&within, &var);
+    (
+        rhat(within.view(), var.view()),
+        ess(splitted.view(), within.view(), var.view()),
+    )
+}
+
+fn rhat(within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
+    (within.to_owned() / var).sqrt()
 }
 
 /// Computes the Effective Sample Size (ESS) from chain statistics.
@@ -346,30 +436,11 @@ pub struct EssStats {
 /// # Returns
 /// An array containing the ESS for each parameter.
 pub fn ess_from_chainstats(sample: ArrayView3<f32>, chain_stats: &[&ChainStats]) -> Array1<f32> {
-    let (within, var) = within_and_var(chain_stats);
-    ess(sample, within, var)
+    let (within, var) = withinvar_from_cs(chain_stats);
+    ess(sample, within.view(), var.view())
 }
 
-/// Computes the Effective Sample Size (ESS) from a tensor of samples.
-///
-/// # Arguments
-/// - `sample`: Tensor of samples with shape (chains, samples, parameters).
-/// - `tracker`: A `MultiChainTracker` containing statistics of the chains.
-///
-/// # Returns
-/// An array containing the ESS for each parameter, or an error if computation fails.
-pub fn ess_from_tensor<B: Backend>(
-    sample: Tensor<B, 3>,
-    tracker: &MultiChainTracker,
-) -> Result<Array1<f32>, Box<dyn Error>> {
-    let (within, var) = tracker.within_and_var()?;
-    let sample_data = sample.to_data();
-    let sample_ndarray = ArrayView3::from_shape(sample.dims(), sample_data.as_slice().unwrap())?;
-    Ok(ess(sample_ndarray.view(), within, var))
-}
-
-fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1<f32> {
-    dbg!(&within, &var);
+fn ess(sample: ArrayView3<f32>, within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
     let shape = sample.shape();
     let (n_chains, n_steps, n_params) = (shape[0], shape[1], shape[2]);
     let chain_rho: Vec<Array2<f32>> = (0..n_chains)
@@ -378,12 +449,10 @@ fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1
             autocov(chain_samples)
         })
         .collect();
-    dbg!(&chain_rho[0]);
     let chain_rho: Vec<ArrayView2<f32>> = chain_rho.iter().map(|x| x.view()).collect();
     let chain_rho = stack(Axis(0), &chain_rho)
         .expect("Expected stacking chain-specific autocovariance matrices to succeed");
     let avg_rho = chain_rho.mean_axis(Axis(0)).unwrap();
-    dbg!(&avg_rho);
     let diff = -avg_rho
         + within
             .broadcast((n_steps, n_params))
@@ -393,7 +462,6 @@ fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1
             .broadcast((n_steps, n_params))
             .expect("Expected broadcasting to succeed"))
         + 1.0;
-    dbg!(&rho);
     let tau: Vec<f32> = (0..n_params)
         .into_par_iter()
         .map(|d| {
@@ -406,27 +474,21 @@ fn ess(sample: ArrayView3<f32>, within: Array1<f32>, var: Array1<f32>) -> Array1
             };
 
             let mut out = 0.0;
-            dbg!(&rho_d);
             for rho_t in rho_d.windows_with_stride(2, 2) {
-                dbg!(&rho_t);
                 let mut p_t = rho_t[0] + rho_t[1];
-                dbg!(&p_t);
                 if p_t <= 0.0 {
                     break;
                 }
                 if p_t > min {
                     p_t = min;
                 }
-                dbg!(&p_t);
                 min = p_t;
                 out += p_t;
-                dbg!(out);
             }
             -1.0 + 2.0 * out
         })
         .collect();
     let tau = Array1::from_vec(tau);
-    dbg!(&tau, n_chains as f32 * n_steps as f32);
     tau.recip() * n_chains as f32 * n_steps as f32
 }
 
@@ -524,7 +586,6 @@ fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
         .for_each(|(col_idx, mut out_col)| {
             let col_data = data.column(col_idx);
             let col_data = col_data.to_owned() - col_data.mean().unwrap();
-            dbg!(&col_data);
 
             // For each lag, compute sum_{t=0..(n-lag-1)} [ data[t, col] * data[t + lag, col] ]
             for lag in 0..n {
@@ -692,19 +753,6 @@ mod tests {
 
     #[test]
     fn ess_1() {
-        // let data = array![
-        //     [-2.55298982, 0.6536186, 0.8644362, -0.74216502, 2.26975462],
-        //     [-1.45436567, 0.04575852, -0.18718385, 1.53277921, 1.46935877],
-        //     [
-        //         0.15494743,
-        //         0.37816252,
-        //         -0.88778575,
-        //         -1.98079647,
-        //         -0.34791215
-        //     ],
-        //     [0.15634897, 1.23029068, 1.20237985, -0.38732682, -0.30230275]
-        // ];
-        // Dimensions
         let m = 4;
         let n = 1000;
 
@@ -718,27 +766,28 @@ mod tests {
                 *elem = rng.gen::<f32>(); // generates uniform random number between 0 and 1
             }
         }
-        let chain_means = data.mean_axis(Axis(1)).unwrap();
-        dbg!(&chain_means);
-        let overall_mean = data.mean().unwrap();
-        let b = (chain_means.clone() - overall_mean).pow2().sum() * (n as f32 / (m - 1) as f32);
-        dbg!(&chain_means, m, n);
-        let big_chain_means_t = chain_means.broadcast((n, m)).unwrap();
-        let squares = (data.clone() - big_chain_means_t.t())
-            .pow2()
-            .mean_axis(Axis(1))
-            .unwrap();
-        let within = squares.mean().unwrap();
-        let var = ((n as f32 - 1.0) / (n as f32)) * within + b / (n as f32);
-
-        let within = array![within];
-        let var = array![var];
+        // let chain_means = data.mean_axis(Axis(1)).unwrap();
+        // let overall_mean = data.mean().unwrap();
+        // let b = (chain_means.clone() - overall_mean).pow2().sum() * (n as f32 / (m - 1) as f32);
+        // let big_chain_means_t = chain_means.broadcast((n, m)).unwrap();
+        // let squares = (data.clone() - big_chain_means_t.t())
+        //     .pow2()
+        //     .mean_axis(Axis(1))
+        //     .unwrap();
+        // let within = squares.mean().unwrap();
+        // let var = ((n as f32 - 1.0) / (n as f32)) * within + b / (n as f32);
+        // let rhat = (within / var).sqrt();
+        //
+        // let within = array![within];
+        // let var = array![var];
         let data = data
             .to_shape((data.shape()[0], data.shape()[1], 1))
             .unwrap();
-        let ess = ess(data.view(), within, var);
+        let (rhat, ess) = split_rhat_mean_ess(data.view());
+        // let ess = ess(data.view(), within, var);
         println!("Samples: {}", m * n);
         println!("ESS: {ess}");
+        println!("Rhat: {rhat}");
     }
 
     #[test]

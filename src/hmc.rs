@@ -255,11 +255,19 @@ where
         pb.finish_with_message("Done!");
         let sample = out.permute([1, 0, 2]);
 
-        match psr.ess_stats(sample.clone()) {
+        match psr.stats(sample.clone()) {
             Ok(stats) => {
                 println!(
                     "ESS in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
-                    stats.min, stats.max, stats.median, stats.mean, stats.std
+                    stats.ess.min, stats.ess.max, stats.ess.median, stats.ess.mean, stats.ess.std
+                );
+                println!(
+                    "R-hat in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
+                    stats.rhat.min,
+                    stats.rhat.max,
+                    stats.rhat.median,
+                    stats.rhat.mean,
+                    stats.rhat.std
                 );
             }
             Err(e) => {
@@ -641,7 +649,6 @@ mod tests {
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
         ));
-        save_csv_tensor(&samples, "data.csv").expect("Expected to successfully save data");
         println!(
             "Chain 1, first 10: {}",
             samples.clone().slice([(0, 1), (0, 10), (0, 1)])
@@ -650,6 +657,7 @@ mod tests {
             "Chain 2, first 10: {}",
             samples.clone().slice([(2, 3), (0, 10), (0, 1)])
         );
+        save_csv_tensor(samples.clone(), "data.csv").expect("Expected saving to succeed");
         assert_eq!(samples.dims(), [6, 5000, 2]);
     }
 
