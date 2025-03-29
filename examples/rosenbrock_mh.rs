@@ -1,7 +1,7 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Rosenbrock distribution,
 //! then plotting the samples.
 
-use mini_mcmc::core::ChainRunner;
+use mini_mcmc::core::{init_det, ChainRunner};
 use mini_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 
@@ -55,10 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // The standard deviation is chosen to be small given the narrow valley of the target.
     let proposal = IsotropicGaussian::new(1.0).set_seed(seed);
 
-    // Starting from an initial state (here, not at the mode).
-    let initial_state = [0.0, 0.0];
-
-    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
+    let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).set_seed(seed);
 
     // Generate samples
     let samples = mh

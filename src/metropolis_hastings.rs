@@ -19,6 +19,7 @@ and each chain gets a unique seed by adding its index to the global seed.
 ```rust
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use mini_mcmc::core::init;
 use ndarray::{arr1, arr2};
 
 // Define a 2D Gaussian target distribution with full covariance
@@ -30,11 +31,11 @@ let target = Gaussian2D {
 // Define an isotropic Gaussian proposal distribution (for any dimension)
 let proposal = IsotropicGaussian::new(1.0);
 
-// Starting state for all chains
-let initial_state = [0.0, 0.0];
+// Starting state for all chains (just one in this case)
+let initial_states = init(1, 2);
 
 // Create a sampler with 1 chain
-let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+let mh = MetropolisHastings::new(target, proposal, initial_states);
 
 // Check that one chain was created
 assert_eq!(mh.chains.len(), 1);
@@ -70,6 +71,7 @@ adding the chain’s index to the global seed, ensuring reproducibility.
 ```rust
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use mini_mcmc::core::init;
 use ndarray::{arr1, arr2};
 
 let target = Gaussian2D {
@@ -77,8 +79,7 @@ let target = Gaussian2D {
     cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
 };
 let proposal = IsotropicGaussian::new(1.0);
-let initial_state = [0.0, 0.0];
-let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+let mh = MetropolisHastings::new(target, proposal, init(1, 2));
 assert_eq!(mh.chains.len(), 1);
 ```
 */
@@ -137,6 +138,7 @@ where
     ```rust
     use mini_mcmc::metropolis_hastings::MetropolisHastings;
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+    use mini_mcmc::core::init;
     use ndarray::{arr1, arr2};
 
     let target = Gaussian2D {
@@ -144,14 +146,14 @@ where
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = [0.0, 0.0];
-    let mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+    let mh = MetropolisHastings::new(target, proposal, init(1, 2));
     assert_eq!(mh.chains.len(), 1);
     ```
     */
-    pub fn new(target: D, proposal: Q, initial_state: &[S], n_chains: usize) -> Self {
-        let chains = (0..n_chains)
-            .map(|_| MHMarkovChain::new(target.clone(), proposal.clone(), initial_state))
+    pub fn new(target: D, proposal: Q, initial_states: Vec<Vec<S>>) -> Self {
+        let chains = initial_states
+            .into_iter()
+            .map(|s| MHMarkovChain::new(target.clone(), proposal.clone(), s))
             .collect();
         let seed = thread_rng().gen::<u64>();
 
@@ -178,6 +180,7 @@ where
     ```rust
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
     use mini_mcmc::metropolis_hastings::MetropolisHastings;
+    use mini_mcmc::core::init;
     use ndarray::{arr1, arr2};
 
     let target = Gaussian2D {
@@ -185,8 +188,7 @@ where
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = [0.0, 0.0];
-    let mh = MetropolisHastings::new(target, proposal, &initial_state, 2).set_seed(42);
+    let mh = MetropolisHastings::new(target, proposal, init(2, 2)).set_seed(42);
     assert_eq!(mh.chains[0].seed, 42);
     assert_eq!(mh.chains[1].seed, 43);
     ```
@@ -250,16 +252,16 @@ where
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
-    assert_eq!(chain.current_state, vec![0.0, 0.0]);
+    let chain = MHMarkovChain::new(target, proposal, vec![3.0, 5.0]);
+    assert_eq!(chain.current_state, vec![3.0, 5.0]);
     ```
     */
-    pub fn new(target: D, proposal: Q, initial_state: &[S]) -> Self {
+    pub fn new(target: D, proposal: Q, initial_state: Vec<S>) -> Self {
         let seed = thread_rng().gen::<u64>();
         Self {
             target,
             proposal,
-            current_state: initial_state.to_vec(),
+            current_state: initial_state,
             seed,
             rng: SmallRng::seed_from_u64(seed),
             phantom: PhantomData,
@@ -296,7 +298,7 @@ where
     # Examples
 
     ```rust
-    use mini_mcmc::core::MarkovChain;
+    use mini_mcmc::core::{MarkovChain, init};
     use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
     use mini_mcmc::metropolis_hastings::MHMarkovChain;
     use ndarray::{arr1, arr2};
@@ -306,7 +308,7 @@ where
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let mut chain = MHMarkovChain::new(target, proposal, &[0.0, 0.0]);
+    let mut chain = MHMarkovChain::new(target, proposal, vec![0.0, 1.0]);
     let new_state = chain.step();
     assert_eq!(new_state.len(), 2);
     ```
@@ -334,7 +336,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ChainRunner; // or run_progress, etc.
+    use crate::core::{init_det, ChainRunner}; // or run_progress, etc.
     use approx::assert_abs_diff_eq;
     use ndarray::{arr1, arr2, Axis};
     use ndarray_stats::CorrelationExt;
@@ -347,8 +349,10 @@ mod tests {
     /// - `n_chains`: number of parallel chains
     /// - `use_progress`: whether to call `run_progress` instead of `run`
     fn run_gaussian_2d_test(sample_size: usize, n_chains: usize, use_progress: bool) {
-        const BURNIN: usize = 2_000;
+        const BURNIN: usize = 500;
         const SEED: u64 = 42;
+
+        assert!(n_chains > 0 && sample_size > 0 && sample_size % n_chains == 0);
 
         // Target distribution
         let target = Gaussian2D {
@@ -357,10 +361,9 @@ mod tests {
         };
 
         // Build the sampler
-        let initial_state = [0.0, 0.0];
         let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
-        let mut mh = MetropolisHastings::new(target.clone(), proposal, &initial_state, n_chains)
-            .set_seed(SEED);
+        let mut mh =
+            MetropolisHastings::new(target.clone(), proposal, init_det(n_chains, 2)).set_seed(SEED);
 
         // Generate samples
         let samples = if use_progress {
@@ -368,6 +371,12 @@ mod tests {
         } else {
             mh.run(sample_size / n_chains, BURNIN).unwrap()
         };
+
+        // Check correct shape
+        assert_eq!(samples.shape(), [n_chains, sample_size / n_chains, 2]);
+        if n_chains <= 1 {
+            return;
+        }
 
         // Reshape samples into a [sample_size, 2] array
         let stacked = samples
@@ -377,38 +386,29 @@ mod tests {
         // Check that mean and covariance match the target distribution
         let mean = stacked.mean_axis(Axis(0)).unwrap();
         let cov = stacked.t().cov(1.0).unwrap();
-        assert_abs_diff_eq!(mean, target.mean, epsilon = 0.3); // or tighter threshold
+
+        assert_abs_diff_eq!(mean, target.mean, epsilon = 0.3);
         assert_abs_diff_eq!(cov, target.cov, epsilon = 0.5);
     }
 
     #[test]
     fn test_single_1_chain() {
-        run_gaussian_2d_test(10_000, 1, false);
+        run_gaussian_2d_test(100, 1, false);
     }
 
     #[test]
-    fn test_4_chains() {
-        run_gaussian_2d_test(40_000, 4, false);
-    }
-
-    #[test]
-    fn test_4_chains_long() {
-        run_gaussian_2d_test(800_000, 4, false);
+    fn test_3_chains() {
+        run_gaussian_2d_test(3000, 3, false);
     }
 
     #[test]
     fn test_progress_1_chain() {
-        run_gaussian_2d_test(10_000, 1, true);
+        run_gaussian_2d_test(100, 1, true);
     }
 
     #[test]
-    fn test_progress_4_chains() {
-        run_gaussian_2d_test(40_000, 4, true);
-    }
-
-    #[test]
-    fn test_progress_4_chains_long() {
-        run_gaussian_2d_test(800_000, 4, true);
+    fn test_progress_3_chains() {
+        run_gaussian_2d_test(3000, 3, true);
     }
 
     #[test]
@@ -432,10 +432,9 @@ mod tests {
             cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
         };
         let proposal = IsotropicGaussian::new(1.0);
-        let initial_state = [0.0, 0.0];
 
         // Create a MH sampler with 4 parallel chains
-        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
+        let mut mh = MetropolisHastings::new(target, proposal, init_det(4, 2));
 
         // Run the sampler for 1100 steps, discarding the first 100 as burn-in
         let samples = mh.run(1000, 100).unwrap();

@@ -1,5 +1,6 @@
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
+use mini_mcmc::core::init_det;
 use mini_mcmc::hmc::{GradientTarget, HMC};
 use num_traits::Float;
 use plotly::common::{color::Rgba, Mode};
@@ -39,7 +40,7 @@ where
     }
 }
 
-/// Plots a 3D scatter plot of HMC samples (shape: [n_collect, n_chains, 3])
+/// Plots a 3D scatter plot of HMC samples (shape: [n_chains, n_collect, 3])
 /// using the plotly crate and saves the interactive plot as "hmc_scatter_plot.html".
 ///
 /// Each chain is rendered as a separate trace with its own transparent color (50% opaque).
@@ -49,8 +50,8 @@ where
 {
     // Get the dimensions: samples has shape [n_collect, n_chains, 3].
     let dims = samples.dims();
-    let n_collect = dims[0];
-    let n_chains = dims[1];
+    let n_chains = dims[0];
+    let n_collect = dims[1];
     let dim = dims[2];
     assert_eq!(dim, 3, "Expected 3D positions for plotting");
 
@@ -66,9 +67,10 @@ where
         );
         n_chains
     ];
-    for step in 0..n_collect {
-        (0..n_chains).for_each(|chain_idx| {
-            let base = step * n_chains * dim + chain_idx * dim;
+    (0..n_collect)
+        .zip((0..n_chains).cycle())
+        .for_each(|(step, chain_idx)| {
+            let base = chain_idx * n_collect * dim + step * dim;
             let x = flat[base];
             let y = flat[base + 1];
             let z = flat[base + 2];
@@ -76,7 +78,6 @@ where
             chains[chain_idx].1.push(y);
             chains[chain_idx].2.push(z);
         });
-    }
 
     // Create a new Plotly plot.
     let mut plot = Plot::new();
@@ -132,14 +133,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create the 3D Rosenbrock target.
     let target = RosenbrockND {};
 
-    // Define 6 chains, each initialized to a 3D point (e.g., [1.0, 2.0, 3.0]).
-    let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
-    let n_collect = 1000;
+    // Define 3 chains, each initialized to a 3D point (e.g., [1.0, 2.0, 3.0]).
+    let n_collect = 400;
 
     // Create the data-parallel HMC sampler.
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
         target,
-        initial_positions,
+        init_det(4, 3),
         0.032, // step size
         50,    // number of leapfrog steps per update
     );
@@ -147,6 +147,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
     // Run HMC for n_collect, collecting samples as a 3D tensor.
     let samples = sampler.run_progress(n_collect, 100).unwrap();
+    println!("Shape: {:?}", samples.shape());
+
     let duration = start.elapsed();
     println!(
         "HMC sampler: generating {} samples took {:?}",

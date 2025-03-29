@@ -13,12 +13,16 @@ Any type implementing [`HasChains<T>`] (with the required trait bounds) automati
 This module is generic over the state type using [`ndarray::LinalgScalar`].
 */
 
-use crate::stats::{collect_rhat, ChainStats, ChainTracker};
+use crate::stats::{collect_rhat, ChainStats, ChainTracker, RunStats};
 use indicatif::ProgressBar;
 use indicatif::{MultiProgress, ProgressStyle};
 use ndarray::stack;
 use ndarray::{prelude::*, LinalgScalar, ShapeError};
 use ndarray_stats::QuantileExt;
+use num_traits::{Float, FromPrimitive};
+use rand::rngs::SmallRng;
+use rand::SeedableRng;
+use rand_distr::{Distribution, StandardNormal};
 use rayon::prelude::*;
 use std::cmp::PartialEq;
 use std::error::Error;
@@ -320,7 +324,7 @@ where
             }
         });
 
-        let samples: Vec<Array2<T>> = thread::scope(|s| {
+        let chain_samples: Vec<Array2<T>> = thread::scope(|s| {
             let handles: Vec<thread::ScopedJoinHandle<Array2<T>>> = chains
                 .iter_mut()
                 .zip(txs)
@@ -339,9 +343,9 @@ where
                 })
                 .collect()
         });
-        let out: Array3<T> = stack(
+        let sample: Array3<T> = stack(
             Axis(0),
-            &samples
+            &chain_samples
                 .iter()
                 .map(|x| x.view())
                 .collect::<Vec<ArrayView2<T>>>(),
@@ -350,11 +354,84 @@ where
         if let Err(e) = progress_handle.join() {
             eprintln!("Progress bar thread emitted error message: {:?}", e);
         }
-        Ok(out)
+
+        let run_stats = RunStats::from(sample.view());
+        run_stats.print();
+
+        Ok(sample)
     }
 }
 
 impl<T: LinalgScalar + Send + PartialEq + num_traits::ToPrimitive, R: HasChains<T>> ChainRunner<T>
     for R
 {
+}
+
+/// Generates a vector of random initial positions from a standard normal distribution.
+///
+/// Each position is a `Vec<T>` of length `d` representing a point in `d`-dimensional space.
+/// The function returns `n` such positions.
+///
+/// # Type Parameters
+/// - `T`: The numeric type (e.g., `f32`, `f64`). Must implement `Float + FromPrimitive`.
+///
+/// # Parameters
+/// - `n`: Number of positions to generate.
+/// - `d`: Dimensionality of each position.
+///
+/// # Returns
+/// A `Vec<Vec<T>>` where each inner vector is a position in `d`-dimensional space.
+///
+/// # Panics
+/// Panics if a sample cannot be converted from `f64` to `T` (should never happen for `f32` or `f64`).
+///
+/// # Examples
+/// ```
+/// # use mini_mcmc::core::init;
+/// let positions: Vec<Vec<f32>> = init(5, 3);
+/// for pos in positions {
+///     println!("{:?}", pos);
+/// }
+/// ```
+pub fn init<T>(n: usize, d: usize) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive,
+{
+    let rng = SmallRng::from_entropy();
+    _init(n, d, rng)
+}
+
+/// Generates a pseudo-random vector from a standard normal distribution.
+/// This function calls [`init_with_seed`] with the same parameters and seed 42.
+pub fn init_det<T>(n: usize, d: usize) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive,
+{
+    init_with_seed(n, d, 42)
+}
+
+/// Generates a pseudo-random vector from a standard normal distribution.
+/// Same as [`init`] except this function returns a deterministic sample.
+pub fn init_with_seed<T>(n: usize, d: usize, seed: u64) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive,
+{
+    let rng = SmallRng::seed_from_u64(seed);
+    _init(n, d, rng)
+}
+
+fn _init<T>(n: usize, d: usize, mut rng: SmallRng) -> Vec<Vec<T>>
+where
+    T: Float + FromPrimitive,
+{
+    (0..n)
+        .map(|_| {
+            (0..d)
+                .map(|_| {
+                    let sample: f64 = StandardNormal.sample(&mut rng);
+                    T::from_f64(sample).unwrap()
+                })
+                .collect()
+        })
+        .collect()
 }

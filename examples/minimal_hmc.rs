@@ -1,5 +1,6 @@
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
+use mini_mcmc::core::init_det;
 use mini_mcmc::hmc::{GradientTarget, HMC};
 use num_traits::Float;
 
@@ -39,12 +40,8 @@ fn main() {
     // Create the 3D Rosenbrock target.
     let target = RosenbrockND {};
 
-    // Define initial positions for 6 chains (each a 3D point).
-    let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
-
     // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
-    let mut sampler =
-        HMC::<f32, BackendType, RosenbrockND>::new(target, initial_positions, 0.032, 50);
+    let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 50);
 
     // Run the sampler for 1000 iterations, discard 100
     let samples = sampler.run(1000, 100);

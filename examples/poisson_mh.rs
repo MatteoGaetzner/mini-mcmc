@@ -94,10 +94,10 @@ fn main() {
     let proposal = NonnegativeProposal;
 
     // Start the chain at k=0
-    let initial_state = [0usize];
+    let initial_state = vec![vec![0usize]];
 
     // Create Metropolis–Hastings with 1 chain (or more, up to you)
-    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+    let mut mh = MetropolisHastings::new(target, proposal, initial_state);
 
     // Collect 10,000 samples and use 1,000 for burn-in (not returned).
     let samples = mh

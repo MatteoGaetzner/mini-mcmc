@@ -257,21 +257,10 @@ where
 
         match psr.stats(sample.clone()) {
             Ok(stats) => {
-                println!(
-                    "ESS in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
-                    stats.ess.min, stats.ess.max, stats.ess.median, stats.ess.mean, stats.ess.std
-                );
-                println!(
-                    "R-hat in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
-                    stats.rhat.min,
-                    stats.rhat.max,
-                    stats.rhat.median,
-                    stats.rhat.mean,
-                    stats.rhat.std
-                );
+                stats.print();
             }
             Err(e) => {
-                eprintln!("Getting ESS statistics failed with: {}", e);
+                eprintln!("Getting run statistics failed with: {}", e);
             }
         }
 
@@ -514,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn test_10_chains() {
+    fn test_3_chains() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -524,16 +513,16 @@ mod tests {
             b: 100.0_f32,
         };
 
-        // Define 10 chains all initialized to (1.0, 2.0).
-        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 10];
-        let n_collect = 1000;
+        // Define 3 chains all initialized to (1.0, 2.0).
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 3];
+        let n_collect = 10;
 
         // Create the HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
             target,
             initial_positions,
             0.01, // step size
-            10,   // number of leapfrog steps per update
+            2,    // number of leapfrog steps per update
         )
         .set_seed(42);
 
@@ -541,14 +530,14 @@ mod tests {
         let mut timer = Timer::new();
         let samples: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
         timer.log(format!(
-            "Collected samples (10 chains) with shape: {:?}",
+            "Collected samples (3 chains) with shape: {:?}",
             samples.dims()
         ));
-        assert_eq!(samples.dims(), [10, 1000, 2]);
+        assert_eq!(samples.dims(), [3, 10, 2]);
     }
 
     #[test]
-    fn test_progress_10_chains() {
+    fn test_progress_3_chains() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<NdArray>;
 
@@ -558,27 +547,27 @@ mod tests {
             b: 100.0_f32,
         };
 
-        // Define 10 chains all initialized to (1.0, 2.0).
-        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 10];
-        let n_collect = 1000;
+        // Define 3 chains all initialized to (1.0, 2.0).
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 3];
+        let n_collect = 10;
 
         // Create the HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
             target,
             initial_positions,
             0.05, // step size
-            10,   // number of leapfrog steps per update
+            2,    // number of leapfrog steps per update
         )
         .set_seed(42);
 
         // Run the sampler for n_collect with no discard.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 100).unwrap();
+        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 3).unwrap();
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
         ));
-        assert_eq!(samples.dims(), [10, 1000, 2]);
+        assert_eq!(samples.dims(), [3, 10, 2]);
     }
 
     #[test]

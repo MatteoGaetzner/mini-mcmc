@@ -4,7 +4,7 @@
 use burn::prelude::*;
 use ndarray::{concatenate, prelude::*, stack};
 use ndarray_stats::QuantileExt;
-use num_traits::Num;
+use num_traits::{Num, ToPrimitive};
 use rayon::prelude::*;
 use rustfft::{num_complex::Complex, FftPlanner};
 use std::{cmp::Ordering, error::Error};
@@ -261,10 +261,7 @@ impl MultiChainTracker {
         let sample_data = sample.to_data();
         let sample_ndarray =
             ArrayView3::from_shape(sample.dims(), sample_data.as_slice().unwrap())?;
-        let (rhat, ess) = split_rhat_mean_ess(sample_ndarray);
-        let ess = basic_stats(ess);
-        let rhat = basic_stats(rhat);
-        Ok(RunStats { ess, rhat })
+        Ok(RunStats::from_f32_view(sample_ndarray))
     }
 
     /// Computes the maximum R-hat value across all parameters.
@@ -308,8 +305,8 @@ impl MultiChainTracker {
     }
 }
 
-fn basic_stats(data: Array1<f32>) -> BasicStats {
-    let mut data = data.clone();
+/// Computes basic statistics from
+pub fn basic_stats(name: &str, mut data: Array1<f32>) -> BasicStats {
     data.as_slice_mut()
         .unwrap()
         .sort_by(|a, b| match b.partial_cmp(a) {
@@ -328,6 +325,7 @@ fn basic_stats(data: Array1<f32>) -> BasicStats {
     let mean = data.mean().expect("Expected computing mean ess to succeed");
     let std = data.std(1.0);
     BasicStats {
+        name: name.to_string(),
         min,
         median,
         max,
@@ -336,19 +334,55 @@ fn basic_stats(data: Array1<f32>) -> BasicStats {
     }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct RunStats {
     pub ess: BasicStats,
     pub rhat: BasicStats,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+impl RunStats {
+    fn from_f32_view(sample: ArrayView3<f32>) -> Self {
+        let (rhat, ess) = split_rhat_mean_ess(sample);
+        let ess = basic_stats("ESS", ess);
+        let rhat = basic_stats("Split R-hat", rhat);
+        RunStats { ess, rhat }
+    }
+    pub fn print(&self) {
+        self.ess.print();
+        self.rhat.print();
+    }
+}
+
+impl<T> From<ArrayView3<'_, T>> for RunStats
+where
+    T: ToPrimitive + std::clone::Clone,
+{
+    fn from(sample: ArrayView3<T>) -> Self {
+        let f32_sample = sample.mapv(|x| x.to_f32().unwrap());
+        let (rhat, ess) = split_rhat_mean_ess(f32_sample.view());
+        let ess = basic_stats("ESS", ess);
+        let rhat = basic_stats("Split R-hat", rhat);
+        RunStats { ess, rhat }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, PartialOrd)]
 pub struct BasicStats {
+    pub name: String,
     pub min: f32,
     pub median: f32,
     pub max: f32,
     pub mean: f32,
     pub std: f32,
+}
+
+impl BasicStats {
+    fn print(&self) {
+        println!(
+            "{} in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
+            self.name, self.min, self.max, self.median, self.mean, self.std
+        );
+    }
 }
 
 /// Takes a (chains, samples, parameters) view and returns a new
@@ -416,7 +450,6 @@ pub fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
 pub fn split_rhat_mean_ess(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
     let splitted = splitcat(sample); // shape: (2c, n/2, p)
     let (within, var) = withinvar(splitted.view());
-    dbg!(&within, &var);
     (
         rhat(within.view(), var.view()),
         ess(splitted.view(), within.view(), var.view()),
@@ -755,13 +788,13 @@ mod tests {
         let data = data
             .to_shape((data.shape()[0], data.shape()[1], 1))
             .unwrap();
-        let (rhat, ess) = split_rhat_mean_ess(data.view());
+        let run_stats = RunStats::from(data.view());
 
         println!("Samples: {}", m * n);
-        println!("ESS: {ess}");
-        println!("Rhat: {rhat}");
-        assert!(*ess.min().unwrap() > 3800.0);
-        assert!(*rhat.max().unwrap() < 1.01);
+        run_stats.print();
+
+        assert!(run_stats.ess.min > 3800.0);
+        assert!(run_stats.rhat.max < 1.01);
     }
 
     #[test]

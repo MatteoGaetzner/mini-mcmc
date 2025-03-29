@@ -1,7 +1,7 @@
 //! A small MCMC demo using Gibbs sampling to sample from a 2D mixture distribution.
 //! The target is a two-component Gaussian mixture (over a state [x, z]).
 
-use mini_mcmc::core::ChainRunner;
+use mini_mcmc::core::{init_det, ChainRunner};
 use mini_mcmc::distributions::Conditional;
 use mini_mcmc::gibbs::GibbsSampler;
 use ndarray::Axis;
@@ -90,16 +90,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         pi0,
     };
 
-    // Our state is [x, z]. We start with x = 0.0 and z = 0.0.
-    let initial_state = [0.0, 0.0];
-
     // Set up the Gibbs sampler.
     const N_CHAINS: usize = 4;
     const BURNIN: usize = 1000;
     const TOTAL_STEPS: usize = 1100;
     let seed: u64 = thread_rng().gen();
 
-    let mut sampler = GibbsSampler::new(conditional, &initial_state, N_CHAINS).set_seed(seed);
+    let mut sampler = GibbsSampler::new(conditional, init_det(N_CHAINS, 2)).set_seed(seed);
 
     // Generate samples.
     let samples = sampler.run(TOTAL_STEPS, BURNIN).unwrap();

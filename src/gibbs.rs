@@ -143,6 +143,7 @@ where
     /// ```rust
     /// use mini_mcmc::distributions::Conditional;
     /// use mini_mcmc::gibbs::GibbsSampler;
+    /// use mini_mcmc::core::init;
     ///
     /// #[derive(Clone)]
     /// struct DummyConditional;
@@ -152,18 +153,18 @@ where
     ///     }
     /// }
     ///
-    /// let sampler = GibbsSampler::new(DummyConditional, &[0.0, 0.0], 4);
+    /// let sampler = GibbsSampler::new(DummyConditional, init(4, 2));
     /// assert_eq!(sampler.chains.len(), 4);
     /// ```
-    pub fn new(target: D, initial_state: &[T], n_chains: usize) -> Self {
+    pub fn new(target: D, initial_states: Vec<Vec<T>>) -> Self {
         let seed = thread_rng().gen::<u64>();
-        let chains = (0..n_chains)
-            .map(|_| GibbsMarkovChain::new(target.clone(), initial_state))
-            .collect();
 
         Self {
-            target,
-            chains,
+            target: target.clone(),
+            chains: initial_states
+                .into_iter()
+                .map(|x| GibbsMarkovChain::new(target.clone(), &x))
+                .collect(),
             seed,
         }
     }
@@ -206,7 +207,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::ChainRunner;
+    use crate::core::{init_det, ChainRunner};
     use approx::assert_abs_diff_eq;
     use ndarray::{Array3, Axis};
     use rand_distr::Normal;
@@ -305,10 +306,8 @@ mod tests {
     fn test_gibbs_sampler_run() {
         let constant = 42.0;
         let conditional = ConstantConditional { c: constant };
-        // 2-dimensional state.
-        let initial_state = [0.0, 0.0];
         // Create a sampler with 4 chains.
-        let mut sampler = GibbsSampler::new(conditional, &initial_state, 4);
+        let mut sampler = GibbsSampler::new(conditional.clone(), init_det(4, 2)).set_seed(42);
         // Run each chain for 15 steps and discard the first 5 as burn-in.
         let samples = sampler.run(10, 5).unwrap();
         let shape = samples.shape();
@@ -323,10 +322,8 @@ mod tests {
     fn test_gibbs_sampler_run_progress() {
         let constant = 42.0;
         let conditional = ConstantConditional { c: constant };
-        // 2-dimensional state.
-        let initial_state = [0.0, 0.0];
         // Create a sampler with 4 chains.
-        let mut sampler = GibbsSampler::new(conditional, &initial_state, 4);
+        let mut sampler = GibbsSampler::new(conditional, init_det(4, 2));
         // Run each chain for 15 steps and discard the first 5 as burn-in.
         let samples = sampler.run_progress(10, 5).unwrap();
         let shape = samples.shape();
@@ -363,8 +360,7 @@ mod tests {
             pi0,
             rng: SmallRng::seed_from_u64(seed),
         };
-        let initial_state = [0.0, 0.0];
-        let mut sampler = GibbsSampler::new(conditional, &initial_state, n_chains).set_seed(seed);
+        let mut sampler = GibbsSampler::new(conditional, init_det(n_chains, 2)).set_seed(seed);
         let samples = sampler.run(n_collect, n_discard).unwrap();
 
         // Collect all x-values from all chains.
@@ -480,8 +476,7 @@ mod tests {
     fn test_has_chains_for_gibbs_sampler() {
         // Create a GibbsSampler with a constant conditional.
         let conditional = ConstantConditional { c: 42.0 };
-        let initial_state = [0.0, 0.0];
-        let mut sampler = GibbsSampler::new(conditional.clone(), &initial_state, 3);
+        let mut sampler = GibbsSampler::new(conditional.clone(), init_det(1, 2)).set_seed(42);
         let original_len = sampler.chains.len();
 
         // Use chains_mut() to get a mutable reference to the internal chains.
@@ -501,7 +496,7 @@ mod tests {
         // Use chains_mut() again to push a new chain.
         {
             let chains_mut = sampler.chains_mut();
-            chains_mut.push(GibbsMarkovChain::new(conditional, &initial_state));
+            chains_mut.push(GibbsMarkovChain::new(conditional, &[1.0, 1.0]));
         }
         // The new length should be original_len + 1.
         assert_eq!(

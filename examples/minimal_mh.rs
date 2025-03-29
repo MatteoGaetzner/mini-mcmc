@@ -1,4 +1,4 @@
-use mini_mcmc::core::ChainRunner;
+use mini_mcmc::core::{init_det, ChainRunner};
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use ndarray::{arr1, arr2};
@@ -9,10 +9,9 @@ fn main() {
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = [0.0, 0.0];
 
     // Create a MH sampler with 4 parallel chains
-    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
+    let mut mh = MetropolisHastings::new(target, proposal, init_det(4, 2));
 
     // Run the sampler for 1,100 steps, discarding the first 100 as burn-in
     let samples = mh.run(1000, 100).unwrap();

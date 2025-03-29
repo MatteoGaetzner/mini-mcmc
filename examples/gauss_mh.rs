@@ -1,6 +1,6 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Gaussian, then plotting the samples.
 
-use mini_mcmc::core::ChainRunner;
+use mini_mcmc::core::{init_det, ChainRunner};
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 
@@ -27,9 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         cov: arr2(&[[2.0, 1.0], [1.0, 2.0]]),
     };
     let proposal = IsotropicGaussian::new(2.0).set_seed(seed);
-    let initial_state = [10.0, 12.0];
-
-    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, N_CHAINS).set_seed(seed);
+    let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).set_seed(seed);
 
     // Generate samples
     let samples = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();

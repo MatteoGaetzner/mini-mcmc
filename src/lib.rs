@@ -7,7 +7,7 @@
 //! ## Example 1: Sampling a 2D Gaussian (Metropolis–Hastings)
 //!
 //! ```rust
-//! use mini_mcmc::core::ChainRunner;
+//! use mini_mcmc::core::{ChainRunner, init};
 //! use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 //! use mini_mcmc::metropolis_hastings::MetropolisHastings;
 //! use ndarray::{arr1, arr2};
@@ -19,7 +19,7 @@
 //! let proposal = IsotropicGaussian::new(1.0);
 //! let initial_state = [0.0, 0.0];
 //!
-//! let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
+//! let mut mh = MetropolisHastings::new(target, proposal, init(4, 2));
 //! let samples = mh.run(1000, 100).unwrap();
 //! println!("Metropolis–Hastings samples shape: {:?}", samples.shape());
 //! ```
@@ -30,6 +30,7 @@
 //! use burn::tensor::Element;
 //! use burn::{backend::Autodiff, prelude::Tensor};
 //! use mini_mcmc::hmc::{GradientTarget, HMC};
+//! use mini_mcmc::core::init;
 //! use num_traits::Float;
 //!
 //! /// The 3D Rosenbrock distribution.
@@ -68,7 +69,7 @@
 //! let target = RosenbrockND {};
 //!
 //! // Define initial positions for 6 chains (each a 3D point).
-//! let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
+//! let initial_positions = init(6, 3);
 //!
 //! // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
 //! let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
@@ -88,7 +89,7 @@
 //! ## Example 3: Sampling a Poisson Distribution (Discrete)
 //!
 //! ```rust
-//! use mini_mcmc::core::ChainRunner;
+//! use mini_mcmc::core::{ChainRunner, init};
 //! use mini_mcmc::distributions::{Proposal, Target};
 //! use mini_mcmc::metropolis_hastings::MetropolisHastings;
 //! use rand::Rng;
@@ -140,9 +141,9 @@
 //!
 //! let target = PoissonTarget { lambda: 4.0 };
 //! let proposal = NonnegativeProposal;
-//! let initial_state = [0];
+//! let initial_state = vec![vec![0]];
 //!
-//! let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+//! let mut mh = MetropolisHastings::new(target, proposal, initial_state);
 //! let samples = mh.run(5000, 100).unwrap();
 //! println!("Poisson samples shape: {:?}", samples.shape());
 //! ```

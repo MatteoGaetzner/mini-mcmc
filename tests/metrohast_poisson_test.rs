@@ -92,10 +92,10 @@ mod tests {
         // Set up the target distribution and proposal
         let target = PoissonDist { lambda: 4.0 };
         let proposal = PoissonRandomWalk::new();
-        let initial_state = [0i32];
+        let initial_state = vec![vec![0i32]];
 
         // Build Metropolis-Hastings
-        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
+        let mut mh = MetropolisHastings::new(target, proposal, initial_state).set_seed(42);
 
         // Sample
         let samples = mh.run(20_000, 2_000).unwrap();
@@ -219,9 +219,9 @@ mod tests {
     fn test_binomial_mh() {
         let target = BinomialDist { n: 10, p: 0.3 };
         let proposal = BinomialRandomWalk::new(10);
-        let initial_state = [5]; // start from the middle
+        let initial_state = vec![vec![5]]; // start from the middle
 
-        let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1).set_seed(42);
+        let mut mh = MetropolisHastings::new(target, proposal, initial_state).set_seed(42);
 
         let samples = mh.run(20_000, 2_000).unwrap();
         let samples = samples.to_shape(20_000).unwrap();
