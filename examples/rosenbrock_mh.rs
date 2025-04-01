@@ -55,7 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     // The standard deviation is chosen to be small given the narrow valley of the target.
     let proposal = IsotropicGaussian::new(1.0).set_seed(seed);
 
-    let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).set_seed(seed);
+    let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).seed(seed);
 
     // Generate samples
     let samples = mh

@@ -95,7 +95,7 @@ mod tests {
         let initial_state = vec![vec![0i32]];
 
         // Build Metropolis-Hastings
-        let mut mh = MetropolisHastings::new(target, proposal, initial_state).set_seed(42);
+        let mut mh = MetropolisHastings::new(target, proposal, initial_state).seed(42);
 
         // Sample
         let samples = mh.run(20_000, 2_000).unwrap();
@@ -221,7 +221,7 @@ mod tests {
         let proposal = BinomialRandomWalk::new(10);
         let initial_state = vec![vec![5]]; // start from the middle
 
-        let mut mh = MetropolisHastings::new(target, proposal, initial_state).set_seed(42);
+        let mut mh = MetropolisHastings::new(target, proposal, initial_state).seed(42);
 
         let samples = mh.run(20_000, 2_000).unwrap();
         let samples = samples.to_shape(20_000).unwrap();

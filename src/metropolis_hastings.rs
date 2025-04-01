@@ -91,8 +91,6 @@ pub struct MetropolisHastings<S: Clone, T: Float, D: Clone, Q: Clone> {
     pub proposal: Q,
     /// The vector of independent Markov chains.
     pub chains: Vec<MHMarkovChain<S, T, D, Q>>,
-    /// The global random seed.
-    pub seed: u64,
 }
 
 /// A single Markov chain for the Metropolis–Hastings algorithm.
@@ -107,8 +105,6 @@ pub struct MHMarkovChain<S, T, D, Q> {
     pub proposal: Q,
     /// The current state of the chain.
     pub current_state: Vec<S>,
-    /// The chain-specific random seed.
-    pub seed: u64,
     /// The random number generator for this chain.
     pub rng: SmallRng,
     phantom: PhantomData<T>,
@@ -155,13 +151,10 @@ where
             .into_iter()
             .map(|s| MHMarkovChain::new(target.clone(), proposal.clone(), s))
             .collect();
-        let seed = thread_rng().gen::<u64>();
-
         Self {
             target,
             proposal,
             chains,
-            seed,
         }
     }
 
@@ -188,16 +181,12 @@ where
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let mh = MetropolisHastings::new(target, proposal, init(2, 2)).set_seed(42);
-    assert_eq!(mh.chains[0].seed, 42);
-    assert_eq!(mh.chains[1].seed, 43);
+    let mh = MetropolisHastings::new(target, proposal, init(2, 2)).seed(42);
     ```
     */
-    pub fn set_seed(mut self, seed: u64) -> Self {
-        self.seed = seed;
+    pub fn seed(mut self, seed: u64) -> Self {
         for (i, chain) in self.chains.iter_mut().enumerate() {
-            let chain_seed = seed + i as u64;
-            chain.seed = chain_seed;
+            let chain_seed = 1 + seed + i as u64;
             chain.rng = SmallRng::seed_from_u64(chain_seed)
         }
         self
@@ -257,13 +246,11 @@ where
     ```
     */
     pub fn new(target: D, proposal: Q, initial_state: Vec<S>) -> Self {
-        let seed = thread_rng().gen::<u64>();
         Self {
             target,
             proposal,
             current_state: initial_state,
-            seed,
-            rng: SmallRng::seed_from_u64(seed),
+            rng: SmallRng::from_entropy(),
             phantom: PhantomData,
         }
     }
@@ -363,7 +350,7 @@ mod tests {
         // Build the sampler
         let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
         let mut mh =
-            MetropolisHastings::new(target.clone(), proposal, init_det(n_chains, 2)).set_seed(SEED);
+            MetropolisHastings::new(target.clone(), proposal, init_det(n_chains, 2)).seed(SEED);
 
         // Generate samples
         let samples = if use_progress {

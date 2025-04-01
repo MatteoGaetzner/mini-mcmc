@@ -23,7 +23,7 @@ mod tests {
     fn run_sampler(target: &Gaussian2D<f64>) -> ndarray::Array2<f64> {
         let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
         let mut mh = MetropolisHastings::new(target.clone(), proposal, vec![INITIAL_STATE.into()])
-            .set_seed(SEED);
+            .seed(SEED);
         let samples = mh.run(SAMPLE_SIZE, BURNIN).unwrap();
         samples.to_shape((SAMPLE_SIZE, 2)).unwrap().to_owned()
     }

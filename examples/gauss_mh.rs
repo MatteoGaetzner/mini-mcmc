@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         cov: arr2(&[[2.0, 1.0], [1.0, 2.0]]),
     };
     let proposal = IsotropicGaussian::new(2.0).set_seed(seed);
-    let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).set_seed(seed);
+    let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).seed(seed);
 
     // Generate samples
     let samples = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
