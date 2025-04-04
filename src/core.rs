@@ -50,6 +50,7 @@ pub trait MarkovChain<T> {
 /// [`ndarray::Array2<T>`] of shape `[n_collect, D]` where:
 /// - `n_collect`: number of samples to collect
 /// - `D`: dimensionality of the state space
+///
 /// Each row corresponds to one collected state of the chain.
 pub fn run_chain<T, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<T>
 where
