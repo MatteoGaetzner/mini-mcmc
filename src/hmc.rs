@@ -9,7 +9,9 @@
 //! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
 //! validation.
 
+use crate::distributions::GradientTarget;
 use crate::stats::MultiChainTracker;
+use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Tensor;
@@ -19,28 +21,6 @@ use rand::prelude::*;
 use rand::Rng;
 use rand_distr::StandardNormal;
 use std::error::Error;
-
-/// A batched target trait for computing the unnormalized log probability (and gradients) for a
-/// collection of positions.
-///
-/// Implement this trait for your target distribution to enable gradient-based sampling.
-///
-/// # Type Parameters
-///
-/// * `T`: The floating-point type (e.g., f32 or f64).
-/// * `B`: The autodiff backend from the `burn` crate.
-pub trait GradientTarget<T: Float, B: AutodiffBackend> {
-    /// Compute the log probability for a batch of positions.
-    ///
-    /// # Parameters
-    ///
-    /// * `positions`: A tensor of shape `[n_chains, D]` representing the current positions for each chain.
-    ///
-    /// # Returns
-    ///
-    /// A 1D tensor of shape `[n_chains]` containing the log probabilities for each chain.
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
-}
 
 /// A data-parallel Hamiltonian Monte Carlo (HMC) sampler.
 ///
@@ -63,7 +43,9 @@ where
     pub step_size: T,
     /// The number of leapfrog steps to take per HMC update.
     pub n_leapfrog: usize,
-    /// The current positions for all chains, stored as a tensor of shape `[n_chains, D]`.
+    /// The current positions for all chains, stored as a tensor of shape `[n_chains, D]` where:
+    /// - `n_chains`: number of parallel chains
+    /// - `D`: dimensionality of the state space
     pub positions: Tensor<B, 2>,
     /// A random number generator for sampling momenta and uniform random numbers for the
     /// Metropolis acceptance test.
@@ -189,14 +171,55 @@ where
     ///
     /// # Returns
     ///
-    /// A tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
+    /// A tuple containing:
+    /// - A tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
+    /// - A `RunStats` object containing convergence statistics including:
+    ///   - Acceptance probability
+    ///   - Potential scale reduction factor (R-hat)
+    ///   - Effective sample size (ESS)
+    ///   - Other convergence diagnostics
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mini_mcmc::hmc::HMC;
+    /// use mini_mcmc::distributions::DiffableGaussian2D;
+    /// use burn::backend::{Autodiff, NdArray};
+    /// use burn::prelude::*;
+    ///
+    /// // Create a 2D Gaussian target distribution
+    /// let target = DiffableGaussian2D::new(
+    ///     [0.0_f32, 1.0],  // mean
+    ///     [[4.0, 2.0],     // covariance
+    ///      [2.0, 3.0]]
+    /// );
+    ///
+    /// // Create HMC sampler with:
+    /// // - target distribution
+    /// // - initial positions for each chain
+    /// // - step size for leapfrog integration
+    /// // - number of leapfrog steps
+    /// type BackendType = Autodiff<NdArray>;
+    /// let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+    ///     target,
+    ///     vec![vec![0.0; 2]; 4],    // Initial positions for 4 chains
+    ///     0.1,                      // Step size
+    ///     5,                       // Number of leapfrog steps
+    /// );
+    ///
+    /// // Run sampler with progress tracking
+    /// let (samples, stats) = sampler.run_progress(12, 34).unwrap();
+    ///
+    /// // Print convergence statistics
+    /// stats.print();
+    /// ```
     ///
     /// [1]: https://mc-stan.org/docs/2_18/reference-manual/notation-for-samples-chains-and-draws.html
     pub fn run_progress(
         &mut self,
         n_collect: usize,
         n_discard: usize,
-    ) -> Result<Tensor<B, 3>, Box<dyn Error>> {
+    ) -> Result<(Tensor<B, 3>, RunStats), Box<dyn Error>> {
         // Discard initial burn-in samples.
         (0..n_discard).for_each(|_| self.step());
 
@@ -212,12 +235,12 @@ where
         );
         pb.set_prefix("HMC");
 
-        let mut psr = MultiChainTracker::new(n_chains, dim);
+        let mut tracker = MultiChainTracker::new(n_chains, dim);
 
         let mut last_state = self.positions.clone();
 
         let mut last_state_data = last_state.to_data();
-        if let Err(e) = psr.step(last_state_data.as_slice::<T>().unwrap()) {
+        if let Err(e) = tracker.step(last_state_data.as_slice::<T>().unwrap()) {
             eprintln!("Warning: Shown progress statistics may be unreliable since updating them failed with: {}", e);
         }
 
@@ -236,18 +259,18 @@ where
             last_state = current_state;
 
             last_state_data = last_state.to_data();
-            if let Err(e) = psr.step(last_state_data.as_slice::<T>().unwrap()) {
+            if let Err(e) = tracker.step(last_state_data.as_slice::<T>().unwrap()) {
                 eprintln!("Warning: Shown progress statistics may be unreliable since updating them failed with: {}", e);
             }
 
-            match psr.max_rhat() {
+            match tracker.max_rhat() {
                 Err(e) => {
                     eprintln!("Computing max(rhat) failed with: {}", e);
                 }
                 Ok(max_rhat) => {
                     pb.set_message(format!(
                         "p(accept)≈{:.2} max(rhat)≈{:.2}",
-                        psr.p_accept, max_rhat
+                        tracker.p_accept, max_rhat
                     ));
                 }
             }
@@ -255,16 +278,15 @@ where
         pb.finish_with_message("Done!");
         let sample = out.permute([1, 0, 2]);
 
-        match psr.stats(sample.clone()) {
-            Ok(stats) => {
-                stats.print();
-            }
+        let stats = match tracker.stats(sample.clone()) {
+            Ok(stats) => stats,
             Err(e) => {
                 eprintln!("Getting run statistics failed with: {}", e);
+                return Err(e);
             }
-        }
+        };
 
-        Ok(sample)
+        Ok((sample, stats))
     }
 
     /// Perform one batched HMC update for all chains in parallel.
@@ -407,7 +429,8 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dev_tools::Timer;
+    use crate::{dev_tools::Timer, distributions::DiffableGaussian2D, stats::split_rhat_mean_ess};
+    use ndarray::ArrayView3;
 
     use super::*;
     use burn::{
@@ -415,6 +438,9 @@ mod tests {
         tensor::{Element, Tensor},
     };
     use num_traits::Float;
+
+    // Use the CPU backend (NdArray) wrapped in Autodiff.
+    type BackendType = Autodiff<NdArray>;
 
     // Define the Rosenbrock distribution.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -470,9 +496,6 @@ mod tests {
 
     #[test]
     fn test_single() {
-        // Use the CPU backend (NdArray) wrapped in Autodiff.
-        type BackendType = Autodiff<NdArray>;
-
         // Create the Rosenbrock target (a = 1, b = 100)
         let target = Rosenbrock2D {
             a: 1.0_f32,
@@ -562,12 +585,70 @@ mod tests {
 
         // Run the sampler for n_collect with no discard.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 3).unwrap();
+        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 3).unwrap().0;
         timer.log(format!(
             "Collected samples (10 chains) with shape: {:?}",
             samples.dims()
         ));
         assert_eq!(samples.dims(), [3, 10, 2]);
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_gaussian_2d_hmc_single_run() {
+        // Each experiment uses 3 chains:
+        let n_chains = 3;
+
+        // We'll do 1500 steps per chain with 500 burn-in => 1000 collected samples per chain
+        let burn_in = 500;
+        let n_samples_per_chain = 1500;
+        let collected = n_samples_per_chain - burn_in;
+
+        // 1) Define the 2D Gaussian target distribution:
+        //    mean: [0.0, 1.0], cov: [[4.0, 2.0], [2.0, 3.0]]
+        let target = DiffableGaussian2D::new([0.0, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+
+        // 2) Define 3 chains, each chain is 2-dimensional:
+        let initial_positions = vec![
+            vec![1.0_f32, 2.0_f32],
+            vec![1.0_f32, 2.0_f32],
+            vec![1.0_f32, 2.0_f32],
+        ];
+
+        // 3) Create the HMC sampler using NdArray backend with autodiff
+        type BackendType = Autodiff<NdArray>;
+        let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+            target,
+            initial_positions,
+            0.1, // step size
+            10,  // leapfrog steps
+        )
+        .set_seed(42);
+
+        // 4) Run the sampler for (burn_in + collected) steps, discard the first `burn_in`
+        //    The shape of `samples` will be [n_chains, collected, 2]
+        let samples_3d = sampler.run(collected, burn_in);
+
+        // Check shape is as expected
+        assert_eq!(samples_3d.dims(), [n_chains, collected, 2]);
+
+        // 5) Convert the samples into an ndarray view
+        let data = samples_3d.to_data();
+        let arr = ArrayView3::from_shape(samples_3d.dims(), data.as_slice().unwrap()).unwrap();
+
+        // 6) Compute split-Rhat and ESS
+        let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
+        let ess1 = ess_vals[0];
+        let ess2 = ess_vals[1];
+
+        println!("\nSingle Run Results:");
+        println!("Rhat: {:?}", rhat);
+        println!("ESS(Param1): {:.2}", ess1);
+        println!("ESS(Param2): {:.2}", ess2);
+
+        // Optionally, add some asserts about expected minimal ESS
+        assert!(ess1 > 50.0, "Expected param1 ESS > 50, got {:.2}", ess1);
+        assert!(ess2 > 50.0, "Expected param2 ESS > 50, got {:.2}", ess2);
     }
 
     #[test]
@@ -633,7 +714,7 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_collect, 0).unwrap();
+        let samples = sampler.run_progress(n_collect, 0).unwrap().0;
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
@@ -714,7 +795,7 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_collect, 0).unwrap();
+        let samples = sampler.run_progress(n_collect, 0).unwrap().0;
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()

@@ -47,18 +47,10 @@ pub trait MarkovChain<T> {
 /// Runs a single MCMC chain for a specified number of steps.
 ///
 /// This function repeatedly calls the chain's `step()` method and collects each state into a
-/// [`ndarray::Array2<T>`], where each row corresponds to one collected state of the chain.
-///
-/// # Arguments
-///
-/// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
-/// * `n_collect` - The number of samples to collect and return.
-/// * `n_discard` - The number of samples to discard (burn-in).
-///
-/// # Returns
-///
-/// A [`ndarray::Array2<T>`] where the number of rows equals `n_collect` and the number of columns equals
-/// the dimensionality of the chain's state.
+/// [`ndarray::Array2<T>`] of shape `[n_collect, D]` where:
+/// - `n_collect`: number of samples to collect
+/// - `D`: dimensionality of the state space
+/// Each row corresponds to one collected state of the chain.
 pub fn run_chain<T, M>(chain: &mut M, n_collect: usize, n_discard: usize) -> Array2<T>
 where
     M: MarkovChain<T>,
@@ -204,13 +196,19 @@ where
     ///
     /// # Returns
     ///
-    /// Returns a [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
-    /// step and the last one the parameter dimension.
+    /// Returns a tuple containing:
+    /// - A [`ndarray::Array3`] tensor with the first axis representing the chain, the second one the
+    ///   step and the last one the parameter dimension.
+    /// - A `RunStats` object containing convergence statistics including:
+    ///   - Acceptance probability
+    ///   - Potential scale reduction factor (R-hat)
+    ///   - Effective sample size (ESS)
+    ///   - Other convergence diagnostics
     fn run_progress(
         &mut self,
         n_collect: usize,
         n_discard: usize,
-    ) -> Result<Array3<T>, Box<dyn Error>> {
+    ) -> Result<(Array3<T>, RunStats), Box<dyn Error>> {
         // Channels.
         // Each chain gets its own channel. Hence, we have `n_chains` channels.
         // The objects sent over channels are Array2<f32>s ($s_m^2$, $\bar{\theta}_m^{(\bullet)}$).
@@ -358,7 +356,7 @@ where
         let run_stats = RunStats::from(sample.view());
         run_stats.print();
 
-        Ok(sample)
+        Ok((sample, run_stats))
     }
 }
 

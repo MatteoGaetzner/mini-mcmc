@@ -41,6 +41,8 @@ let candidate = proposal.sample(&current);
 println!("Candidate state: {:?}", candidate);
 */
 
+use burn::prelude::*;
+use burn::tensor::backend::AutodiffBackend;
 use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
 use rand::rngs::SmallRng;
@@ -48,6 +50,28 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
+
+/// A batched target trait for computing the unnormalized log probability (and gradients) for a
+/// collection of positions.
+///
+/// Implement this trait for your target distribution to enable gradient-based sampling.
+///
+/// # Type Parameters
+///
+/// * `T`: The floating-point type (e.g., f32 or f64).
+/// * `B`: The autodiff backend from the `burn` crate.
+pub trait GradientTarget<T: Float, B: AutodiffBackend> {
+    /// Compute the log probability for a batch of positions.
+    ///
+    /// # Parameters
+    ///
+    /// * `positions`: A tensor of shape `[n_chains, D]` representing the current positions for each chain.
+    ///
+    /// # Returns
+    ///
+    /// A 1D tensor of shape `[n_chains]` containing the log probabilities for each chain.
+    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
+}
 
 /// A trait for generating proposals Metropolis–Hastings-like algorithms.
 /// The state type `T` is typically a vector of continuous values.
@@ -164,6 +188,102 @@ where
         let diff = x - self.mean.clone();
         let inv_cov = arr2(&[[d, -b], [-c, a]]) / det;
         -T::from(0.5).unwrap() * diff.dot(&inv_cov).dot(&diff)
+    }
+}
+
+/// A 2D Gaussian target distribution, parameterized by mean and covariance.
+///
+/// This struct also precomputes the inverse covariance and a log-normalization
+/// constant so we can quickly evaluate log-density and gradients in `log_prob_batch`.
+#[derive(Debug, Clone)]
+pub struct DiffableGaussian2D<T: Float> {
+    pub mean: [T; 2],
+    pub cov: [[T; 2]; 2],
+    pub inv_cov: [[T; 2]; 2],
+    pub logdet_cov: T,
+    pub norm_const: T,
+}
+
+impl<T> DiffableGaussian2D<T>
+where
+    T: Float + std::fmt::Debug + num_traits::FloatConst,
+{
+    /// Create a new 2D Gaussian with the specified mean and covariance.
+    /// We automatically compute the covariance inverse and log-determinant.
+    pub fn new(mean: [T; 2], cov: [[T; 2]; 2]) -> Self {
+        // Compute determinant
+        let det_cov = cov[0][0] * cov[1][1] - cov[0][1] * cov[1][0];
+        // Inverse of a 2x2:
+        // [a, b; c, d]^-1 = (1/det) [ d, -b; -c, a ]
+        let inv_det = T::one() / det_cov;
+        let inv_cov = [
+            [cov[1][1] * inv_det, -cov[0][1] * inv_det],
+            [-cov[1][0] * inv_det, cov[0][0] * inv_det],
+        ];
+        let logdet_cov = det_cov.ln(); // T must implement Float
+                                       // Normalization constant for log pdf in 2 dimensions:
+                                       //   - (1/2) * (dim * ln(2 pi) + ln(|Sigma|))
+                                       //   = -1/2 [ 2 * ln(2*pi) + ln(det_cov) ]
+        let two = T::one() + T::one();
+        let norm_const = -(two * (two * T::PI()).ln() + logdet_cov) / two;
+
+        Self {
+            mean,
+            cov,
+            inv_cov,
+            logdet_cov,
+            norm_const,
+        }
+    }
+}
+
+impl<T, B> GradientTarget<T, B> for DiffableGaussian2D<T>
+where
+    T: Float + burn::tensor::ElementConversion + std::fmt::Debug + burn::tensor::Element,
+    B: AutodiffBackend,
+{
+    /// Evaluate the log probability for a batch of positions: shape [n_chains, 2].
+    /// Return shape [n_chains].
+    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        let (n_chains, dim) = (positions.dims()[0], positions.dims()[1]);
+        assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
+
+        // 1) Subtract mean => shape [n_chains, 2]
+        //    We'll broadcast self.mean onto all rows:
+        // Suppose self.mean = [T; 2] where T: Float, and we want a shape [1, 2].
+        let mean_tensor =
+            Tensor::<B, 2>::from_floats([[self.mean[0], self.mean[1]]], &B::Device::default())
+                .reshape([1, 2])
+                .expand([n_chains, 2]);
+
+        let delta = positions.clone() - mean_tensor;
+
+        // 2) We have inv_cov as a 2x2 matrix. Let's define it as a Tensor for matmul
+        let inv_cov_data = [
+            self.inv_cov[0][0],
+            self.inv_cov[0][1],
+            self.inv_cov[1][0],
+            self.inv_cov[1][1],
+        ];
+        let inv_cov_t =
+            Tensor::<B, 2>::from_floats([inv_cov_data], &B::Device::default()).reshape([2, 2]);
+
+        // 3) The quadratic form is: delta^T * inv_cov * delta
+        // For each chain, shape is [1,2] * [2,2] * [2,1] => scalar
+        // We'll do it in a batched style:
+        //   We can do: z = delta matmul inv_cov => shape [n_chains, 2]
+        //   Then z * delta => shape [n_chains, 2], sum dim=1 => shape [n_chains]
+        let z = delta.clone().matmul(inv_cov_t); // shape [n_chains, 2]
+        let quad = (z * delta).sum_dim(1).squeeze(1); // shape [n_chains]
+
+        // 4) The log density for each chain i is:
+        //     log p(x_i) = norm_const - 0.5 * quad[i]
+        // where norm_const is -0.5 * (2 ln(2 pi) + ln det(Sigma)).
+        // We'll broadcast that to shape [n_chains].
+        let shape = Shape::new([n_chains]);
+        let norm_c = Tensor::<B, 1>::ones(shape, &B::Device::default()).mul_scalar(self.norm_const);
+        let half = T::from(0.5).unwrap();
+        norm_c - quad.mul_scalar(half)
     }
 }
 

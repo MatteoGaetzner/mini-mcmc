@@ -32,7 +32,7 @@ let target = Gaussian2D {
 let proposal = IsotropicGaussian::new(1.0);
 
 // Starting state for all chains (just one in this case)
-let initial_states = init(1, 2);
+let initial_states = init(1, 2);  // Creates 1 chain with 2-dimensional state, initialized with random values
 
 // Create a sampler with 1 chain
 let mh = MetropolisHastings::new(target, proposal, initial_states);
@@ -63,8 +63,8 @@ these moves using the Metropolis–Hastings acceptance criterion.
 - `Q`: The proposal distribution type. Must implement [`Proposal`].
 
 The sampler maintains multiple independent Markov chains (each represented by [`MHMarkovChain`])
-that are run in parallel. A global random seed is provided, and each chain’s RNG is seeded by
-adding the chain’s index to the global seed, ensuring reproducibility.
+that are run in parallel. A global random seed is provided, and each chain's RNG is seeded by
+adding the chain's index to the global seed, ensuring reproducibility.
 
 # Examples
 
@@ -324,11 +324,11 @@ where
 mod tests {
     use super::*;
     use crate::core::{init_det, ChainRunner}; // or run_progress, etc.
-    use approx::assert_abs_diff_eq;
-    use ndarray::{arr1, arr2, Axis};
-    use ndarray_stats::CorrelationExt;
-
     use crate::distributions::{Gaussian2D, IsotropicGaussian};
+    use crate::stats::{basic_stats, split_rhat_mean_ess, RunStats}; // from your posted stats module
+    use approx::assert_abs_diff_eq;
+    use ndarray::{arr1, arr2, Array3, Axis};
+    use ndarray_stats::CorrelationExt;
 
     /// Common test harness for checking that samples from a 2D Gaussian match
     /// the true mean and covariance within floating-point tolerance.
@@ -353,10 +353,12 @@ mod tests {
             MetropolisHastings::new(target.clone(), proposal, init_det(n_chains, 2)).seed(SEED);
 
         // Generate samples
-        let samples = if use_progress {
+        let (samples, _stats) = if use_progress {
             mh.run_progress(sample_size / n_chains, BURNIN).unwrap()
         } else {
-            mh.run(sample_size / n_chains, BURNIN).unwrap()
+            let samples = mh.run(sample_size / n_chains, BURNIN).unwrap();
+            let stats = RunStats::from(samples.view());
+            (samples, stats)
         };
 
         // Check correct shape
@@ -408,6 +410,107 @@ mod tests {
     #[ignore = "Slow test: run only when explicitly requested"]
     fn test_progress_16_chains_long() {
         run_gaussian_2d_test(80_000_000, 16, true);
+    }
+
+    /// A test that replicates the 2D Metropolis-Hastings experiment multiple times (e.g. 100)
+    /// and collects the mean ESS for each parameter across runs, printing summary stats.
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_mean_ess_2d_gaussian() {
+        let n_runs = 100;
+        let n_chains = 3;
+        let burn_in = 500_usize;
+        let n_samples_per_chain = 1500_usize; // total per chain (including burn-in)
+        let collected = n_samples_per_chain - burn_in; // actual collected samples per chain
+
+        // We'll store the mean ESS for x1 and x2 from each run
+        let mut ess_x1s = Vec::with_capacity(n_runs);
+        let mut ess_x2s = Vec::with_capacity(n_runs);
+
+        // For each run, we do a fresh Metropolis-Hastings
+        for _ in 0..n_runs {
+            // 1) Define target distribution
+            let target = Gaussian2D {
+                mean: arr1(&[0.0, 1.0]),
+                cov: arr2(&[[4.0, 2.0], [2.0, 3.0]]),
+            };
+
+            // 2) Define proposal
+            let proposal = IsotropicGaussian::new(1.0);
+
+            // 3) Initialize MH with 3 parallel chains
+            //    init_det(...) is just one of your custom methods that produces
+            //    deterministic initial states for each chain. Or use init(...) if you prefer random.
+            let mut mh = MetropolisHastings::new(target, proposal, init_det(n_chains, 2));
+
+            // Optionally seed for reproducibility
+            mh = mh.seed(42); // or any global seed
+
+            // 4) Run the sampler
+            //    This depends on your actual method name.
+            //    E.g. `mh.run(num_steps, burn_in)` returns an ndarray of shape (chains, num_steps, param_dim)
+            //    Adjust according to your crate's actual interface.
+            let samples = mh.run(collected, burn_in).expect("MH run failed");
+
+            // samples.shape() should be [3, 1000, 2]
+            assert_eq!(samples.shape(), &[n_chains, collected, 2]);
+
+            // 5) Convert samples to an ndarray of f32 for stats
+            //    If your internal type is f64, you can map it to f32.
+            //    We'll assume float is okay as f32. Adjust if needed.
+            let mut samples_f32 = Array3::<f32>::zeros((n_chains, collected, 2));
+            for c in 0..n_chains {
+                for t in 0..collected {
+                    samples_f32[[c, t, 0]] = samples[[c, t, 0]] as f32;
+                    samples_f32[[c, t, 1]] = samples[[c, t, 1]] as f32;
+                }
+            }
+
+            // 6) We use the function from your stats module to do split-Rhat & ESS
+            //    `split_rhat_mean_ess` returns (rhat, ess) for each parameter as 1D arrays.
+            let (_, ess_vec) = split_rhat_mean_ess(samples_f32.view());
+
+            // ess_vec is the ESS for each parameter: [ess_x1, ess_x2]
+            let ess_x1 = ess_vec[0];
+            let ess_x2 = ess_vec[1];
+
+            ess_x1s.push(ess_x1);
+            ess_x2s.push(ess_x2);
+
+            // Optionally, you might also record Rhat or do other analyses here
+        }
+
+        // Now we have 100 values for ESS x1 and ESS x2. Let's analyze them:
+        let ess_x1_array = ndarray::Array1::from_vec(ess_x1s);
+        let ess_x2_array = ndarray::Array1::from_vec(ess_x2s);
+
+        // Summarize them using the basic_stats function from your stats module
+        let stats_x1 = basic_stats("ESS(x1)", ess_x1_array);
+        let stats_x2 = basic_stats("ESS(x2)", ess_x2_array);
+
+        // Print out or assert the summary stats
+        stats_x1.print();
+        stats_x2.print();
+
+        // Optionally, assert certain minimal thresholds or acceptance criteria
+        // For example, we might expect an average ESS ~ something.
+        // (This is user-dependent and depends on the chain size, etc.)
+        assert!(
+            stats_x1.mean >= 65.0 && stats_x1.mean <= 125.0,
+            "Expected ESS(x1) to average in [65, 125]"
+        );
+        assert!(
+            stats_x2.mean >= 83.0 && stats_x1.mean <= 143.0,
+            "Expected ESS(x2) to average in [83, 143]"
+        );
+        assert!(
+            stats_x1.std >= 20.0 && stats_x1.std <= 40.0,
+            "Expected std(ESS(x1)) in [20, 40]"
+        );
+        assert!(
+            stats_x2.std >= 20.0 && stats_x1.std <= 40.0,
+            "Expected std(ESS(x2)) in [20, 40]"
+        );
     }
 
     /// This test remains separate because it's exercising the "example usage"

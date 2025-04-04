@@ -325,8 +325,10 @@ mod tests {
         // Create a sampler with 4 chains.
         let mut sampler = GibbsSampler::new(conditional, init_det(4, 2));
         // Run each chain for 15 steps and discard the first 5 as burn-in.
-        let samples = sampler.run_progress(10, 5).unwrap();
+        let (samples, stats) = sampler.run_progress(10, 5).unwrap();
         let shape = samples.shape();
+        stats.print();
+
         assert_eq!(shape[0], 4);
         assert_eq!(shape[1], 10);
         assert_eq!(shape[2], 2);

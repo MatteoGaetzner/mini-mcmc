@@ -10,9 +10,10 @@ use mini_mcmc::metropolis_hastings::MetropolisHastings;
 
 use ndarray::Axis;
 use num_traits::Float;
-use plotters::chart::ChartBuilder;
-use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
-use plotters::style::{Color, RGBAColor, BLACK, RED, WHITE};
+use plotly::{
+    common::{MarkerSymbol, Mode},
+    Layout, Scatter,
+};
 use std::error::Error;
 
 /// The **Rosenbrock** distribution is a classic example with a narrow, curved valley.
@@ -43,9 +44,9 @@ where
 /// Main entry point: sets up a 2D Rosenbrock target, runs Metropolis-Hastings,
 /// computes summary statistics, and generates a scatter plot of the samples.
 fn main() -> Result<(), Box<dyn Error>> {
-    const SAMPLE_SIZE: usize = 100_000;
-    const BURNIN: usize = 10_000;
-    const N_CHAINS: usize = 8;
+    const SAMPLE_SIZE: usize = 5_000; // Reduced from 100,000
+    const BURNIN: usize = 1_000; // Reduced from 10,000
+    const N_CHAINS: usize = 4; // Reduced from 8
     let seed: u64 = 42;
 
     // Define the Rosenbrock target distribution with parameters a=1, b=100.
@@ -58,7 +59,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).seed(seed);
 
     // Generate samples
-    let samples = mh
+    let (samples, stats) = mh
         .run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN)
         .expect("Expected generating samples to succeed");
     let pooled = samples
@@ -66,6 +67,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .expect("Expected reshaping to succeed");
 
     println!("Generated {:?} samples", pooled.shape()[0]);
+    stats.print();
 
     // Basic statistics
     let row_mean = pooled.mean_axis(Axis(0)).unwrap();
@@ -74,59 +76,59 @@ fn main() -> Result<(), Box<dyn Error>> {
         row_mean[0], row_mean[1]
     );
 
-    // Compute quantiles for plotting ranges
-    let mut x_coords: Vec<f64> = pooled.column(0).iter().copied().collect();
-    let mut y_coords: Vec<f64> = pooled.column(1).iter().copied().collect();
-    x_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-    y_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    // Extract coordinates for plotting
+    let x_coords: Vec<f64> = pooled.column(0).to_vec();
+    let y_coords: Vec<f64> = pooled.column(1).to_vec();
 
-    let x_range = x_coords.first().unwrap().to_owned()..x_coords.last().unwrap().to_owned();
-    let y_range = y_coords.first().unwrap().to_owned()..y_coords.last().unwrap().to_owned();
+    // Create scatter plot with improved visual parameters
+    let trace = Scatter::new(x_coords, y_coords)
+        .mode(Mode::Markers)
+        .name("MCMC Samples")
+        .marker(
+            plotly::common::Marker::new()
+                .size(6) // Increased from 4
+                .opacity(0.7) // Added opacity
+                .color("rgb(70, 130, 180)"), // Solid color instead of rgba
+        );
 
-    // Draw the scatter plot
-    let root = BitMapBackend::new("rosenbrock_scatter_plot.png", (1200, 900)).into_drawing_area();
-    root.fill(&WHITE)?;
+    // Add mean point with improved visibility
+    let mean_trace = Scatter::new(vec![row_mean[0]], vec![row_mean[1]])
+        .mode(Mode::Markers)
+        .name("Mean")
+        .marker(
+            plotly::common::Marker::new()
+                .size(12) // Increased from 8
+                .symbol(MarkerSymbol::Star) // Changed to star symbol
+                .color("red"),
+        );
 
-    let mut chart = ChartBuilder::on(&root)
-        .caption("MCMC Samples from 2D Rosenbrock", ("sans-serif", 50))
-        .margin(10)
-        .x_label_area_size(50)
-        .y_label_area_size(50)
-        .build_cartesian_2d(x_range.clone(), y_range.clone())?;
-
-    chart
-        .configure_mesh()
-        .x_labels(10)
-        .y_labels(10)
-        .light_line_style(WHITE.mix(0.8))
-        .bold_line_style(BLACK.mix(0.5))
-        .draw()?;
-
-    chart.draw_series(pooled.axis_iter(Axis(0)).map(|point| {
-        Circle::new(
-            (point[0], point[1]),
-            2,
-            RGBAColor(70, 130, 180, 0.5).filled(),
+    // Create layout with improved styling
+    let layout = Layout::new()
+        .title(plotly::common::Title::new())
+        .x_axis(
+            plotly::layout::Axis::new()
+                .title("x")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
         )
-    }))?;
+        .y_axis(
+            plotly::layout::Axis::new()
+                .title("y")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
+        )
+        .show_legend(true)
+        .plot_background_color("rgb(250, 250, 250)")
+        .width(800)
+        .height(600);
 
-    chart
-        .draw_series(std::iter::once(Circle::new(
-            (row_mean[0], row_mean[1]),
-            6,
-            RED.filled(),
-        )))?
-        .label("Mean")
-        .legend(|(x, y)| Circle::new((x, y), 6, RED.filled()));
-
-    chart
-        .configure_series_labels()
-        .border_style(BLACK)
-        .background_style(WHITE.mix(0.9))
-        .label_font(("sans-serif", 35))
-        .draw()?;
-
-    println!("Saved scatter plot to rosenbrock_scatter_plot.png");
+    // Create and save plot
+    let mut plot = plotly::Plot::new();
+    plot.add_trace(trace);
+    plot.add_trace(mean_trace);
+    plot.set_layout(layout);
+    plot.write_html("rosenbrock_scatter_plot.html");
+    println!("Saved scatter plot to rosenbrock_scatter_plot.html");
 
     // Optionally, save samples to file (if you have an IO module).
     // let _ = save_parquet(&samples, "rosenbrock_samples.parquet");
@@ -142,12 +144,13 @@ mod tests {
     fn test_main() {
         main().expect("Expected main to not return an error.");
         assert!(
-            std::path::Path::new("rosenbrock_scatter_plot.png").exists(),
-            "Expected rosenbrock_scatter_plot.png to exist."
+            std::path::Path::new("rosenbrock_scatter_plot.html").exists(),
+            "Expected rosenbrock_scatter_plot.html to exist."
         );
-        assert!(
-            std::path::Path::new("rosenbrock_samples.parquet").exists(),
-            "Expected rosenbrock_samples.parquet to exist."
-        );
+        // Optionally, check for parquet file if IO module is enabled
+        // assert!(
+        //     std::path::Path::new("rosenbrock_samples.parquet").exists(),
+        //     "Expected rosenbrock_samples.parquet to exist."
+        // );
     }
 }

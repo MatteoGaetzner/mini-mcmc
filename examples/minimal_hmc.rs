@@ -1,7 +1,8 @@
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
 use mini_mcmc::core::init_det;
-use mini_mcmc::hmc::{GradientTarget, HMC};
+use mini_mcmc::distributions::GradientTarget;
+use mini_mcmc::hmc::HMC;
 use num_traits::Float;
 
 /// The 3D Rosenbrock distribution.

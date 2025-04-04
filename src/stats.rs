@@ -377,7 +377,7 @@ pub struct BasicStats {
 }
 
 impl BasicStats {
-    fn print(&self) {
+    pub fn print(&self) {
         println!(
             "{} in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
             self.name, self.min, self.max, self.median, self.mean, self.std
@@ -395,7 +395,32 @@ fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
     concatenate(Axis(0), &[half_1, half_2]).expect("Expected stacking two halves to succeed")
 }
 
-pub fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
+/// Computes both split-R-hat and ESS metrics following STAN's methodology.
+///
+/// # Arguments
+/// - `sample`: 3D array of samples with shape (chains, samples, parameters).
+///
+/// # Returns
+/// A tuple containing:
+/// - An array of split-R-hat values for each parameter
+/// - An array of ESS values for each parameter
+///
+/// # References
+/// - STAN Reference Manual, Section on R-hat and Effective Sample Size
+pub fn split_rhat_mean_ess(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
+    let splitted = splitcat(sample); // shape: (2c, n/2, p)
+    let (within, var) = withinvar(splitted.view());
+    (
+        rhat(within.view(), var.view()),
+        ess(splitted.view(), within.view(), var.view()),
+    )
+}
+
+fn rhat(within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
+    (within.to_owned() / var).sqrt()
+}
+
+fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
     let c = sample.shape()[0];
     let n = sample.shape()[1];
     let p = sample.shape()[2];
@@ -416,7 +441,6 @@ pub fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
             // (We assume 2c > 1)
             let diff = &chain_means - overall_mean;
             let b = diff.pow2().sum() * ((n as f32) / ((c - 1) as f32));
-            dbg!(param_idx, &chain_means, &overall_mean, &diff, b);
 
             // within => we broadcast chain_means to shape (2c, n/2) to subtract
             // but an easier approach might be:
@@ -446,33 +470,23 @@ pub fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
     (Array1::from_vec(within), Array1::from_vec(var))
 }
 
-/// Computes ESS after splitting each chain into two halves.
-pub fn split_rhat_mean_ess(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
-    let splitted = splitcat(sample); // shape: (2c, n/2, p)
-    let (within, var) = withinvar(splitted.view());
-    (
-        rhat(within.view(), var.view()),
-        ess(splitted.view(), within.view(), var.view()),
-    )
-}
-
-fn rhat(within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
-    (within.to_owned() / var).sqrt()
-}
-
-/// Computes the Effective Sample Size (ESS) from chain statistics.
+/// Computes the Effective Sample Size (ESS) for each parameter.
+///
+/// This function implements the ESS calculation as described in the STAN documentation.
+/// It computes the ESS based on the autocorrelation of the chains and the ratio of
+/// within-chain to total variance.
 ///
 /// # Arguments
 /// - `sample`: 3D array of samples with shape (chains, samples, parameters).
-/// - `chain_stats`: Slice of references to `ChainStats` from multiple chains.
+/// - `within`: Array of within-chain variances for each parameter.
+/// - `var`: Array of total variances for each parameter.
 ///
 /// # Returns
 /// An array containing the ESS for each parameter.
-pub fn ess_from_chainstats(sample: ArrayView3<f32>, chain_stats: &[&ChainStats]) -> Array1<f32> {
-    let (within, var) = withinvar_from_cs(chain_stats);
-    ess(sample, within.view(), var.view())
-}
-
+///
+/// # References
+/// - STAN Reference Manual, Section on Effective Sample Size
+///   (https://mc-stan.org/docs/2_18/reference-manual/effective-sample-size-section.html)
 fn ess(sample: ArrayView3<f32>, within: ArrayView1<f32>, var: ArrayView1<f32>) -> Array1<f32> {
     let shape = sample.shape();
     let (n_chains, n_steps, n_params) = (shape[0], shape[1], shape[2]);
@@ -631,6 +645,23 @@ fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
             }
         });
     out
+}
+
+/// Computes the Effective Sample Size (ESS) from chain statistics.
+/// We don't split chains here.
+///
+/// # Arguments
+/// - `sample`: 3D array of samples with shape (chains, samples, parameters).
+/// - `chain_stats`: Slice of references to `ChainStats` from multiple chains.
+///
+/// # Returns
+/// An array containing the ESS for each parameter.
+///
+/// # References
+/// - STAN Reference Manual, Section on Effective Sample Size
+pub fn ess_from_chainstats(sample: ArrayView3<f32>, chain_stats: &[&ChainStats]) -> Array1<f32> {
+    let (within, var) = withinvar_from_cs(chain_stats);
+    ess(sample, within.view(), var.view())
 }
 
 #[cfg(test)]

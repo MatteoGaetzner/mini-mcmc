@@ -1,7 +1,8 @@
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
 use mini_mcmc::core::init_det;
-use mini_mcmc::hmc::{GradientTarget, HMC};
+use mini_mcmc::distributions::GradientTarget;
+use mini_mcmc::hmc::HMC;
 use num_traits::Float;
 use plotly::common::{color::Rgba, Mode};
 use plotly::layout::{AspectRatio, LayoutScene};
@@ -44,7 +45,7 @@ where
 /// using the plotly crate and saves the interactive plot as "hmc_scatter_plot.html".
 ///
 /// Each chain is rendered as a separate trace with its own transparent color (50% opaque).
-fn plot_samples_from_tensor<B>(samples: &Tensor<B, 3>) -> Result<(), Box<dyn Error>>
+fn plot_samples_from_tensor<B>(samples: Tensor<B, 3>) -> Result<(), Box<dyn Error>>
 where
     B: burn::tensor::backend::Backend,
 {
@@ -146,8 +147,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let start = Instant::now();
     // Run HMC for n_collect, collecting samples as a 3D tensor.
-    let samples = sampler.run_progress(n_collect, 100).unwrap();
+    let (samples, stats) = sampler.run_progress(n_collect, 100).unwrap();
     println!("Shape: {:?}", samples.shape());
+    stats.print();
 
     let duration = start.elapsed();
     println!(
@@ -157,7 +159,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     // Plot the samples using the 3D plot helper.
-    plot_samples_from_tensor(&samples)?;
+    plot_samples_from_tensor(samples.clone())?;
 
     Ok(())
 }

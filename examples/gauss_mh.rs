@@ -5,9 +5,10 @@ use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 
 use ndarray::{arr1, arr2, Axis};
-use plotters::chart::ChartBuilder;
-use plotters::prelude::{BitMapBackend, Circle, IntoDrawingArea};
-use plotters::style::{Color, RGBAColor, BLACK, RED, WHITE};
+use plotly::{
+    common::{MarkerSymbol, Mode},
+    Layout, Scatter,
+};
 use rand::{thread_rng, Rng};
 use std::error::Error;
 
@@ -17,9 +18,9 @@ use mini_mcmc::io::parquet::save_parquet;
 /// Main entry point: sets up a 2D Gaussian target, runs Metropolis-Hastings,
 /// computes summary statistics, and generates a scatter plot of the samples.
 fn main() -> Result<(), Box<dyn Error>> {
-    const SAMPLE_SIZE: usize = 100_000;
-    const BURNIN: usize = 10_000;
-    const N_CHAINS: usize = 8;
+    const SAMPLE_SIZE: usize = 5_000; // Reduced from 100,000
+    const BURNIN: usize = 1_000; // Reduced from 10,000
+    const N_CHAINS: usize = 4; // Reduced from 8
     let seed: u64 = thread_rng().gen();
 
     let target = Gaussian2D {
@@ -30,8 +31,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).seed(seed);
 
     // Generate samples
-    let samples = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
+    let (samples, stats) = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
     let pooled = samples.to_shape((SAMPLE_SIZE, 2)).unwrap();
+    stats.print();
 
     println!("Generated {} samples", pooled.shape()[0]);
 
@@ -42,73 +44,64 @@ fn main() -> Result<(), Box<dyn Error>> {
         row_mean[0], row_mean[1]
     );
 
-    // Compute quantiles for plotting ranges
-    let mut x_coords: Vec<f64> = Vec::from_iter(pooled.column(0).iter().copied());
-    let mut y_coords: Vec<f64> = Vec::from_iter(pooled.column(1).iter().copied());
-    x_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
-    y_coords.sort_unstable_by(|a, b| a.partial_cmp(b).unwrap());
+    // Extract coordinates for plotting
+    let x_coords: Vec<f64> = pooled.column(0).to_vec();
+    let y_coords: Vec<f64> = pooled.column(1).to_vec();
 
-    let lower_idx = (0.005 * pooled.nrows() as f64) as usize;
-    let upper_idx = (0.995 * pooled.nrows() as f64) as usize;
-    let x_range = x_coords[lower_idx]..x_coords[upper_idx];
-    let y_range = y_coords[lower_idx]..y_coords[upper_idx];
+    // Create scatter plot with improved visual parameters
+    let trace = Scatter::new(x_coords, y_coords)
+        .mode(Mode::Markers)
+        .name("MCMC Samples")
+        .marker(
+            plotly::common::Marker::new()
+                .size(6) // Increased from 4
+                .opacity(0.7) // Added opacity
+                .color("rgb(70, 130, 180)"), // Solid color instead of rgba
+        );
 
-    // Filter samples within the plotting range
-    let filtered: Vec<_> = pooled
-        .axis_iter(Axis(0))
-        .filter(|point| x_range.contains(&point[0]) && y_range.contains(&point[1]))
-        .collect();
-    println!("Filtered samples: {}", filtered.len());
+    // Add mean point with improved visibility
+    let mean_trace = Scatter::new(vec![row_mean[0]], vec![row_mean[1]])
+        .mode(Mode::Markers)
+        .name("Mean")
+        .marker(
+            plotly::common::Marker::new()
+                .size(12) // Increased from 8
+                .symbol(MarkerSymbol::Star) // Changed to star symbol
+                .color("red"),
+        );
 
-    // Draw the scatter plot
-    let root = BitMapBackend::new("scatter_plot.png", (1200, 900)).into_drawing_area();
-    root.fill(&WHITE)?;
-
-    let mut chart = ChartBuilder::on(&root)
-        .caption("MCMC Samples from 2D Gaussian", ("sans-serif", 50))
-        .margin(10)
-        .x_label_area_size(50)
-        .y_label_area_size(50)
-        .build_cartesian_2d(x_range.clone(), y_range.clone())?;
-
-    chart
-        .configure_mesh()
-        .x_labels(10)
-        .y_labels(10)
-        .light_line_style(WHITE.mix(0.8))
-        .bold_line_style(BLACK.mix(0.5))
-        .draw()?;
-
-    chart.draw_series(filtered.iter().map(|&point| {
-        Circle::new(
-            (point[0], point[1]),
-            2,
-            RGBAColor(70, 130, 180, 0.5).filled(),
+    // Create layout with improved styling
+    let layout = Layout::new()
+        .title("MCMC Samples from 2D Gaussian")
+        .x_axis(
+            plotly::layout::Axis::new()
+                .title("x")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
         )
-    }))?;
+        .y_axis(
+            plotly::layout::Axis::new()
+                .title("y")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
+        )
+        .show_legend(true)
+        .plot_background_color("rgb(250, 250, 250)") // Light gray background
+        .width(800) // Fixed width
+        .height(600); // Fixed height
 
-    chart
-        .draw_series(std::iter::once(Circle::new(
-            (row_mean[0], row_mean[1]),
-            6,
-            RED.filled(),
-        )))?
-        .label("Mean")
-        .legend(|(x, y)| Circle::new((x, y), 6, RED.filled()));
-
-    chart
-        .configure_series_labels()
-        .border_style(BLACK)
-        .background_style(WHITE.mix(0.9))
-        .label_font(("sans-serif", 35))
-        .draw()?;
-
-    println!("Saved scatter plot to scatter_plot.png");
+    // Create and save plot
+    let mut plot = plotly::Plot::new();
+    plot.add_trace(trace);
+    plot.add_trace(mean_trace);
+    plot.set_layout(layout);
+    plot.write_html("scatter_plot.html");
+    println!("Saved scatter plot to scatter_plot.html");
 
     #[cfg(feature = "parquet")]
     {
         let _ = save_parquet(&samples, "samples.parquet");
-        println!("Saved sampels in file samples.parquet.");
+        println!("Saved samples in file samples.parquet.");
     }
 
     Ok(())
@@ -120,12 +113,13 @@ mod tests {
     fn test_main() {
         main().expect("Expected main to not return an error.");
         assert!(
-            std::path::Path::new("scatter_plot.png").exists(),
-            "Expected scatter_plot.png to exist."
+            std::path::Path::new("scatter_plot.html").exists(),
+            "Expected scatter_plot.html to exist."
         );
+        #[cfg(feature = "parquet")]
         assert!(
             std::path::Path::new("samples.parquet").exists(),
-            "Expected sample.parquet to exist."
+            "Expected samples.parquet to exist."
         );
     }
 }

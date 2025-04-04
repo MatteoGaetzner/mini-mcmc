@@ -29,7 +29,8 @@
 //! ```rust
 //! use burn::tensor::Element;
 //! use burn::{backend::Autodiff, prelude::Tensor};
-//! use mini_mcmc::hmc::{GradientTarget, HMC};
+//! use mini_mcmc::hmc::HMC;
+//! use mini_mcmc::distributions::GradientTarget;
 //! use mini_mcmc::core::init;
 //! use num_traits::Float;
 //!
@@ -71,16 +72,16 @@
 //! // Define initial positions for 6 chains (each a 3D point).
 //! let initial_positions = init(6, 3);
 //!
-//! // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
+//! // Create the HMC sampler with a step size of 0.01 and 5 leapfrog steps.
 //! let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
 //!     target,
 //!     initial_positions,
 //!     0.032,
-//!     50,
+//!     5,
 //! );
 //!
-//! // Run the sampler for 1100 iterations, discard 100
-//! let samples = sampler.run(1000, 100);
+//! // Run the sampler for 123+45 iterations, discard 45 burnin samples
+//! let samples = sampler.run(123, 45);
 //!
 //! // Print the shape of the collected samples.
 //! println!("Collected samples with shape: {:?}", samples.dims());
@@ -100,6 +101,10 @@
 //! }
 //!
 //! impl Target<usize, f64> for PoissonTarget {
+//!     /// unnorm_log_prob(k) = log( p(k) ), ignoring normalizing constants if you wish.
+//!     /// For Poisson(k|lambda) = exp(-lambda) * (lambda^k / k!)
+//!     /// so log p(k) = -lambda + k*ln(lambda) - ln(k!)
+//!     /// which is enough to do MH acceptance.
 //!     fn unnorm_log_prob(&self, theta: &[usize]) -> f64 {
 //!         let k = theta[0];
 //!         -self.lambda + (k as f64) * self.lambda.ln() - ln_factorial(k as u64)

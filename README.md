@@ -8,11 +8,10 @@ A compact Rust library for **Markov Chain Monte Carlo (MCMC)** methods with GPU 
 
 ## Installation
 
-Add the following to your `Cargo.toml`:
+To add the latest version of mini-mcmc to your project:
 
-```toml
-[dependencies]
-mini-mcmc = "0.4.3"
+```bash
+cargo add mini-mcmc
 ```
 
 Then `use mini_mcmc` in your Rust code.
@@ -23,6 +22,7 @@ Then `use mini_mcmc` in your Rust code.
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use mini_mcmc::stats::RunStats;
 use ndarray::{arr1, arr2};
 
 fn main() {
@@ -31,17 +31,19 @@ fn main() {
         cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
     };
     let proposal = IsotropicGaussian::new(1.0);
-    let initial_state = [0.0, 0.0];
+    let initial_states = vec![vec![0.0, 0.0]; 4];  // 4 chains, each starting at [0,0]
 
     // Create a MH sampler with 4 parallel chains
-    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 4);
+    let mut mh = MetropolisHastings::new(target, proposal, initial_states);
 
     // Run the sampler for 1,100 steps, discarding the first 100 as burn-in
-    let samples = mh.run(1000, 100).unwrap();
+    let (samples, stats) = mh.run_progress(1000, 100).unwrap();
 
-    // We should have 1000 * 4 = 3600 samples
-    assert_eq!(samples.shape()[0], 4);
-    assert_eq!(samples.shape()[1], 1000);
+    // Print convergence statistics
+    stats.print();
+
+    // We should have 4 chains, each with 1000 samples of 2 dimensions
+    assert_eq!(samples.shape(), [4, 1000, 2]);
 }
 ```
 
@@ -148,10 +150,10 @@ fn main() {
     let proposal = NonnegativeProposal;
 
     // Start the chain at k=0
-    let initial_state = [0usize];
+    let initial_state = vec![vec![0usize]];
 
     // Create Metropolis–Hastings with 1 chain (or more, up to you)
-    let mut mh = MetropolisHastings::new(target, proposal, &initial_state, 1);
+    let mut mh = MetropolisHastings::new(target, proposal, initial_state);
 
     // Collect 10,000 samples and use 1,000 for burn-in (not returned).
     let samples = mh
@@ -194,7 +196,7 @@ You can also find this example at `examples/poisson_mh.rs`.
 - **`NonnegativeProposal`** provides a random-walk in the set $\{0,1,2,\dots\}$:
 
   - If $x=0$, propose $1$ with probability $1$.
-  - If $x>0$, propose $x+1$ or $x-14$ with probability $0.5$ each.
+  - If $x>0$, propose $x+1$ or $x-1$ with probability $0.5$ each.
   - `log_prob` returns $\ln(0.5)$ for the possible moves, or $-\infty$ for
     impossible moves.
 
@@ -306,7 +308,7 @@ with
 - **`examples/`**: Examples on how to use this library.
 - **`src/io/arrow.rs`**: Helper functions for saving samples as Apache Arrow files. Enable via `arrow` feature.
 - **`src/io/parquet.rs`**: Helper functions for saving samples as Apache Parquet files. Enable via `parquet` feature.
-- **`src/io/csv.rs`**: Helper functions for saving samples as Apache Parquet files. Enable via `csv` feature.
+- **`src/io/csv.rs`**: Helper functions for saving samples as CSV files. Enable via `csv` feature.
 
 ## Usage (Local)
 
@@ -345,3 +347,22 @@ with
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.  
 This project includes code from the `kolmogorov_smirnov` project, licensed under Apache 2.0 as noted in [NOTICE](NOTICE).
+
+## Progress Tracking and Statistics
+
+The `run_progress` method returns both the samples and convergence statistics:
+
+```rust
+let (samples, stats) = mh.run_progress(1000, 100).unwrap();
+```
+
+The `RunStats` object contains:
+- Acceptance probability
+- Potential scale reduction factor (R-hat)
+- Effective sample size (ESS)
+- Other convergence diagnostics
+
+You can print these statistics using:
+```rust
+stats.print();
+```

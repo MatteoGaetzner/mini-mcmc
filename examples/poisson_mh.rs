@@ -1,7 +1,9 @@
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Proposal, Target};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use plotly::{Bar, Layout};
 use rand::Rng; // for thread_rng
+use std::error::Error;
 
 /// A Poisson(\lambda) distribution, seen as a discrete target over k=0,1,2,...
 #[derive(Clone)]
@@ -86,7 +88,12 @@ fn ln_factorial(k: u64) -> f64 {
     }
 }
 
-fn main() {
+// Helper function to compute Poisson PMF
+fn poisson_pmf(k: usize, lambda: f64) -> f64 {
+    (-lambda + (k as f64) * lambda.ln() - ln_factorial(k as u64)).exp()
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     // We'll do Poisson with lambda=4.0, for instance
     let target = PoissonTarget { lambda: 4.0 };
 
@@ -123,7 +130,77 @@ fn main() {
         println!("k={k:2}: freq ~ {freq:.3}");
     }
 
-    // We might compare these frequencies to the theoretical Poisson(4.0) pmf
-    // in a quick check.
+    // Create x-axis values (k values)
+    let k_values: Vec<usize> = (0..=cutoff).collect();
+
+    // Create empirical frequencies
+    let empirical_freqs: Vec<f64> = counts
+        .iter()
+        .map(|&cnt| cnt as f64 / total as f64)
+        .collect();
+
+    // Create theoretical PMF values
+    let theoretical_pmf: Vec<f64> = k_values.iter().map(|&k| poisson_pmf(k, 4.0)).collect();
+
+    // Create bar plot for empirical frequencies
+    let empirical_trace = Bar::new(k_values.clone(), empirical_freqs)
+        .name("Empirical")
+        .marker(
+            plotly::common::Marker::new()
+                .color("rgb(70, 130, 180)")
+                .opacity(0.7),
+        );
+
+    // Create bar plot for theoretical PMF
+    let theoretical_trace = Bar::new(k_values, theoretical_pmf)
+        .name("Theoretical")
+        .marker(
+            plotly::common::Marker::new()
+                .color("rgb(255, 127, 14)")
+                .opacity(0.7),
+        );
+
+    // Create layout
+    let layout = Layout::new()
+        .title(plotly::common::Title::new())
+        .x_axis(
+            plotly::layout::Axis::new()
+                .title("k")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
+        )
+        .y_axis(
+            plotly::layout::Axis::new()
+                .title("Probability")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
+        )
+        .show_legend(true)
+        .plot_background_color("rgb(250, 250, 250)")
+        .width(800)
+        .height(600);
+
+    // Create and save plot
+    let mut plot = plotly::Plot::new();
+    plot.add_trace(empirical_trace);
+    plot.add_trace(theoretical_trace);
+    plot.set_layout(layout);
+    plot.write_html("poisson_distribution.html");
+    println!("Saved plot to poisson_distribution.html");
+
     println!("Done sampling Poisson(4).");
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_main() {
+        main().expect("Expected main to not return an error.");
+        assert!(
+            std::path::Path::new("poisson_distribution.html").exists(),
+            "Expected poisson_distribution.html to exist."
+        );
+    }
 }
