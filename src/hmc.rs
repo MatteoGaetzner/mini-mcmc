@@ -72,8 +72,7 @@ where
     /// # Parameters
     ///
     /// * `target`: The target distribution implementing the `GradientTarget` trait.
-    /// * `initial_positions`: A vector of vectors containing the initial positions for each chain,
-    ///    with shape `[n_chains][D]`.
+    /// * `initial_positions`: A vector of vectors containing the initial positions for each chain, with shape `[n_chains][D]`.
     /// * `step_size`: The step size used in the leapfrog integrator.
     /// * `n_leapfrog`: The number of leapfrog steps per update.
     /// * `seed`: A seed for initializing the random number generator.
