@@ -230,8 +230,8 @@ mod tests {
     ///   - If z == 0: x ~ N(mu0, sigma0^2)
     ///   - If z == 1: x ~ N(mu1, sigma1^2)
     ///   - The latent z is updated by computing the conditional probabilities:
-    ///       p(z=0|x) ∝ π0 * N(x; mu0, sigma0^2)
-    ///       p(z=1|x) ∝ (1-π0) * N(x; mu1, sigma1^2)
+    ///     p(z=0|x) ∝ π0 * N(x; mu0, sigma0^2)
+    ///     p(z=1|x) ∝ (1-π0) * N(x; mu1, sigma1^2)
     #[derive(Clone)]
     struct MixtureConditional {
         mu0: f64,
@@ -327,7 +327,7 @@ mod tests {
         // Run each chain for 15 steps and discard the first 5 as burn-in.
         let (samples, stats) = sampler.run_progress(10, 5).unwrap();
         let shape = samples.shape();
-        stats.print();
+        println!("{stats}");
 
         assert_eq!(shape[0], 4);
         assert_eq!(shape[1], 10);

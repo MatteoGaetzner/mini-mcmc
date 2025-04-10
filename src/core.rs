@@ -232,7 +232,7 @@ where
             let multi = MultiProgress::new();
 
             let pb_style = ProgressStyle::default_bar()
-                .template("{prefix:8} {bar:40.white} ETA {eta:3} | {msg}")
+                .template("{prefix:8} {bar:40.cyan/blue} {pos}/{len} ({eta}) | {msg}")
                 .unwrap()
                 .progress_chars("=>-");
             let total: u64 = (n_collect + n_discard).try_into().unwrap();
@@ -355,7 +355,6 @@ where
         }
 
         let run_stats = RunStats::from(sample.view());
-        run_stats.print();
 
         Ok((sample, run_stats))
     }
@@ -400,7 +399,7 @@ where
     _init(n, d, rng)
 }
 
-/// Generates a pseudo-random vector from a standard normal distribution.
+/// Generates `n` pseudo-random vectors from the `d` dimensional standard normal distribution.
 /// This function calls [`init_with_seed`] with the same parameters and seed 42.
 pub fn init_det<T>(n: usize, d: usize) -> Vec<Vec<T>>
 where
@@ -409,7 +408,7 @@ where
     init_with_seed(n, d, 42)
 }
 
-/// Generates a pseudo-random vector from a standard normal distribution.
+/// Generates `n` pseudo-random vectors from the `d` dimensional standard normal distribution.
 /// Same as [`init`] except this function returns a deterministic sample.
 pub fn init_with_seed<T>(n: usize, d: usize, seed: u64) -> Vec<Vec<T>>
 where

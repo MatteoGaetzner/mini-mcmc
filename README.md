@@ -40,7 +40,7 @@ fn main() {
     let (samples, stats) = mh.run_progress(1000, 100).unwrap();
 
     // Print convergence statistics
-    stats.print();
+    println!("{stats}");
 
     // We should have 4 chains, each with 1000 samples of 2 dimensions
     assert_eq!(samples.shape(), [4, 1000, 2]);
@@ -57,7 +57,9 @@ Below we define a custom Poisson distribution for nonnegative integer states $\{
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Proposal, Target};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
+use plotly::{Bar, Layout};
 use rand::Rng; // for thread_rng
+use std::error::Error;
 
 /// A Poisson(\lambda) distribution, seen as a discrete target over k=0,1,2,...
 #[derive(Clone)]
@@ -66,11 +68,11 @@ struct PoissonTarget {
 }
 
 impl Target<usize, f64> for PoissonTarget {
-    /// unnorm_log_prob(k) = log( p(k) ), ignoring normalizing constants if you wish.
+    /// unnorm_logp(k) = log( p(k) ), ignoring normalizing constants if you wish.
     /// For Poisson(k|lambda) = exp(-lambda) * (lambda^k / k!)
     /// so log p(k) = -lambda + k*ln(lambda) - ln(k!)
     /// which is enough to do MH acceptance.
-    fn unnorm_log_prob(&self, theta: &[usize]) -> f64 {
+    fn unnorm_logp(&self, theta: &[usize]) -> f64 {
         let k = theta[0];
         let kf = k as f64;
         // If you like, you can omit -ln(k!) if you only need "unnormalized"—but including
@@ -99,11 +101,11 @@ impl Proposal<usize, f64> for NonnegativeProposal {
         }
     }
 
-    /// log_prob(x->y):
+    /// logp(x->y):
     ///  - if x=0 and y=1, p=1 => log p=0
     ///  - if x>0, then y in {x+1, x-1} => p=0.5 => log(0.5)
     ///  - otherwise => -∞ (impossible transition)
-    fn log_prob(&self, from: &[usize], to: &[usize]) -> f64 {
+    fn logp(&self, from: &[usize], to: &[usize]) -> f64 {
         let x = from[0];
         let y = to[0];
         if x == 0 {
@@ -142,7 +144,12 @@ fn ln_factorial(k: u64) -> f64 {
     }
 }
 
-fn main() {
+// Helper function to compute Poisson PMF
+fn poisson_pmf(k: usize, lambda: f64) -> f64 {
+    (-lambda + (k as f64) * lambda.ln() - ln_factorial(k as u64)).exp()
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
     // We'll do Poisson with lambda=4.0, for instance
     let target = PoissonTarget { lambda: 4.0 };
 
@@ -179,9 +186,66 @@ fn main() {
         println!("k={k:2}: freq ~ {freq:.3}");
     }
 
-    // We might compare these frequencies to the theoretical Poisson(4.0) pmf
-    // in a quick check.
+    // Create x-axis values (k values)
+    let k_values: Vec<usize> = (0..=cutoff).collect();
+
+    // Create empirical frequencies
+    let empirical_freqs: Vec<f64> = counts
+        .iter()
+        .map(|&cnt| cnt as f64 / total as f64)
+        .collect();
+
+    // Create theoretical PMF values
+    let theoretical_pmf: Vec<f64> = k_values.iter().map(|&k| poisson_pmf(k, 4.0)).collect();
+
+    // Create bar plot for empirical frequencies
+    let empirical_trace = Bar::new(k_values.clone(), empirical_freqs)
+        .name("Empirical")
+        .marker(
+            plotly::common::Marker::new()
+                .color("rgb(70, 130, 180)")
+                .opacity(0.7),
+        );
+
+    // Create bar plot for theoretical PMF
+    let theoretical_trace = Bar::new(k_values, theoretical_pmf)
+        .name("Theoretical")
+        .marker(
+            plotly::common::Marker::new()
+                .color("rgb(255, 127, 14)")
+                .opacity(0.7),
+        );
+
+    // Create layout
+    let layout = Layout::new()
+        .title(plotly::common::Title::new())
+        .x_axis(
+            plotly::layout::Axis::new()
+                .title("k")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
+        )
+        .y_axis(
+            plotly::layout::Axis::new()
+                .title("Probability")
+                .zero_line(true)
+                .grid_color("rgb(200, 200, 200)"),
+        )
+        .show_legend(true)
+        .plot_background_color("rgb(250, 250, 250)")
+        .width(800)
+        .height(600);
+
+    // Create and save plot
+    let mut plot = plotly::Plot::new();
+    plot.add_trace(empirical_trace);
+    plot.add_trace(theoretical_trace);
+    plot.set_layout(layout);
+    plot.write_html("poisson_distribution.html");
+    println!("Saved plot to poisson_distribution.html");
+
     println!("Done sampling Poisson(4).");
+    Ok(())
 }
 ```
 
@@ -197,7 +261,7 @@ You can also find this example at `examples/poisson_mh.rs`.
 
   - If $x=0$, propose $1$ with probability $1$.
   - If $x>0$, propose $x+1$ or $x-1$ with probability $0.5$ each.
-  - `log_prob` returns $\ln(0.5)$ for the possible moves, or $-\infty$ for
+  - `logp` returns $\ln(0.5)$ for the possible moves, or $-\infty$ for
     impossible moves.
 
 - **Usage**:  
@@ -216,7 +280,9 @@ The following minimal example demonstrates how to create and run an HMC sampler 
 ```rust
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
-use mini_mcmc::hmc::{GradientTarget, HMC};
+use mini_mcmc::core::init_det;
+use mini_mcmc::distributions::GradientTarget;
+use mini_mcmc::hmc::HMC;
 use num_traits::Float;
 
 /// The 3D Rosenbrock distribution.
@@ -234,7 +300,7 @@ where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions has shape [n_chains, d] with d = 3.
         let k = positions.dims()[0] as i64;
         let n = positions.dims()[1] as i64;
@@ -255,19 +321,11 @@ fn main() {
     // Create the 3D Rosenbrock target.
     let target = RosenbrockND {};
 
-    // Define initial positions for 6 chains (each a 3D point).
-    let initial_positions = vec![vec![1.0_f32, 2.0_f32, 3.0_f32]; 6];
-
     // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
-    let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
-        target,
-        initial_positions,
-        0.032,
-        50,
-    );
+    let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 10);
 
-    // Run the sampler for 1100 iterations, discard 100
-    let samples = sampler.run(1000, 100);
+    // Run the sampler for 1000 iterations, discard 100
+    let samples = sampler.run(400, 50);
 
     // Print the shape of the collected samples.
     println!("Collected samples with shape: {:?}", samples.dims());
@@ -282,7 +340,7 @@ This library provides implementations of
 - **Metropolis-Hastings**: an MCMC algorithm that samples from a distribution by proposing candidates and probabilistically accepting or rejecting them.
 - **Gibbs Sampling**: an MCMC method that iteratively samples each variable from its conditional distribution given all other variables.
 
-with
+Additional features:
 
 - **Implementations of Common Distributions**: featuring handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
 - **Parallelization**: for running multiple Markov chains in parallel.
@@ -290,6 +348,7 @@ with
   statistics and acceptance rates.
 - **Support for Discrete & Continuous Distributions**: for example, Metropolis-Hastings- and Gibbs Samplers can sample from continuous and discrete target distributions.
 - **Generic Datatypes**: enable sampling of vectors with various integer or floating point types.
+- **Standard Convergence Diagnostics**: estimate the effective sample size and Rhat.
 
 ## Roadmap
 
@@ -343,26 +402,23 @@ with
   your target distribution it might be more efficient to stick with the CPU (NdArray) backend.
 - By default, all features are **disabled**.
 
+## Progress Tracking and Statistics
+
+The `run_progress` method returns both the sample and an convergence statistics object. It also displays progress bars during the run.
+
+```rust
+let (samples, stats) = mh.run_progress(1000, 100).unwrap();
+println!("{stats}");
+```
+
+The `RunStats` object contains statistics about:
+
+- Potential scale reduction factor (R-hat)
+- Effective sample size (ESS)
+
+and potentially further metrics in the future.
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.  
 This project includes code from the `kolmogorov_smirnov` project, licensed under Apache 2.0 as noted in [NOTICE](NOTICE).
-
-## Progress Tracking and Statistics
-
-The `run_progress` method returns both the samples and convergence statistics:
-
-```rust
-let (samples, stats) = mh.run_progress(1000, 100).unwrap();
-```
-
-The `RunStats` object contains:
-- Acceptance probability
-- Potential scale reduction factor (R-hat)
-- Effective sample size (ESS)
-- Other convergence diagnostics
-
-You can print these statistics using:
-```rust
-stats.print();
-```

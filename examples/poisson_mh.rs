@@ -2,7 +2,7 @@ use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Proposal, Target};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use plotly::{Bar, Layout};
-use rand::Rng; // for thread_rng
+use rand::Rng;
 use std::error::Error;
 
 /// A Poisson(\lambda) distribution, seen as a discrete target over k=0,1,2,...
@@ -12,11 +12,11 @@ struct PoissonTarget {
 }
 
 impl Target<usize, f64> for PoissonTarget {
-    /// unnorm_log_prob(k) = log( p(k) ), ignoring normalizing constants if you wish.
+    /// unnorm_logp(k) = log( p(k) ), ignoring normalizing constants if you wish.
     /// For Poisson(k|lambda) = exp(-lambda) * (lambda^k / k!)
     /// so log p(k) = -lambda + k*ln(lambda) - ln(k!)
     /// which is enough to do MH acceptance.
-    fn unnorm_log_prob(&self, theta: &[usize]) -> f64 {
+    fn unnorm_logp(&self, theta: &[usize]) -> f64 {
         let k = theta[0];
         let kf = k as f64;
         // If you like, you can omit -ln(k!) if you only need "unnormalized"—but including
@@ -45,11 +45,11 @@ impl Proposal<usize, f64> for NonnegativeProposal {
         }
     }
 
-    /// log_prob(x->y):
+    /// logp(x->y):
     ///  - if x=0 and y=1, p=1 => log p=0
     ///  - if x>0, then y in {x+1, x-1} => p=0.5 => log(0.5)
     ///  - otherwise => -∞ (impossible transition)
-    fn log_prob(&self, from: &[usize], to: &[usize]) -> f64 {
+    fn logp(&self, from: &[usize], to: &[usize]) -> f64 {
         let x = from[0];
         let y = to[0];
         if x == 0 {

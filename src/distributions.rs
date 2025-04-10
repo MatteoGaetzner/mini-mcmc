@@ -29,8 +29,8 @@ let cov = arr2(&[[1.0, 0.0],
 let gauss: Gaussian2D<f64> = Gaussian2D { mean, cov };
 
 // Compute the fully normalized log-prob at (0.5, -0.5):
-let logp = gauss.log_prob(&vec![0.5, -0.5]);
-println!("Normalized log-probability (2D Gaussian): {}", logp);
+let logp = gauss.logp(&vec![0.5, -0.5]);
+println!("Normalized log-density (2D Gaussian): {}", logp);
 
 // ----------------------
 // Example: IsotropicGaussian (any dimension)
@@ -51,7 +51,7 @@ use rand_distr::{Distribution, Normal};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
-/// A batched target trait for computing the unnormalized log probability (and gradients) for a
+/// A batched target trait for computing the unnormalized log density (and gradients) for a
 /// collection of positions.
 ///
 /// Implement this trait for your target distribution to enable gradient-based sampling.
@@ -61,7 +61,7 @@ use std::ops::AddAssign;
 /// * `T`: The floating-point type (e.g., f32 or f64).
 /// * `B`: The autodiff backend from the `burn` crate.
 pub trait GradientTarget<T: Float, B: AutodiffBackend> {
-    /// Compute the log probability for a batch of positions.
+    /// Compute the log density for a batch of positions.
     ///
     /// # Parameters
     ///
@@ -69,8 +69,8 @@ pub trait GradientTarget<T: Float, B: AutodiffBackend> {
     ///
     /// # Returns
     ///
-    /// A 1D tensor of shape `[n_chains]` containing the log probabilities for each chain.
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
+    /// A 1D tensor of shape `[n_chains]` containing the log density for each chain.
+    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
 /// A trait for generating proposals Metropolis–Hastings-like algorithms.
@@ -80,7 +80,7 @@ pub trait Proposal<T, F: Float> {
     fn sample(&mut self, current: &[T]) -> Vec<T>;
 
     /// Evaluates log q(x' | x).
-    fn log_prob(&self, from: &[T], to: &[T]) -> F;
+    fn logp(&self, from: &[T], to: &[T]) -> F;
 
     /// Returns a new instance of this proposal distribution seeded with `seed`.
     fn set_seed(self, seed: u64) -> Self;
@@ -90,13 +90,13 @@ pub trait Proposal<T, F: Float> {
 /// The state type `T` is typically a vector of continuous values.
 pub trait Target<T, F: Float> {
     /// Returns the log of the unnormalized density for state `theta`.
-    fn unnorm_log_prob(&self, theta: &[T]) -> F;
+    fn unnorm_logp(&self, theta: &[T]) -> F;
 }
 
 /// A trait for distributions that provide a normalized log-density (e.g. for diagnostics).
 pub trait Normalized<T, F: Float> {
     /// Returns the normalized log-density for state `theta`.
-    fn log_prob(&self, theta: &[T]) -> F;
+    fn logp(&self, theta: &[T]) -> F;
 }
 
 /** A trait for discrete distributions whose state is represented as an index.
@@ -108,7 +108,7 @@ pub trait Normalized<T, F: Float> {
  let sample = cat.sample();
  println!("Sampled category: {}", sample); // E.g. 1usize
 
- let logp = cat.log_prob(sample);
+ let logp = cat.logp(sample);
  println!("Log-probability of sampled category: {}", logp); // E.g. 0.3f64
 ```
 */
@@ -116,7 +116,7 @@ pub trait Discrete<T: Float> {
     /// Samples an index from the distribution.
     fn sample(&mut self) -> usize;
     /// Evaluates the log-probability of the given index.
-    fn log_prob(&self, index: usize) -> T;
+    fn logp(&self, index: usize) -> T;
 }
 
 /**
@@ -137,7 +137,7 @@ let cov = arr2(&[[1.0, 0.0],
                 [0.0, 1.0]]);
 let gauss: Gaussian2D<f64> = Gaussian2D { mean, cov };
 
-let lp = gauss.log_prob(&vec![0.5, -0.5]);
+let lp = gauss.logp(&vec![0.5, -0.5]);
 println!("Normalized log probability: {}", lp);
 ```
 */
@@ -152,7 +152,7 @@ where
     T: NdFloat,
 {
     /// Computes the fully normalized log-density of a 2D Gaussian.
-    fn log_prob(&self, theta: &[T]) -> T {
+    fn logp(&self, theta: &[T]) -> T {
         let term_1 = -(T::from(2.0).unwrap() * T::from(PI).unwrap()).ln();
         let (a, b, c, d) = (
             self.cov[(0, 0)],
@@ -176,7 +176,7 @@ impl<T> Target<T, T> for Gaussian2D<T>
 where
     T: NdFloat,
 {
-    fn unnorm_log_prob(&self, theta: &[T]) -> T {
+    fn unnorm_logp(&self, theta: &[T]) -> T {
         let (a, b, c, d) = (
             self.cov[(0, 0)],
             self.cov[(0, 1)],
@@ -194,7 +194,7 @@ where
 /// A 2D Gaussian target distribution, parameterized by mean and covariance.
 ///
 /// This struct also precomputes the inverse covariance and a log-normalization
-/// constant so we can quickly evaluate log-density and gradients in `log_prob_batch`.
+/// constant so we can quickly evaluate log-density and gradients in `unnorm_logp`.
 #[derive(Debug, Clone)]
 pub struct DiffableGaussian2D<T: Float> {
     pub mean: [T; 2],
@@ -244,7 +244,8 @@ where
 {
     /// Evaluate the log probability for a batch of positions: shape [n_chains, 2].
     /// Return shape [n_chains].
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    /// Note: It is not necessary to return the log probability here but for easier debugging we do so anyways.
+    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         let (n_chains, dim) = (positions.dims()[0], positions.dims()[1]);
         assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
 
@@ -309,7 +310,7 @@ let candidate = proposal.sample(&current);
 println!("Candidate state: {:?}", candidate);
 
 // Evaluate log q(candidate | current):
-let logq = proposal.log_prob(&current, &candidate);
+let logq = proposal.logp(&current, &candidate);
 println!("Log of the proposal density: {}", logq);
 ```
 */
@@ -343,7 +344,7 @@ where
             .collect()
     }
 
-    fn log_prob(&self, from: &[T], to: &[T]) -> T {
+    fn logp(&self, from: &[T], to: &[T]) -> T {
         let mut lp = T::zero();
         let d = T::from(from.len()).unwrap();
         let two = T::from(2).unwrap();
@@ -364,7 +365,7 @@ where
 }
 
 impl<T: Float> Target<T, T> for IsotropicGaussian<T> {
-    fn unnorm_log_prob(&self, theta: &[T]) -> T {
+    fn unnorm_logp(&self, theta: &[T]) -> T {
         let mut sum = T::zero();
         for &x in theta.iter() {
             sum = sum + x * x
@@ -386,7 +387,7 @@ use mini_mcmc::distributions::{Categorical, Discrete};
 let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
 let sample = cat.sample();
 println!("Sampled category: {}", sample);
-let logp = cat.log_prob(sample);
+let logp = cat.logp(sample);
 println!("Log probability of category {}: {}", sample, logp);
 ```
 */
@@ -430,7 +431,7 @@ where
         k
     }
 
-    fn log_prob(&self, index: usize) -> T {
+    fn logp(&self, index: usize) -> T {
         if index < self.probs.len() {
             self.probs[index].ln()
         } else {
@@ -443,8 +444,8 @@ impl<T: Float + AddAssign> Target<usize, T> for Categorical<T>
 where
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    fn unnorm_log_prob(&self, theta: &[usize]) -> T {
-        <Self as Discrete<T>>::log_prob(self, theta[0])
+    fn unnorm_logp(&self, theta: &[usize]) -> T {
+        <Self as Discrete<T>>::logp(self, theta[0])
     }
 }
 
@@ -482,9 +483,9 @@ mod continuous_tests {
     }
 
     #[test]
-    fn iso_gauss_unnorm_log_prob_test_1() {
+    fn iso_gauss_unnorm_logp_test_1() {
         let distr = IsotropicGaussian::new(1.0);
-        let p = normalize_isogauss(distr.unnorm_log_prob(&[1.0]), 1, distr.std);
+        let p = normalize_isogauss(distr.unnorm_logp(&[1.0]), 1, distr.std);
         let true_p = 0.24197072451914337;
         let diff = (p - true_p).abs();
         assert!(
@@ -494,9 +495,9 @@ mod continuous_tests {
     }
 
     #[test]
-    fn iso_gauss_unnorm_log_prob_test_2() {
+    fn iso_gauss_unnorm_logp_test_2() {
         let distr = IsotropicGaussian::new(2.0);
-        let p = normalize_isogauss(distr.unnorm_log_prob(&[0.42, 9.6]), 2, distr.std);
+        let p = normalize_isogauss(distr.unnorm_logp(&[0.42, 9.6]), 2, distr.std);
         let true_p = 3.864661987252467e-7;
         let diff = (p - true_p).abs();
         assert!(
@@ -506,9 +507,9 @@ mod continuous_tests {
     }
 
     #[test]
-    fn iso_gauss_unnorm_log_prob_test_3() {
+    fn iso_gauss_unnorm_logp_test_3() {
         let distr = IsotropicGaussian::new(3.0);
-        let p = normalize_isogauss(distr.unnorm_log_prob(&[1.0, 2.0, 3.0]), 3, distr.std);
+        let p = normalize_isogauss(distr.unnorm_logp(&[1.0, 2.0, 3.0]), 3, distr.std);
         let true_p = 0.001080393185560214;
         let diff = (p - true_p).abs();
         assert!(
@@ -528,17 +529,17 @@ mod categorical_tests {
     }
 
     // ------------------------------------------------------
-    // 1) Test log_prob correctness for f64
+    // 1) Test logp correctness for f64
     // ------------------------------------------------------
     #[test]
-    fn test_categorical_log_prob_f64() {
+    fn test_categorical_logp_f64() {
         let probs = vec![0.2, 0.3, 0.5];
         let cat = Categorical::<f64>::new(probs.clone());
 
         // Check log probabilities for each index
-        let log_prob_0 = cat.log_prob(0);
-        let log_prob_1 = cat.log_prob(1);
-        let log_prob_2 = cat.log_prob(2);
+        let logp_0 = cat.logp(0);
+        let logp_1 = cat.logp(1);
+        let logp_2 = cat.logp(2);
 
         // Expected values
         let expected_0 = 0.2_f64.ln();
@@ -547,28 +548,28 @@ mod categorical_tests {
 
         let tol = 1e-7;
         assert!(
-            approx_eq(log_prob_0, expected_0, tol),
+            approx_eq(logp_0, expected_0, tol),
             "Log prob mismatch at index 0: got {}, expected {}",
-            log_prob_0,
+            logp_0,
             expected_0
         );
         assert!(
-            approx_eq(log_prob_1, expected_1, tol),
+            approx_eq(logp_1, expected_1, tol),
             "Log prob mismatch at index 1: got {}, expected {}",
-            log_prob_1,
+            logp_1,
             expected_1
         );
         assert!(
-            approx_eq(log_prob_2, expected_2, tol),
+            approx_eq(logp_2, expected_2, tol),
             "Log prob mismatch at index 2: got {}, expected {}",
-            log_prob_2,
+            logp_2,
             expected_2
         );
 
         // Out-of-bounds index should be NEG_INFINITY
-        let log_prob_out = cat.log_prob(3);
+        let logp_out = cat.logp(3);
         assert_eq!(
-            log_prob_out,
+            logp_out,
             f64::NEG_INFINITY,
             "Out-of-bounds index did not return NEG_INFINITY"
         );
@@ -607,16 +608,16 @@ mod categorical_tests {
     }
 
     // ------------------------------------------------------
-    // 3) Test log_prob correctness for f32
+    // 3) Test logp correctness for f32
     // ------------------------------------------------------
     #[test]
-    fn test_categorical_log_prob_f32() {
+    fn test_categorical_logp_f32() {
         let probs = vec![0.1_f32, 0.4, 0.5];
         let cat = Categorical::<f32>::new(probs.clone());
 
-        let log_prob_0: f32 = cat.log_prob(0);
-        let log_prob_1 = cat.log_prob(1);
-        let log_prob_2 = cat.log_prob(2);
+        let logp_0: f32 = cat.logp(0);
+        let logp_1 = cat.logp(1);
+        let logp_2 = cat.logp(2);
 
         // For comparison, cast to f64
         let expected_0 = (0.1_f64).ln();
@@ -625,21 +626,21 @@ mod categorical_tests {
 
         let tol = 1e-6;
         assert!(
-            approx_eq(log_prob_0.into(), expected_0, tol),
+            approx_eq(logp_0.into(), expected_0, tol),
             "Log prob mismatch at index 0 (f32 -> f64 cast)"
         );
         assert!(
-            approx_eq(log_prob_1.into(), expected_1, tol),
+            approx_eq(logp_1.into(), expected_1, tol),
             "Log prob mismatch at index 1"
         );
         assert!(
-            approx_eq(log_prob_2.into(), expected_2, tol),
+            approx_eq(logp_2.into(), expected_2, tol),
             "Log prob mismatch at index 2"
         );
 
         // Out-of-bounds
-        let log_prob_out = cat.log_prob(3);
-        assert_eq!(log_prob_out, f32::NEG_INFINITY);
+        let logp_out = cat.logp(3);
+        assert_eq!(logp_out, f32::NEG_INFINITY);
     }
 
     // ------------------------------------------------------
@@ -693,8 +694,8 @@ mod categorical_tests {
         // Create a categorical distribution with known probabilities.
         let probs = vec![0.2_f64, 0.3, 0.5];
         let cat = Categorical::new(probs.clone());
-        // Call unnorm_log_prob with a valid index (say, index 1).
-        let logp = cat.unnorm_log_prob(&[1]);
+        // Call unnorm_logp with a valid index (say, index 1).
+        let logp = cat.unnorm_logp(&[1]);
         // The expected log probability is ln(0.3).
         let expected = 0.3_f64.ln();
         let tol = 1e-7;
@@ -710,9 +711,9 @@ mod categorical_tests {
     fn test_target_for_categorical_out_of_range() {
         let probs = vec![0.2_f64, 0.3, 0.5];
         let cat = Categorical::new(probs);
-        // Calling unnorm_log_prob with an index that's out of bounds (e.g. 3)
+        // Calling unnorm_logp with an index that's out of bounds (e.g. 3)
         // should return negative infinity.
-        let logp = cat.unnorm_log_prob(&[3]);
+        let logp = cat.unnorm_logp(&[3]);
         assert_eq!(
             logp,
             f64::NEG_INFINITY,
@@ -722,20 +723,20 @@ mod categorical_tests {
     }
 
     #[test]
-    fn test_gaussian2d_log_prob() {
+    fn test_gaussian2d_logp() {
         let mean = arr1(&[0.0, 0.0]);
         let cov = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         let gauss = Gaussian2D { mean, cov };
 
         let theta = vec![0.5, -0.5];
-        let computed_logp = gauss.log_prob(&theta);
+        let computed_logp = gauss.logp(&theta);
 
         let expected_logp = -2.0878770664093453;
 
         let tol = 1e-10;
         assert!(
             (computed_logp - expected_logp).abs() < tol,
-            "Computed log probability ({}) differs from expected ({}) by more than tolerance ({})",
+            "Computed log density ({}) differs from expected ({}) by more than tolerance ({})",
             computed_logp,
             expected_logp,
             tol

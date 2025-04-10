@@ -20,7 +20,7 @@ where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions has shape [n_chains, d] with d = 3.
         let k = positions.dims()[0] as i64;
         let n = positions.dims()[1] as i64;
@@ -42,10 +42,10 @@ fn main() {
     let target = RosenbrockND {};
 
     // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
-    let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 50);
+    let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 10);
 
     // Run the sampler for 1000 iterations, discard 100
-    let samples = sampler.run(1000, 100);
+    let samples = sampler.run(400, 50);
 
     // Print the shape of the collected samples.
     println!("Collected samples with shape: {:?}", samples.dims());

@@ -32,7 +32,7 @@ impl<T> Target<T, T> for Rosenbrock<T>
 where
     T: Float,
 {
-    fn unnorm_log_prob(&self, theta: &[T]) -> T {
+    fn unnorm_logp(&self, theta: &[T]) -> T {
         let x = theta[0];
         let y = theta[1];
         let term1 = self.a - x;
@@ -62,12 +62,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     let (samples, stats) = mh
         .run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN)
         .expect("Expected generating samples to succeed");
+    println!("{stats}");
     let pooled = samples
         .to_shape((SAMPLE_SIZE, 2))
         .expect("Expected reshaping to succeed");
 
     println!("Generated {:?} samples", pooled.shape()[0]);
-    stats.print();
 
     // Basic statistics
     let row_mean = pooled.mean_axis(Axis(0)).unwrap();

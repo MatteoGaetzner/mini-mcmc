@@ -2,6 +2,7 @@
 //! Reduction.
 
 use burn::prelude::*;
+use core::fmt;
 use ndarray::{concatenate, prelude::*, stack};
 use ndarray_stats::QuantileExt;
 use num_traits::{Num, ToPrimitive};
@@ -347,9 +348,12 @@ impl RunStats {
         let rhat = basic_stats("Split R-hat", rhat);
         RunStats { ess, rhat }
     }
-    pub fn print(&self) {
-        self.ess.print();
-        self.rhat.print();
+}
+
+impl fmt::Display for RunStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Using the Display implementation of BasicStats
+        write!(f, "{}\n{}", self.ess, self.rhat)
     }
 }
 
@@ -376,12 +380,14 @@ pub struct BasicStats {
     pub std: f32,
 }
 
-impl BasicStats {
-    pub fn print(&self) {
-        println!(
+impl fmt::Display for BasicStats {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Write a human-friendly summary of the stats.
+        write!(
+            f,
             "{} in [{:.2}, {:.2}], median: {:.2}, mean: {:.2} ± {:.2}",
             self.name, self.min, self.max, self.median, self.mean, self.std
-        );
+        )
     }
 }
 
@@ -821,8 +827,7 @@ mod tests {
             .unwrap();
         let run_stats = RunStats::from(data.view());
 
-        println!("Samples: {}", m * n);
-        run_stats.print();
+        println!("Samples: {}\n{run_stats}", m * n);
 
         assert!(run_stats.ess.min > 3800.0);
         assert!(run_stats.rhat.max < 1.01);

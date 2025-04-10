@@ -36,10 +36,9 @@
 //!
 //! /// The 3D Rosenbrock distribution.
 //! ///
-//! /// For a point x = (x₁, x₂, x₃), the log probability is defined as the negative of
-//! /// the sum of two Rosenbrock terms:
+//! /// For a point x = (x₁, x₂, x₃), the log density is defined as
 //! ///
-//! ///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)²
+//! ///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)².
 //! ///
 //! /// This implementation generalizes to d dimensions, but here we use it for 3D.
 //! struct RosenbrockND {}
@@ -49,7 +48,7 @@
 //!     T: Float + std::fmt::Debug + Element,
 //!     B: burn::tensor::backend::AutodiffBackend,
 //! {
-//!     fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+//!     fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
 //!         // Assume positions has shape [n_chains, d] with d = 3.
 //!         let k = positions.dims()[0] as i64;
 //!         let n = positions.dims()[1] as i64;
@@ -101,11 +100,11 @@
 //! }
 //!
 //! impl Target<usize, f64> for PoissonTarget {
-//!     /// unnorm_log_prob(k) = log( p(k) ), ignoring normalizing constants if you wish.
+//!     /// unnorm_logp(k) = log( p(k) ), ignoring normalizing constants if you wish.
 //!     /// For Poisson(k|lambda) = exp(-lambda) * (lambda^k / k!)
 //!     /// so log p(k) = -lambda + k*ln(lambda) - ln(k!)
 //!     /// which is enough to do MH acceptance.
-//!     fn unnorm_log_prob(&self, theta: &[usize]) -> f64 {
+//!     fn unnorm_logp(&self, theta: &[usize]) -> f64 {
 //!         let k = theta[0];
 //!         -self.lambda + (k as f64) * self.lambda.ln() - ln_factorial(k as u64)
 //!     }
@@ -125,7 +124,7 @@
 //!         }
 //!     }
 //!
-//!     fn log_prob(&self, from: &[usize], to: &[usize]) -> f64 {
+//!     fn logp(&self, from: &[usize], to: &[usize]) -> f64 {
 //!         let (x, y) = (from[0], to[0]);
 //!         if x == 0 && y == 1 {
 //!             0.0

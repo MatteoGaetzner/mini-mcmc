@@ -302,10 +302,10 @@ where
     */
     fn step(&mut self) -> &Vec<T> {
         let proposed: Vec<T> = self.proposal.sample(&self.current_state);
-        let current_lp = self.target.unnorm_log_prob(&self.current_state);
-        let proposed_lp = self.target.unnorm_log_prob(&proposed);
-        let log_q_forward = self.proposal.log_prob(&self.current_state, &proposed);
-        let log_q_backward = self.proposal.log_prob(&proposed, &self.current_state);
+        let current_lp = self.target.unnorm_logp(&self.current_state);
+        let proposed_lp = self.target.unnorm_logp(&proposed);
+        let log_q_forward = self.proposal.logp(&self.current_state, &proposed);
+        let log_q_backward = self.proposal.logp(&proposed, &self.current_state);
         let log_accept_ratio = (proposed_lp + log_q_backward) - (current_lp + log_q_forward);
         let u: F = self.rng.gen();
         if log_accept_ratio > u.ln() {
@@ -489,8 +489,7 @@ mod tests {
         let stats_x2 = basic_stats("ESS(x2)", ess_x2_array);
 
         // Print out or assert the summary stats
-        stats_x1.print();
-        stats_x2.print();
+        println!("{stats_x1}\n{stats_x2}");
 
         // Optionally, assert certain minimal thresholds or acceptance criteria
         // For example, we might expect an average ESS ~ something.

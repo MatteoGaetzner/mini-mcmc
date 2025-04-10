@@ -11,7 +11,7 @@ mod tests {
     // 1) Poisson Distribution Example
     //
     // Poisson(λ) with λ = 4.0 as an example of an unbounded discrete distribution.
-    // We define unnorm_log_prob(k) ∝ k ln(λ) - λ - ln(k!), ignoring constants that
+    // We define unnorm_logp(k) ∝ k ln(λ) - λ - ln(k!), ignoring constants that
     // don't depend on k. The random-walk proposal attempts ±1 moves, restricted to k >= 0.
     // ------------------------------------------------------------------------
 
@@ -21,12 +21,12 @@ mod tests {
     }
 
     impl Target<i32, f64> for PoissonDist {
-        fn unnorm_log_prob(&self, k: &[i32]) -> f64 {
+        fn unnorm_logp(&self, k: &[i32]) -> f64 {
             if k[0] < 0 {
                 // Probability zero if k < 0
                 f64::NEG_INFINITY
             } else {
-                // unnorm_log_prob(k) = k ln(lambda) - lambda - ln(k!)
+                // unnorm_logp(k) = k ln(lambda) - lambda - ln(k!)
                 // We'll compute ln(k!) using an approximation (ln_gamma(k+1)) or a small table for demonstration
                 let kf = k[0] as f64;
                 kf * self.lambda.ln() - self.lambda - ln_factorial(k[0])
@@ -73,8 +73,8 @@ mod tests {
             }
         }
 
-        fn log_prob(&self, _from: &[i32], _to: &[i32]) -> f64 {
-            // Symmetric move => probability = 0.5 => log_prob = ln(0.5)
+        fn logp(&self, _from: &[i32], _to: &[i32]) -> f64 {
+            // Symmetric move => probability = 0.5 => logp = ln(0.5)
             0.5_f64.ln()
         }
 
@@ -150,7 +150,7 @@ mod tests {
     // 2) Binomial Distribution Example
     //
     // Binomial(n=10, p=0.3) as an example of a bounded discrete distribution on {0,1,...,10}.
-    // unnorm_log_prob(k) = ln( nCk * p^k * (1-p)^(n-k) ), ignoring constants that don't
+    // unnorm_logp(k) = ln( nCk * p^k * (1-p)^(n-k) ), ignoring constants that don't
     // depend on k, or we can compute it exactly. The random-walk proposal picks ±1,
     // and we clamp to stay in [0..n].
     // ------------------------------------------------------------------------
@@ -162,11 +162,11 @@ mod tests {
     }
 
     impl Target<i32, f64> for BinomialDist {
-        fn unnorm_log_prob(&self, k: &[i32]) -> f64 {
+        fn unnorm_logp(&self, k: &[i32]) -> f64 {
             if k[0] < 0 || k[0] > self.n {
                 return f64::NEG_INFINITY;
             }
-            // unnorm_log_prob(k) = ln( nCk ) + k ln(p) + (n-k) ln(1-p)
+            // unnorm_logp(k) = ln( nCk ) + k ln(p) + (n-k) ln(1-p)
             let kf = k[0] as f64;
             let nf = self.n as f64;
             binomial_coeff_ln(self.n, k[0]) + kf * self.p.ln() + (nf - kf) * (1.0 - self.p).ln()
@@ -201,7 +201,7 @@ mod tests {
             vec![new_val.max(0).min(self.n)]
         }
 
-        fn log_prob(&self, _from: &[i32], _to: &[i32]) -> f64 {
+        fn logp(&self, _from: &[i32], _to: &[i32]) -> f64 {
             // Symmetric => probability 0.5 => ln(0.5)
             0.5_f64.ln()
         }

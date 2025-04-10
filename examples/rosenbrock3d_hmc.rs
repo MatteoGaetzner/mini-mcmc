@@ -24,7 +24,7 @@ where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
-    fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions shape is [n_chains, d] with d = 3 here.
         // For each chain, compute:
         //   f(x) = sum_{i=0}^{d-2} [100*(x[i+1] - x[i]²)² + (1 - x[i])²]
@@ -136,20 +136,21 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Define 3 chains, each initialized to a 3D point (e.g., [1.0, 2.0, 3.0]).
     let n_collect = 400;
+    let n_discard = 50;
 
     // Create the data-parallel HMC sampler.
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
         target,
-        init_det(4, 3),
-        0.032, // step size
-        50,    // number of leapfrog steps per update
+        init_det(4, 3), // 4 chains, dimensionality 3
+        0.01,           // step size
+        10,             // number of leapfrog steps per update
     );
 
     let start = Instant::now();
     // Run HMC for n_collect, collecting samples as a 3D tensor.
-    let (samples, stats) = sampler.run_progress(n_collect, 100).unwrap();
+    let (samples, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
     println!("Shape: {:?}", samples.shape());
-    stats.print();
+    println!("{stats}");
 
     let duration = start.elapsed();
     println!(

@@ -33,9 +33,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Generate samples
     let (samples, stats) = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
     let pooled = samples.to_shape((SAMPLE_SIZE, 2)).unwrap();
-    stats.print();
 
-    println!("Generated {} samples", pooled.shape()[0]);
+    println!("Generated {} samples\n{stats}", pooled.shape()[0]);
 
     // Basic statistics
     let row_mean = pooled.mean_axis(Axis(0)).unwrap();

@@ -210,7 +210,7 @@ where
     /// let (samples, stats) = sampler.run_progress(12, 34).unwrap();
     ///
     /// // Print convergence statistics
-    /// stats.print();
+    /// println!("{stats}");
     /// ```
     ///
     /// [1]: https://mc-stan.org/docs/2_18/reference-manual/notation-for-samples-chains-and-draws.html
@@ -228,7 +228,7 @@ where
         let pb = ProgressBar::new(n_collect as u64);
         pb.set_style(
             ProgressStyle::default_bar()
-                .template("{prefix:8} {bar:40.white} ETA {eta:3} | {msg}")
+                .template("{prefix:8} {bar:40.cyan/blue} {pos}/{len} ({eta}) | {msg}")
                 .unwrap()
                 .progress_chars("=>-"),
         );
@@ -301,6 +301,8 @@ where
         let (n_chains, dim) = (shape.dims[0], shape.dims[1]);
 
         // 1) Sample momenta: shape [n_chains, D]
+        // let momentum_0 = Tensor::<B, 2>::zeros(Shape::new([n_chains, dim]), &B::Device::default());
+        // TODO: Reintroduce RNG later
         let momentum_0 = Tensor::<B, 2>::random(
             Shape::new([n_chains, dim]),
             burn::tensor::Distribution::Normal(0., 1.),
@@ -308,7 +310,7 @@ where
         );
 
         // Current log probability: shape [n_chains]
-        let logp_current = self.target.log_prob_batch(self.positions.clone());
+        let logp_current = self.target.unnorm_logp(self.positions.clone());
 
         // Compute kinetic energy: 0.5 * sum_{d} (p^2) for each chain.
         let ke_current = momentum_0
@@ -324,6 +326,7 @@ where
         // 2) Run the leapfrog integrator.
         let (proposed_positions, proposed_momenta, logp_proposed) =
             self.leapfrog(self.positions.clone(), momentum_0);
+        // dbg!(&proposed_positions, &proposed_momenta, &logp_proposed);
 
         // Compute proposed kinetic energy.
         let ke_proposed = proposed_momenta
@@ -331,11 +334,14 @@ where
             .sum_dim(1)
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
+        // dbg!(&ke_proposed);
 
         let h_proposed = -logp_proposed + ke_proposed;
+        // dbg!(&h_proposed);
 
         // 3) Accept/Reject each proposal.
         let accept_logp = h_current.sub(h_proposed);
+        // dbg!(&accept_logp);
 
         // Draw a uniform random number for each chain.
         let mut uniform_data = Vec::with_capacity(n_chains);
@@ -386,13 +392,15 @@ where
         mut mom: Tensor<B, 2>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
         let half = T::from(0.5).unwrap();
+        // dbg!(&pos, &mom);
         for _step_i in 0..self.n_leapfrog {
             // Detach pos to ensure it's AD-enabled for the gradient computation.
             pos = pos.detach().require_grad();
 
             // Compute gradient of log probability with respect to pos (batched over chains).
-            let logp = self.target.log_prob_batch(pos.clone()); // shape [n_chains]
+            let logp = self.target.unnorm_logp(pos.clone()); // shape [n_chains]
             let grads = pos.grad(&logp.backward()).unwrap();
+            // dbg!(&grads);
 
             // Update momentum by a half-step using the computed gradients.
             mom.inplace(|_mom| {
@@ -400,6 +408,7 @@ where
                     grads.mul_scalar(self.step_size * half),
                 ))
             });
+            // dbg!(&mom);
 
             // Full-step update for positions.
             pos.inplace(|_pos| {
@@ -407,9 +416,10 @@ where
                     .detach()
                     .require_grad()
             });
+            // dbg!(&pos);
 
             // Compute gradient at the new positions.
-            let logp2 = self.target.log_prob_batch(pos.clone());
+            let logp2 = self.target.unnorm_logp(pos.clone());
             let grads2 = pos.grad(&logp2.backward()).unwrap();
 
             // Update momentum by another half-step using the new gradients.
@@ -421,7 +431,7 @@ where
         }
 
         // Compute final log probability at the updated positions.
-        let logp_final = self.target.log_prob_batch(pos.clone());
+        let logp_final = self.target.unnorm_logp(pos.clone());
         (pos.detach(), mom.detach(), logp_final.detach())
     }
 }
@@ -454,7 +464,7 @@ mod tests {
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
             let n = positions.dims()[0] as i64;
             let x = positions.clone().slice([(0, n), (0, 1)]);
             let y = positions.clone().slice([(0, n), (1, 2)]);
@@ -480,7 +490,7 @@ mod tests {
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn log_prob_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
             let k = positions.dims()[0] as i64;
             let n = positions.dims()[1] as i64;
             let low = positions.clone().slice([(0, k), (0, (n - 1))]);
@@ -593,15 +603,36 @@ mod tests {
     }
 
     #[test]
+    fn test_gaussian_2d_hmc_debug() {
+        let n_chains = 1;
+        let n_discard = 1;
+        let n_collect = 1;
+
+        let target = DiffableGaussian2D::new([0.0, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+        let initial_positions = vec![vec![0.0_f32, 0.0_f32]];
+
+        type BackendType = Autodiff<NdArray>;
+        let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+            target,
+            initial_positions,
+            0.1,
+            1,
+        )
+        .set_seed(42);
+
+        let samples_3d = sampler.run(n_collect, n_discard);
+
+        assert_eq!(samples_3d.dims(), [n_chains, n_collect, 2]);
+    }
+
+    #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
     fn test_gaussian_2d_hmc_single_run() {
         // Each experiment uses 3 chains:
         let n_chains = 3;
 
-        // We'll do 1500 steps per chain with 500 burn-in => 1000 collected samples per chain
-        let burn_in = 500;
-        let n_samples_per_chain = 1500;
-        let collected = n_samples_per_chain - burn_in;
+        let n_discard = 500;
+        let n_collect = 1000;
 
         // 1) Define the 2D Gaussian target distribution:
         //    mean: [0.0, 1.0], cov: [[4.0, 2.0], [2.0, 3.0]]
@@ -626,10 +657,10 @@ mod tests {
 
         // 4) Run the sampler for (burn_in + collected) steps, discard the first `burn_in`
         //    The shape of `samples` will be [n_chains, collected, 2]
-        let samples_3d = sampler.run(collected, burn_in);
+        let samples_3d = sampler.run(n_collect, n_discard);
 
         // Check shape is as expected
-        assert_eq!(samples_3d.dims(), [n_chains, collected, 2]);
+        assert_eq!(samples_3d.dims(), [n_chains, n_collect, 2]);
 
         // 5) Convert the samples into an ndarray view
         let data = samples_3d.to_data();
@@ -648,6 +679,162 @@ mod tests {
         // Optionally, add some asserts about expected minimal ESS
         assert!(ess1 > 50.0, "Expected param1 ESS > 50, got {:.2}", ess1);
         assert!(ess2 > 50.0, "Expected param2 ESS > 50, got {:.2}", ess2);
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_gaussian_2d_hmc_ess_stats() {
+        use crate::stats::basic_stats;
+        use indicatif::{ProgressBar, ProgressStyle};
+        use ndarray::Array1;
+
+        let n_runs = 1000;
+        let n_chains = 3;
+        let n_discard = 500;
+        let n_collect = 1000;
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        // We'll store the ESS and R-hat values for each parameter across all runs
+        let mut ess_param1s = Vec::with_capacity(n_runs);
+        let mut ess_param2s = Vec::with_capacity(n_runs);
+        let mut rhat_param1s = Vec::with_capacity(n_runs);
+        let mut rhat_param2s = Vec::with_capacity(n_runs);
+
+        // Set up the progress bar
+        let pb = ProgressBar::new(n_runs as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{prefix:8} {bar:40.cyan/blue} {pos}/{len} ({eta}) | {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.set_prefix("HMC Test");
+
+        for run in 0..n_runs {
+            // 1) Define the 2D Gaussian target distribution:
+            //    mean: [0.0, 1.0], cov: [[4.0, 2.0], [2.0, 3.0]]
+            let target = DiffableGaussian2D::new([0.0_f32, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+
+            // 2) Define 3 chains, each chain is 2-dimensional:
+            // Create a seeded RNG for reproducible initial positions
+            let initial_positions: Vec<Vec<f32>> = (0..n_chains)
+                .map(|_| {
+                    // Sample 2D position from standard normal
+                    vec![
+                        rng.sample::<f32, _>(StandardNormal),
+                        rng.sample::<f32, _>(StandardNormal),
+                    ]
+                })
+                .collect();
+
+            // 3) Create the HMC sampler using NdArray backend with autodiff
+            type BackendType = Autodiff<NdArray>;
+            let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+                target,
+                initial_positions,
+                0.1, // step size
+                10,  // leapfrog steps
+            )
+            .set_seed(run as u64); // Use run number as seed for reproducibility
+
+            // 4) Run the sampler for (n_discard + n_collect) steps, discard the first `n_discard`
+            let samples_3d = sampler.run(n_collect, n_discard);
+
+            // Check shape is as expected
+            assert_eq!(samples_3d.dims(), [n_chains, n_collect, 2]);
+
+            // 5) Convert the samples into an ndarray view
+            let data = samples_3d.to_data();
+            let arr = ArrayView3::from_shape(samples_3d.dims(), data.as_slice().unwrap()).unwrap();
+
+            // 6) Compute split-Rhat and ESS
+            let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
+            let ess1 = ess_vals[0];
+            let ess2 = ess_vals[1];
+
+            // Store ESS values
+            ess_param1s.push(ess1);
+            ess_param2s.push(ess2);
+
+            // Store R-hat values from stats object
+            rhat_param1s.push(rhat[0]);
+            rhat_param2s.push(rhat[1]);
+
+            pb.inc(1);
+
+            // Update progress bar with current ESS statistics across runs
+            if run > 0 {
+                // Calculate mean and std of ESS for both parameters across all runs so far
+                let mean_ess1 = ess_param1s.iter().sum::<f32>() / (run as f32 + 1.0);
+                let mean_ess2 = ess_param2s.iter().sum::<f32>() / (run as f32 + 1.0);
+
+                // Calculate standard deviations
+                let var_ess1 = ess_param1s
+                    .iter()
+                    .map(|&x| (x - mean_ess1).powi(2))
+                    .sum::<f32>()
+                    / (run as f32 + 1.0);
+                let var_ess2 = ess_param2s
+                    .iter()
+                    .map(|&x| (x - mean_ess2).powi(2))
+                    .sum::<f32>()
+                    / (run as f32 + 1.0);
+
+                let std_ess1 = var_ess1.sqrt();
+                let std_ess2 = var_ess2.sqrt();
+
+                pb.set_message(format!(
+                    "ESS1={:.0}±{:.0} ESS2={:.0}±{:.0}",
+                    mean_ess1, std_ess1, mean_ess2, std_ess2
+                ));
+            } else {
+                // For the first run, just show the current values
+                pb.set_message(format!("ESS1={:.0} ESS2={:.0}", ess1, ess2));
+            }
+        }
+        pb.finish_with_message("All runs complete!");
+
+        // Convert to ndarray for statistics
+        let ess_param1_array = Array1::from_vec(ess_param1s);
+        let ess_param2_array = Array1::from_vec(ess_param2s);
+        let rhat_param1_array = Array1::from_vec(rhat_param1s);
+        let rhat_param2_array = Array1::from_vec(rhat_param2s);
+
+        // Compute and print statistics
+        let stats_p1_ess = basic_stats("ESS(Param1)", ess_param1_array);
+        let stats_p2_ess = basic_stats("ESS(Param2)", ess_param2_array);
+        let stats_p1_rhat = basic_stats("R-hat(Param1)", rhat_param1_array);
+        let stats_p2_rhat = basic_stats("R-hat(Param2)", rhat_param2_array);
+
+        println!("\nStatistics over {} runs:", n_runs);
+        println!("\nESS Statistics:");
+        println!("{stats_p1_ess}\n{stats_p2_ess}");
+        println!("\nR-hat Statistics:");
+        println!("{stats_p1_rhat}\n{stats_p2_rhat}");
+
+        // Assertions for ESS
+        assert!(
+            (155.0..=165.0).contains(&stats_p1_ess.mean),
+            "Expected param1 ESS to average in [155, 165], got {:.2}",
+            stats_p1_ess.mean
+        );
+        assert!(
+            (161.0..=171.0).contains(&stats_p2_ess.mean),
+            "Expected param2 ESS to average in [161, 171], got {:.2}",
+            stats_p2_ess.mean
+        );
+
+        // Assertions for R-hat (should be close to 1.0)
+        assert!(
+            (0.95..=1.05).contains(&stats_p1_rhat.mean),
+            "Expected param1 R-hat to be in [0.95, 1.05], got {:.2}",
+            stats_p1_rhat.mean
+        );
+        assert!(
+            (0.95..=1.05).contains(&stats_p2_rhat.mean),
+            "Expected param2 R-hat to be in [0.95, 1.05], got {:.2}",
+            stats_p2_rhat.mean
+        );
     }
 
     #[test]
