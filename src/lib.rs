@@ -4,6 +4,22 @@
 //! including **Hamiltonian Monte Carlo (HMC)**, **Metropolis–Hastings**, and
 //! **Gibbs Sampling** for both discrete and continuous targets.
 //!
+//! ## Getting Started
+//!
+//! To use this library, add it to your project:
+//! ```bash
+//! cargo add mini-mcmc
+//! ```
+//!
+//! The library provides three main sampling approaches:
+//! 1. **Metropolis-Hastings**: For general-purpose sampling. You need to provide:
+//!    - A target distribution implementing the `Target` trait
+//!    - A proposal distribution implementing the `Proposal` trait
+//! 2. **Hamiltonian Monte Carlo (HMC)**: For continuous distributions with gradients. You need to provide:
+//!    - A target distribution implementing the `GradientTarget` trait
+//! 3. **Gibbs Sampling**: For sampling when conditional distributions are available. You need to provide:
+//!    - A distribution implementing the `Conditional` trait
+//!
 //! ## Example 1: Sampling a 2D Gaussian (Metropolis–Hastings)
 //!
 //! ```rust
@@ -160,12 +176,13 @@
 //! - **Progress Indicators** (acceptance rates, iteration counts)
 //! - **Common Distributions** (e.g. Gaussian) plus easy traits for custom log‐prob
 //! - **Optional I/O** (CSV, Arrow, Parquet) and GPU sampling (WGPU)
+//! - **Effective Sample Size (ESS)** estimation following STAN's methodology
+//! - **R-hat Diagnostics** for convergence monitoring
 //!
 //! ## Roadmap
 //! - No-U-Turn Sampler (NUTS)
 //! - Rank-Normalized R-hat diagnostics
 //! - Ensemble Slice Sampling (ESS)
-//! - Effective Sample Size estimation
 
 pub mod core;
 mod dev_tools;

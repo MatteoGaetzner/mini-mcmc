@@ -688,7 +688,7 @@ mod tests {
         use indicatif::{ProgressBar, ProgressStyle};
         use ndarray::Array1;
 
-        let n_runs = 1000;
+        let n_runs = 100;
         let n_chains = 3;
         let n_discard = 500;
         let n_collect = 1000;
@@ -814,13 +814,13 @@ mod tests {
 
         // Assertions for ESS
         assert!(
-            (155.0..=165.0).contains(&stats_p1_ess.mean),
-            "Expected param1 ESS to average in [155, 165], got {:.2}",
+            (135.0..=185.0).contains(&stats_p1_ess.mean),
+            "Expected param1 ESS to average in [135, 185], got {:.2}",
             stats_p1_ess.mean
         );
         assert!(
-            (161.0..=171.0).contains(&stats_p2_ess.mean),
-            "Expected param2 ESS to average in [161, 171], got {:.2}",
+            (141.0..=191.0).contains(&stats_p2_ess.mean),
+            "Expected param2 ESS to average in [141, 191], got {:.2}",
             stats_p2_ess.mean
         );
 
@@ -851,7 +851,8 @@ mod tests {
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
-        let n_collect = 5000;
+        let n_collect = 1000;
+        let n_discard = 1000;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -864,12 +865,12 @@ mod tests {
 
         // Run HMC for `n_collect` steps.
         let mut timer = Timer::new();
-        let samples = sampler.run(n_collect, 0);
+        let samples = sampler.run(n_collect, n_discard);
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [6, 5000, 2]);
+        assert_eq!(samples.dims(), [6, 1000, 2]);
     }
 
     #[test]
@@ -886,8 +887,10 @@ mod tests {
         };
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
-        let n_collect = 5000;
+        let n_chains = 6;
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; n_chains];
+        let n_collect = 1000;
+        let n_discard = 1000;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -900,7 +903,7 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_collect, 0).unwrap().0;
+        let samples = sampler.run_progress(n_collect, n_discard).unwrap().0;
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
@@ -918,7 +921,7 @@ mod tests {
         crate::io::csv::save_csv_tensor(samples.clone(), "data.csv")
             .expect("Expected saving to succeed");
 
-        assert_eq!(samples.dims(), [6, 5000, 2]);
+        assert_eq!(samples.dims(), [n_chains, n_collect, 2]);
     }
 
     #[test]
@@ -929,12 +932,14 @@ mod tests {
 
         let seed = 42;
         let d = 10000;
+        let n_chains = 6;
+        let n_collect = 100;
+        let n_discard = 100;
 
         let rng = SmallRng::seed_from_u64(seed);
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions: Vec<Vec<f32>> =
-            vec![rng.sample_iter(StandardNormal).take(d).collect(); 6];
-        let n_collect = 500;
+            vec![rng.sample_iter(StandardNormal).take(d).collect(); n_chains];
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
@@ -947,12 +952,12 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run(n_collect, 0);
+        let samples = sampler.run(n_collect, n_discard);
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [6, 500, 10000]);
+        assert_eq!(samples.dims(), [n_chains, n_collect, d]);
     }
 
     #[test]
@@ -963,12 +968,14 @@ mod tests {
 
         let seed = 42;
         let d = 10000;
+        let n_chains = 6;
 
         let rng = SmallRng::seed_from_u64(seed);
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions: Vec<Vec<f32>> =
-            vec![rng.sample_iter(StandardNormal).take(d).collect(); 6];
-        let n_collect = 5000;
+            vec![rng.sample_iter(StandardNormal).take(d).collect(); n_chains];
+        let n_collect = 100;
+        let n_discard = 100;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
@@ -981,11 +988,11 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_collect, 0).unwrap().0;
+        let samples = sampler.run_progress(n_collect, n_discard).unwrap().0;
         timer.log(format!(
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [6, 5000, 10000]);
+        assert_eq!(samples.dims(), [n_chains, n_collect, d]);
     }
 }

@@ -1,5 +1,7 @@
 # Mini MCMC
 
+[![crate](https://img.shields.io/crates/v/mini-mcmc.svg)](https://crates.io/crates/mini-mcmc)
+[![docs](https://img.shields.io/docsrs/mini-mcmc)](https://docs.rs/mini-mcmc)
 ![tests](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/general.yml/badge.svg)
 ![security](https://github.com/MatteoGaetzner/mini-mcmc/actions/workflows/audit.yml/badge.svg)
 [![codecov](https://codecov.io/gh/MatteoGaetzner/mini-mcmc/graph/badge.svg?token=IDLWGMMUFI)](https://codecov.io/gh/MatteoGaetzner/mini-mcmc)
