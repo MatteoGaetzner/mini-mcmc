@@ -47,6 +47,10 @@ where
     /// - `n_chains`: number of parallel chains
     /// - `D`: dimensionality of the state space
     pub positions: Tensor<B, 2>,
+
+    /// Last step's position gradient
+    last_grad_summands: Tensor<B, 2>,
+
     /// A random number generator for sampling momenta and uniform random numbers for the
     /// Metropolis acceptance test.
     pub rng: SmallRng,
@@ -98,6 +102,7 @@ where
             target,
             step_size,
             n_leapfrog,
+            last_grad_summands: Tensor::<B, 2>::zeros_like(&positions),
             positions,
             rng,
         }
@@ -301,8 +306,6 @@ where
         let (n_chains, dim) = (shape.dims[0], shape.dims[1]);
 
         // 1) Sample momenta: shape [n_chains, D]
-        // let momentum_0 = Tensor::<B, 2>::zeros(Shape::new([n_chains, dim]), &B::Device::default());
-        // TODO: Reintroduce RNG later
         let momentum_0 = Tensor::<B, 2>::random(
             Shape::new([n_chains, dim]),
             burn::tensor::Distribution::Normal(0., 1.),
@@ -310,7 +313,16 @@ where
         );
 
         // Current log probability: shape [n_chains]
-        let logp_current = self.target.unnorm_logp(self.positions.clone());
+        // Detach pos to ensure it's AD-enabled for the gradient computation.
+        let pos = self.positions.clone().detach().require_grad();
+        let logp_current = self.target.unnorm_logp(pos.clone());
+
+        // Compute gradient of log probability with respect to pos.
+        // First gradient step in leapfrog needs it.
+        let grads = pos.grad(&logp_current.backward()).unwrap();
+        let grad_summands =
+            Tensor::<B, 2>::from_inner(grads.mul_scalar(self.step_size * T::from(0.5).unwrap()));
+        self.last_grad_summands = grad_summands;
 
         // Compute kinetic energy: 0.5 * sum_{d} (p^2) for each chain.
         let ke_current = momentum_0
@@ -326,7 +338,6 @@ where
         // 2) Run the leapfrog integrator.
         let (proposed_positions, proposed_momenta, logp_proposed) =
             self.leapfrog(self.positions.clone(), momentum_0);
-        // dbg!(&proposed_positions, &proposed_momenta, &logp_proposed);
 
         // Compute proposed kinetic energy.
         let ke_proposed = proposed_momenta
@@ -334,14 +345,11 @@ where
             .sum_dim(1)
             .squeeze(1)
             .mul_scalar(T::from(0.5).unwrap());
-        // dbg!(&ke_proposed);
 
         let h_proposed = -logp_proposed + ke_proposed;
-        // dbg!(&h_proposed);
 
         // 3) Accept/Reject each proposal.
         let accept_logp = h_current.sub(h_proposed);
-        // dbg!(&accept_logp);
 
         // Draw a uniform random number for each chain.
         let mut uniform_data = Vec::with_capacity(n_chains);
@@ -398,17 +406,11 @@ where
             pos = pos.detach().require_grad();
 
             // Compute gradient of log probability with respect to pos (batched over chains).
-            let logp = self.target.unnorm_logp(pos.clone()); // shape [n_chains]
-            let grads = pos.grad(&logp.backward()).unwrap();
-            // dbg!(&grads);
+            // let logp = self.target.unnorm_logp(pos.clone()); // shape [n_chains]
+            // let grads = pos.grad(&logp.backward()).unwrap();
 
             // Update momentum by a half-step using the computed gradients.
-            mom.inplace(|_mom| {
-                _mom.add(Tensor::<B, 2>::from_inner(
-                    grads.mul_scalar(self.step_size * half),
-                ))
-            });
-            // dbg!(&mom);
+            mom.inplace(|_mom| _mom.add(self.last_grad_summands.clone()));
 
             // Full-step update for positions.
             pos.inplace(|_pos| {
@@ -416,18 +418,16 @@ where
                     .detach()
                     .require_grad()
             });
-            // dbg!(&pos);
 
             // Compute gradient at the new positions.
-            let logp2 = self.target.unnorm_logp(pos.clone());
-            let grads2 = pos.grad(&logp2.backward()).unwrap();
+            let logp = self.target.unnorm_logp(pos.clone());
+            let grads = pos.grad(&logp.backward()).unwrap();
+            let grad_summands = Tensor::<B, 2>::from_inner(grads.mul_scalar(self.step_size * half));
 
             // Update momentum by another half-step using the new gradients.
-            mom.inplace(|_mom| {
-                _mom.add(Tensor::<B, 2>::from_inner(
-                    grads2.mul_scalar(self.step_size * half),
-                ))
-            });
+            mom.inplace(|_mom| _mom.add(grad_summands.clone()));
+
+            self.last_grad_summands = grad_summands;
         }
 
         // Compute final log probability at the updated positions.
@@ -839,7 +839,7 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_bench() {
+    fn test_bench_noprogress() {
         // Use the CPU backend (NdArray) wrapped in Autodiff.
         type BackendType = Autodiff<burn::backend::NdArray>;
 
