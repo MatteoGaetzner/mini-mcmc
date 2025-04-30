@@ -438,7 +438,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::{dev_tools::Timer, distributions::DiffableGaussian2D, stats::split_rhat_mean_ess};
+    use crate::{
+        core::init, dev_tools::Timer, distributions::DiffableGaussian2D, stats::split_rhat_mean_ess,
+    };
     use ndarray::ArrayView3;
 
     use super::*;
@@ -850,9 +852,9 @@ mod tests {
         };
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 6];
-        let n_collect = 1000;
-        let n_discard = 1000;
+        let initial_positions = init(6, 2);
+        let n_collect = 5000;
+        let n_discard = 500;
 
         // Create the data-parallel HMC sampler.
         let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
@@ -870,7 +872,7 @@ mod tests {
             "HMC sampler: generated {} samples.",
             samples.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [6, 1000, 2]);
+        assert_eq!(samples.dims(), [6, 5000, 2]);
     }
 
     #[test]
