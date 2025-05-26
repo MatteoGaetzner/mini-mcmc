@@ -283,7 +283,7 @@ The following minimal example demonstrates how to create and run an HMC sampler 
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
 use mini_mcmc::core::init_det;
-use mini_mcmc::distributions::GradientTarget;
+use mini_mcmc::distributions::BatchedGradientTarget;
 use mini_mcmc::hmc::HMC;
 use num_traits::Float;
 
@@ -297,7 +297,7 @@ use num_traits::Float;
 /// This implementation generalizes to d dimensions, but here we use it for 3D.
 struct RosenbrockND {}
 
-impl<T, B> GradientTarget<T, B> for RosenbrockND
+impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
 where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,

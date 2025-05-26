@@ -1,7 +1,7 @@
 //! Computation and tracking of MCMC statistics like acceptance probability and Potential Scale
 //! Reduction.
 
-use burn::prelude::*;
+use burn::prelude::{Backend, Tensor};
 use core::fmt;
 use ndarray::{concatenate, prelude::*, stack};
 use ndarray_stats::QuantileExt;

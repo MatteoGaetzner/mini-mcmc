@@ -16,7 +16,7 @@
 //!    - A target distribution implementing the `Target` trait
 //!    - A proposal distribution implementing the `Proposal` trait
 //! 2. **Hamiltonian Monte Carlo (HMC)**: For continuous distributions with gradients. You need to provide:
-//!    - A target distribution implementing the `GradientTarget` trait
+//!    - A target distribution implementing the `BatchedGradientTarget` trait
 //! 3. **Gibbs Sampling**: For sampling when conditional distributions are available. You need to provide:
 //!    - A distribution implementing the `Conditional` trait
 //!
@@ -46,7 +46,7 @@
 //! use burn::tensor::Element;
 //! use burn::{backend::Autodiff, prelude::Tensor};
 //! use mini_mcmc::hmc::HMC;
-//! use mini_mcmc::distributions::GradientTarget;
+//! use mini_mcmc::distributions::BatchedGradientTarget;
 //! use mini_mcmc::core::init;
 //! use num_traits::Float;
 //!
@@ -59,7 +59,7 @@
 //! /// This implementation generalizes to d dimensions, but here we use it for 3D.
 //! struct RosenbrockND {}
 //!
-//! impl<T, B> GradientTarget<T, B> for RosenbrockND
+//! impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
 //! where
 //!     T: Float + std::fmt::Debug + Element,
 //!     B: burn::tensor::backend::AutodiffBackend,
@@ -192,4 +192,5 @@ pub mod hmc;
 pub mod io;
 pub mod ks_test;
 pub mod metropolis_hastings;
+pub mod nuts;
 pub mod stats;

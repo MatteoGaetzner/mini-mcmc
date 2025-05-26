@@ -4,12 +4,12 @@
 //! for improved efficiency. The sampler works in a data-parallel fashion and can update multiple
 //! chains simultaneously.
 //!
-//! The code relies on a target distribution provided via the `GradientTarget` trait, which computes
+//! The code relies on a target distribution provided via the `BatchedGradientTarget` trait, which computes
 //! the unnormalized log probability for a batch of positions. The HMC implementation uses the leapfrog
 //! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
 //! validation.
 
-use crate::distributions::GradientTarget;
+use crate::distributions::BatchedGradientTarget;
 use crate::stats::MultiChainTracker;
 use crate::stats::RunStats;
 use burn::prelude::*;
@@ -31,7 +31,7 @@ use std::error::Error;
 ///
 /// * `T`: Floating-point type for numerical calculations.
 /// * `B`: Autodiff backend from the `burn` crate.
-/// * `GTarget`: The target distribution type implementing the `GradientTarget` trait.
+/// * `GTarget`: The target distribution type implementing the `BatchedGradientTarget` trait.
 #[derive(Debug, Clone)]
 pub struct HMC<T, B, GTarget>
 where
@@ -64,7 +64,7 @@ where
         + rand_distr::uniform::SampleUniform
         + num_traits::FromPrimitive,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B> + std::marker::Sync,
+    GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: rand::distributions::Distribution<T>,
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
@@ -75,7 +75,7 @@ where
     ///
     /// # Parameters
     ///
-    /// * `target`: The target distribution implementing the `GradientTarget` trait.
+    /// * `target`: The target distribution implementing the `BatchedGradientTarget` trait.
     /// * `initial_positions`: A vector of vectors containing the initial positions for each chain, with shape `[n_chains][D]`.
     /// * `step_size`: The step size used in the leapfrog integrator.
     /// * `n_leapfrog`: The number of leapfrog steps per update.
@@ -461,15 +461,15 @@ mod tests {
     }
 
     // For the batched version we need to implement BatchGradientTarget.
-    impl<T, B> GradientTarget<T, B> for Rosenbrock2D<T>
+    impl<T, B> BatchedGradientTarget<T, B> for Rosenbrock2D<T>
     where
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
         fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
-            let n = positions.dims()[0] as i64;
-            let x = positions.clone().slice([(0, n), (0, 1)]);
-            let y = positions.clone().slice([(0, n), (1, 2)]);
+            let n = positions.dims()[0];
+            let x = positions.clone().slice([0..n, 0..1]);
+            let y = positions.slice([0..n, 1..2]);
 
             // Compute (a - x)^2 in place.
             let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
@@ -487,16 +487,16 @@ mod tests {
     struct RosenbrockND {}
 
     // For the batched version we need to implement BatchGradientTarget.
-    impl<T, B> GradientTarget<T, B> for RosenbrockND
+    impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
     where
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
         fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
-            let k = positions.dims()[0] as i64;
-            let n = positions.dims()[1] as i64;
-            let low = positions.clone().slice([(0, k), (0, (n - 1))]);
-            let high = positions.clone().slice([(0, k), (1, n)]);
+            let k = positions.dims()[0];
+            let n = positions.dims()[1];
+            let low = positions.clone().slice([0..k, 0..(n - 1)]);
+            let high = positions.slice([0..k, 1..n]);
             let term_1 = (high - low.clone().powi_scalar(2))
                 .powi_scalar(2)
                 .mul_scalar(100);
@@ -912,11 +912,11 @@ mod tests {
         ));
         println!(
             "Chain 1, first 10: {}",
-            samples.clone().slice([(0, 1), (0, 10), (0, 1)])
+            samples.clone().slice([0..1, 0..10, 0..1])
         );
         println!(
             "Chain 2, first 10: {}",
-            samples.clone().slice([(2, 3), (0, 10), (0, 1)])
+            samples.clone().slice([2..3, 0..10, 0..1])
         );
 
         #[cfg(feature = "arrow")]

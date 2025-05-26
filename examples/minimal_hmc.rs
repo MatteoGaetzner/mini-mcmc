@@ -1,7 +1,7 @@
 use burn::tensor::Element;
 use burn::{backend::Autodiff, prelude::Tensor};
 use mini_mcmc::core::init_det;
-use mini_mcmc::distributions::GradientTarget;
+use mini_mcmc::distributions::BatchedGradientTarget;
 use mini_mcmc::hmc::HMC;
 use num_traits::Float;
 
@@ -15,17 +15,17 @@ use num_traits::Float;
 /// This implementation generalizes to d dimensions, but here we use it for 3D.
 struct RosenbrockND {}
 
-impl<T, B> GradientTarget<T, B> for RosenbrockND
+impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
 where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
     fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions has shape [n_chains, d] with d = 3.
-        let k = positions.dims()[0] as i64;
-        let n = positions.dims()[1] as i64;
-        let low = positions.clone().slice([(0, k), (0, n - 1)]);
-        let high = positions.clone().slice([(0, k), (1, n)]);
+        let k = positions.dims()[0];
+        let n = positions.dims()[1];
+        let low = positions.clone().slice([0..k, 0..n - 1]);
+        let high = positions.clone().slice([0..k, 1..n]);
         let term_1 = (high - low.clone().powi_scalar(2))
             .powi_scalar(2)
             .mul_scalar(100);

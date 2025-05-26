@@ -60,7 +60,7 @@ use std::ops::AddAssign;
 ///
 /// * `T`: The floating-point type (e.g., f32 or f64).
 /// * `B`: The autodiff backend from the `burn` crate.
-pub trait GradientTarget<T: Float, B: AutodiffBackend> {
+pub trait BatchedGradientTarget<T: Float, B: AutodiffBackend> {
     /// Compute the log density for a batch of positions.
     ///
     /// # Parameters
@@ -71,6 +71,18 @@ pub trait GradientTarget<T: Float, B: AutodiffBackend> {
     ///
     /// A 1D tensor of shape `[n_chains]` containing the log density for each chain.
     fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
+}
+
+pub trait GradientTarget<T: Float, B: AutodiffBackend> {
+    fn unnorm_logp(&self, positions: Tensor<B, 1>) -> Tensor<B, 1>;
+
+    fn unnorm_logp_and_grad(&self, position: Tensor<B, 1>) -> (Tensor<B, 1>, Tensor<B, 1>) {
+        let pos = position.clone().detach().require_grad();
+        let ulogp = self.unnorm_logp(pos.clone());
+        let grad_inner = pos.grad(&ulogp.backward()).unwrap();
+        let grad = Tensor::<B, 1>::from_inner(grad_inner);
+        (ulogp, grad)
+    }
 }
 
 /// A trait for generating proposals Metropolis–Hastings-like algorithms.
@@ -237,7 +249,7 @@ where
     }
 }
 
-impl<T, B> GradientTarget<T, B> for DiffableGaussian2D<T>
+impl<T, B> BatchedGradientTarget<T, B> for DiffableGaussian2D<T>
 where
     T: Float + burn::tensor::ElementConversion + std::fmt::Debug + burn::tensor::Element,
     B: AutodiffBackend,
