@@ -315,7 +315,7 @@ where
         // Current log probability: shape [n_chains]
         // Detach pos to ensure it's AD-enabled for the gradient computation.
         let pos = self.positions.clone().detach().require_grad();
-        let logp_current = self.target.unnorm_logp(pos.clone());
+        let logp_current = self.target.unnorm_logp_batch(pos.clone());
 
         // Compute gradient of log probability with respect to pos.
         // First gradient step in leapfrog needs it.
@@ -405,10 +405,6 @@ where
             // Detach pos to ensure it's AD-enabled for the gradient computation.
             pos = pos.detach().require_grad();
 
-            // Compute gradient of log probability with respect to pos (batched over chains).
-            // let logp = self.target.unnorm_logp(pos.clone()); // shape [n_chains]
-            // let grads = pos.grad(&logp.backward()).unwrap();
-
             // Update momentum by a half-step using the computed gradients.
             mom.inplace(|_mom| _mom.add(self.last_grad_summands.clone()));
 
@@ -420,7 +416,7 @@ where
             });
 
             // Compute gradient at the new positions.
-            let logp = self.target.unnorm_logp(pos.clone());
+            let logp = self.target.unnorm_logp_batch(pos.clone());
             let grads = pos.grad(&logp.backward()).unwrap();
             let grad_summands = Tensor::<B, 2>::from_inner(grads.mul_scalar(self.step_size * half));
 
@@ -431,7 +427,7 @@ where
         }
 
         // Compute final log probability at the updated positions.
-        let logp_final = self.target.unnorm_logp(pos.clone());
+        let logp_final = self.target.unnorm_logp_batch(pos.clone());
         (pos.detach(), mom.detach(), logp_final.detach())
     }
 }
@@ -466,7 +462,7 @@ mod tests {
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
             let n = positions.dims()[0];
             let x = positions.clone().slice([0..n, 0..1]);
             let y = positions.slice([0..n, 1..2]);
@@ -492,7 +488,7 @@ mod tests {
         T: Float + std::fmt::Debug + Element,
         B: burn::tensor::backend::AutodiffBackend,
     {
-        fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
             let k = positions.dims()[0];
             let n = positions.dims()[1];
             let low = positions.clone().slice([0..k, 0..(n - 1)]);

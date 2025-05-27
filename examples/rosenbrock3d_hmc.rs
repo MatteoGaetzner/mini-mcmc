@@ -24,7 +24,7 @@ where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
-    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions shape is [n_chains, d] with d = 3 here.
         // For each chain, compute:
         //   f(x) = sum_{i=0}^{d-2} [100*(x[i+1] - x[i]²)² + (1 - x[i])²]

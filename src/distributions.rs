@@ -70,11 +70,11 @@ pub trait BatchedGradientTarget<T: Float, B: AutodiffBackend> {
     /// # Returns
     ///
     /// A 1D tensor of shape `[n_chains]` containing the log density for each chain.
-    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
+    fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
 pub trait GradientTarget<T: Float, B: AutodiffBackend> {
-    fn unnorm_logp(&self, positions: Tensor<B, 1>) -> Tensor<B, 1>;
+    fn unnorm_logp(&self, position: Tensor<B, 1>) -> Tensor<B, 1>;
 
     fn unnorm_logp_and_grad(&self, position: Tensor<B, 1>) -> (Tensor<B, 1>, Tensor<B, 1>) {
         let pos = position.clone().detach().require_grad();
@@ -101,14 +101,14 @@ pub trait Proposal<T, F: Float> {
 /// A trait for continuous target distributions from which we want to sample.
 /// The state type `T` is typically a vector of continuous values.
 pub trait Target<T, F: Float> {
-    /// Returns the log of the unnormalized density for state `theta`.
-    fn unnorm_logp(&self, theta: &[T]) -> F;
+    /// Returns the log of the unnormalized density at `position`.
+    fn unnorm_logp(&self, position: &[T]) -> F;
 }
 
 /// A trait for distributions that provide a normalized log-density (e.g. for diagnostics).
 pub trait Normalized<T, F: Float> {
-    /// Returns the normalized log-density for state `theta`.
-    fn logp(&self, theta: &[T]) -> F;
+    /// Returns the normalized log-density at `position`.
+    fn logp(&self, position: &[T]) -> F;
 }
 
 /** A trait for discrete distributions whose state is represented as an index.
@@ -164,7 +164,7 @@ where
     T: NdFloat,
 {
     /// Computes the fully normalized log-density of a 2D Gaussian.
-    fn logp(&self, theta: &[T]) -> T {
+    fn logp(&self, position: &[T]) -> T {
         let term_1 = -(T::from(2.0).unwrap() * T::from(PI).unwrap()).ln();
         let (a, b, c, d) = (
             self.cov[(0, 0)],
@@ -176,7 +176,7 @@ where
         let half = T::from(0.5).unwrap();
         let term_2 = -half * det.abs().ln();
 
-        let x = arr1(theta);
+        let x = arr1(position);
         let diff = x - self.mean.clone();
         let inv_cov = arr2(&[[d, -b], [-c, a]]) / det;
         let term_3 = -half * diff.dot(&inv_cov).dot(&diff);
@@ -188,7 +188,7 @@ impl<T> Target<T, T> for Gaussian2D<T>
 where
     T: NdFloat,
 {
-    fn unnorm_logp(&self, theta: &[T]) -> T {
+    fn unnorm_logp(&self, position: &[T]) -> T {
         let (a, b, c, d) = (
             self.cov[(0, 0)],
             self.cov[(0, 1)],
@@ -196,7 +196,7 @@ where
             self.cov[(1, 1)],
         );
         let det = a * d - b * c;
-        let x = arr1(theta);
+        let x = arr1(position);
         let diff = x - self.mean.clone();
         let inv_cov = arr2(&[[d, -b], [-c, a]]) / det;
         -T::from(0.5).unwrap() * diff.dot(&inv_cov).dot(&diff)
@@ -206,7 +206,7 @@ where
 /// A 2D Gaussian target distribution, parameterized by mean and covariance.
 ///
 /// This struct also precomputes the inverse covariance and a log-normalization
-/// constant so we can quickly evaluate log-density and gradients in `unnorm_logp`.
+/// constant so we can quickly compute log-densities and gradients in `unnorm_logp`.
 #[derive(Debug, Clone)]
 pub struct DiffableGaussian2D<T: Float> {
     pub mean: [T; 2],
@@ -257,7 +257,7 @@ where
     /// Evaluate the log probability for a batch of positions: shape [n_chains, 2].
     /// Return shape [n_chains].
     /// Note: It is not necessary to return the log probability here but for easier debugging we do so anyways.
-    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         let (n_chains, dim) = (positions.dims()[0], positions.dims()[1]);
         assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
 
@@ -377,9 +377,9 @@ where
 }
 
 impl<T: Float> Target<T, T> for IsotropicGaussian<T> {
-    fn unnorm_logp(&self, theta: &[T]) -> T {
+    fn unnorm_logp(&self, position: &[T]) -> T {
         let mut sum = T::zero();
-        for &x in theta.iter() {
+        for &x in position.iter() {
             sum = sum + x * x
         }
         -T::from(0.5).unwrap() * sum / (self.std * self.std)
@@ -456,8 +456,8 @@ impl<T: Float + AddAssign> Target<usize, T> for Categorical<T>
 where
     rand_distr::Standard: rand_distr::Distribution<T>,
 {
-    fn unnorm_logp(&self, theta: &[usize]) -> T {
-        <Self as Discrete<T>>::logp(self, theta[0])
+    fn unnorm_logp(&self, position: &[usize]) -> T {
+        <Self as Discrete<T>>::logp(self, position[0])
     }
 }
 
@@ -740,8 +740,8 @@ mod categorical_tests {
         let cov = arr2(&[[1.0, 0.0], [0.0, 1.0]]);
         let gauss = Gaussian2D { mean, cov };
 
-        let theta = vec![0.5, -0.5];
-        let computed_logp = gauss.logp(&theta);
+        let position = vec![0.5, -0.5];
+        let computed_logp = gauss.logp(&position);
 
         let expected_logp = -2.0878770664093453;
 

@@ -20,7 +20,7 @@ where
     T: Float + std::fmt::Debug + Element,
     B: burn::tensor::backend::AutodiffBackend,
 {
-    fn unnorm_logp(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+    fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions has shape [n_chains, d] with d = 3.
         let k = positions.dims()[0];
         let n = positions.dims()[1];

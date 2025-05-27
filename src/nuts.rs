@@ -69,41 +69,26 @@ where
     pub fn step(&mut self) {
         todo!()
     }
-
-    //
-    // #[allow(dead_code)]
-    // fn leapfrog(
-    //     &mut self,
-    //     mut pos: Tensor<B, 1>,
-    //     mut mom: Tensor<B, 1>,
-    // ) -> (Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>) {
-    //     todo!()
-    // }
 }
 
 #[allow(dead_code)]
 fn find_reasonable_epsilon<B, T, GTarget>(
     position: Tensor<B, 1>,
+    mom: Tensor<B, 1>,
     gradient_target: GTarget,
-    rng: SmallRng,
 ) -> T
 where
     T: Float + burn::tensor::Element,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
-    rand_distr::StandardNormal: rand_distr::Distribution<T>,
 {
     let mut epsilon = T::one();
-    let dim = position.dims()[0];
     let half = T::from(0.5).unwrap();
-    let mom_0: Vec<T> = rng.sample_iter(StandardNormal).take(dim).collect();
-    let mom_0: TensorData = TensorData::new(mom_0, [dim]);
-    let mom_0 = Tensor::<B, 1>::from_data(mom_0, &B::Device::default());
-    let (ulogp_0, grad_0) = gradient_target.unnorm_logp_and_grad(position.clone());
+    let (ulogp, grad) = gradient_target.unnorm_logp_and_grad(position.clone());
     let (_, mut mom_prime, grad_prime, mut ulogp_prime) = leapfrog(
         position.clone(),
-        mom_0.clone(),
-        grad_0.clone(),
+        mom.clone(),
+        grad.clone(),
         epsilon,
         &gradient_target,
     );
@@ -113,8 +98,8 @@ where
         k = k * half;
         (_, mom_prime, _, ulogp_prime) = leapfrog(
             position.clone(),
-            mom_0.clone(),
-            grad_0.clone(),
+            mom.clone(),
+            grad.clone(),
             epsilon * k,
             &gradient_target,
         );
@@ -122,30 +107,30 @@ where
 
     epsilon = half * k * epsilon;
     let log_accept_prob = ulogp_prime
-        - ulogp_0.clone()
-        - (mom_prime.clone().matmul(mom_prime)) * half
-        - mom_0.clone().matmul(mom_0.clone());
+        - ulogp.clone()
+        - ((mom_prime.clone() * mom_prime).sum() - (mom.clone() * mom.clone()).sum()) * half;
     let mut log_accept_prob = T::from(log_accept_prob.into_scalar().to_f32()).unwrap();
-    let a = if log_accept_prob >= half.ln() {
+
+    let a = if log_accept_prob > half.ln() {
         T::one()
     } else {
         -T::one()
     };
 
-    while a * log_accept_prob > -a * half.ln() {
+    while a * log_accept_prob > -a * T::from(2.0).unwrap() {
         epsilon = epsilon * T::from(2.0).unwrap().powf(a);
         (_, mom_prime, _, ulogp_prime) = leapfrog(
             position.clone(),
-            mom_0.clone(),
-            grad_0.clone(),
+            mom.clone(),
+            grad.clone(),
             epsilon,
             &gradient_target,
         );
         log_accept_prob = T::from(
             (ulogp_prime
-                - ulogp_0.clone()
-                - mom_prime.clone().matmul(mom_prime.clone()) * half
-                - mom_0.clone().matmul(mom_0.clone()))
+                - ulogp.clone()
+                - (mom_prime.clone() * mom_prime).sum() * half
+                - (mom.clone() * mom.clone()).sum())
             .into_scalar()
             .to_f32(),
         )
@@ -164,6 +149,8 @@ where
         .equal_elem(T::infinity())
         .bool_or(x.clone().equal_elem(T::neg_infinity()))
         .bool_or(x.is_nan())
+        .any()
+        .bool_not()
         .into_scalar()
         .to_bool()
 }
@@ -189,7 +176,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::dev_tools::Timer;
+    use std::fmt::Debug;
 
     use super::*;
     use burn::{
@@ -201,7 +188,23 @@ mod tests {
     // Use the CPU backend (NdArray) wrapped in Autodiff.
     type BackendType = Autodiff<NdArray>;
 
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+    pub struct StandardNormal;
+
+    impl<T, B> GradientTarget<T, B> for StandardNormal
+    where
+        T: Float + Debug + ElementConversion + burn::tensor::Element,
+        B: AutodiffBackend,
+    {
+        fn unnorm_logp(&self, positions: Tensor<B, 1>) -> Tensor<B, 1> {
+            let sq = positions.clone().powi_scalar(2);
+            let half = T::from(0.5).unwrap();
+            -(sq.mul_scalar(half)).sum()
+        }
+    }
+
     // Define the Rosenbrock distribution.
+    #[allow(dead_code)]
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct Rosenbrock2D<T: Float> {
         a: T,
@@ -230,29 +233,38 @@ mod tests {
     }
 
     #[test]
-    fn test_single() {
-        // Create the Rosenbrock target (a = 1, b = 100)
-        let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
-        };
-
+    fn test_find_reasonable_epsilon() {
         // Define initial positions for a single chain (2-dimensional).
-        let initial_positions = vec![0.0_f32, 0.0];
-        let n_collect = 3;
-
-        // Create the HMC sampler.
-        let mut sampler =
-            NUTSChain::<f32, BackendType, Rosenbrock2D<f32>>::new(target, initial_positions, 0.8)
-                .set_seed(42);
-
-        // Run the sampler for n_collect steps.
-        let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 2> = sampler.run(n_collect, 0);
-        timer.log(format!(
-            "Collected samples with shape: {:?}",
-            samples.dims()
-        ));
-        assert_eq!(samples.dims(), [3, 2]);
+        let position = Tensor::<BackendType, 1>::from([0.0, 1.0]);
+        let mom = Tensor::<BackendType, 1>::from([1.0, 0.0]);
+        let epsilon = find_reasonable_epsilon::<_, f32, _>(position, mom, StandardNormal);
+        assert_eq!(epsilon, 2.0);
     }
+
+    // #[test]
+    // fn test_single() {
+    //     // Create the Rosenbrock target (a = 1, b = 100)
+    //     let target = Rosenbrock2D {
+    //         a: 1.0_f32,
+    //         b: 100.0_f32,
+    //     };
+    //
+    //     // Define initial positions for a single chain (2-dimensional).
+    //     let initial_positions = vec![0.0_f32, 0.0];
+    //     let n_collect = 3;
+    //
+    //     // Create the HMC sampler.
+    //     let mut sampler =
+    //         NUTSChain::<f32, BackendType, Rosenbrock2D<f32>>::new(target, initial_positions, 0.8)
+    //             .set_seed(42);
+    //
+    //     // Run the sampler for n_collect steps.
+    //     let mut timer = Timer::new();
+    //     let samples: Tensor<BackendType, 2> = sampler.run(n_collect, 0);
+    //     timer.log(format!(
+    //         "Collected samples with shape: {:?}",
+    //         samples.dims()
+    //     ));
+    //     assert_eq!(samples.dims(), [3, 2]);
+    // }
 }
