@@ -117,10 +117,10 @@ pub trait Normalized<T, F: Float> {
 
  // Create a categorical distribution over three categories.
  let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
- let sample = cat.sample();
- println!("Sampled category: {}", sample); // E.g. 1usize
+ let observation = cat.sample();
+ println!("Sampled category: {}", observation); // E.g. 1usize
 
- let logp = cat.logp(sample);
+ let logp = cat.logp(observation);
  println!("Log-probability of sampled category: {}", logp); // E.g. 0.3f64
 ```
 */
@@ -261,9 +261,6 @@ where
         let (n_chains, dim) = (positions.dims()[0], positions.dims()[1]);
         assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
 
-        // 1) Subtract mean => shape [n_chains, 2]
-        //    We'll broadcast self.mean onto all rows:
-        // Suppose self.mean = [T; 2] where T: Float, and we want a shape [1, 2].
         let mean_tensor =
             Tensor::<B, 2>::from_floats([[self.mean[0], self.mean[1]]], &B::Device::default())
                 .reshape([1, 2])
@@ -271,7 +268,6 @@ where
 
         let delta = positions.clone() - mean_tensor;
 
-        // 2) We have inv_cov as a 2x2 matrix. Let's define it as a Tensor for matmul
         let inv_cov_data = [
             self.inv_cov[0][0],
             self.inv_cov[0][1],
@@ -281,22 +277,40 @@ where
         let inv_cov_t =
             Tensor::<B, 2>::from_floats([inv_cov_data], &B::Device::default()).reshape([2, 2]);
 
-        // 3) The quadratic form is: delta^T * inv_cov * delta
-        // For each chain, shape is [1,2] * [2,2] * [2,1] => scalar
-        // We'll do it in a batched style:
-        //   We can do: z = delta matmul inv_cov => shape [n_chains, 2]
-        //   Then z * delta => shape [n_chains, 2], sum dim=1 => shape [n_chains]
         let z = delta.clone().matmul(inv_cov_t); // shape [n_chains, 2]
         let quad = (z * delta).sum_dim(1).squeeze(1); // shape [n_chains]
-
-        // 4) The log density for each chain i is:
-        //     log p(x_i) = norm_const - 0.5 * quad[i]
-        // where norm_const is -0.5 * (2 ln(2 pi) + ln det(Sigma)).
-        // We'll broadcast that to shape [n_chains].
         let shape = Shape::new([n_chains]);
         let norm_c = Tensor::<B, 1>::ones(shape, &B::Device::default()).mul_scalar(self.norm_const);
         let half = T::from(0.5).unwrap();
         norm_c - quad.mul_scalar(half)
+    }
+}
+
+impl<T, B> GradientTarget<T, B> for DiffableGaussian2D<T>
+where
+    T: Float + burn::tensor::ElementConversion + std::fmt::Debug + burn::tensor::Element,
+    B: AutodiffBackend,
+{
+    fn unnorm_logp(&self, position: Tensor<B, 1>) -> Tensor<B, 1> {
+        let dim = position.dims()[0];
+        assert_eq!(dim, 2, "Gaussian2D: expected dimension=2.");
+
+        let mean_tensor =
+            Tensor::<B, 1>::from_floats([self.mean[0], self.mean[1]], &B::Device::default());
+
+        let delta = position.clone() - mean_tensor;
+
+        let inv_cov_data = [
+            [self.inv_cov[0][0], self.inv_cov[0][1]],
+            [self.inv_cov[1][0], self.inv_cov[1][1]],
+        ];
+        let inv_cov_t =
+            Tensor::<B, 2>::from_floats(inv_cov_data, &B::Device::default());
+
+        let z = delta.clone().reshape([1_i32, 2_i32]).matmul(inv_cov_t); 
+        let quad = (z.reshape([2_i32]) * delta).sum();
+        let half = T::from(0.5).unwrap();
+         - quad.mul_scalar(half) + self.norm_const
     }
 }
 
@@ -397,10 +411,10 @@ The probabilities in `probs` should sum to 1 (or they will be normalized automat
 use mini_mcmc::distributions::{Categorical, Discrete};
 
 let mut cat = Categorical::new(vec![0.2f64, 0.3, 0.5]);
-let sample = cat.sample();
-println!("Sampled category: {}", sample);
-let logp = cat.logp(sample);
-println!("Log probability of category {}: {}", sample, logp);
+let observation = cat.sample();
+println!("Sampled category: {}", observation);
+let logp = cat.logp(observation);
+println!("Log probability of category {}: {}", observation, logp);
 ```
 */
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -595,19 +609,19 @@ mod categorical_tests {
         let probs = vec![0.2, 0.3, 0.5];
         let mut cat = Categorical::<f64>::new(probs.clone());
 
-        let num_samples = 100_000;
+        let sample_size = 100_000;
         let mut counts = vec![0_usize; probs.len()];
 
-        // Draw samples and tally outcomes
-        for _ in 0..num_samples {
-            let sample = cat.sample();
-            counts[sample] += 1;
+        // Draw observations and tally outcomes
+        for _ in 0..sample_size {
+            let observation = cat.sample();
+            counts[observation] += 1;
         }
 
         // Check empirical frequencies
         let tol = 0.01; // 1% absolute tolerance
         for (i, &count) in counts.iter().enumerate() {
-            let freq = count as f64 / num_samples as f64;
+            let freq = count as f64 / sample_size as f64;
             let expected = probs[i];
             assert!(
                 approx_eq(freq, expected, tol),
@@ -663,18 +677,18 @@ mod categorical_tests {
         let probs = vec![0.1_f32, 0.4, 0.5];
         let mut cat = Categorical::<f32>::new(probs.clone());
 
-        let num_samples = 100_000;
+        let sample_size = 100_000;
         let mut counts = vec![0_usize; probs.len()];
 
-        for _ in 0..num_samples {
-            let sample = cat.sample();
-            counts[sample] += 1;
+        for _ in 0..sample_size {
+            let observation = cat.sample();
+            counts[observation] += 1;
         }
 
         // Compare frequencies with expected probabilities
         let tol = 0.02; // might relax tolerance for f32
         for (i, &count) in counts.iter().enumerate() {
-            let freq = count as f32 / num_samples as f32;
+            let freq = count as f32 / sample_size as f32;
             let expected = probs[i];
             assert!(
                 (freq - expected).abs() < tol,

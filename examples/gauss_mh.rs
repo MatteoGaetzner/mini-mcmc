@@ -1,4 +1,4 @@
-//! A small MCMC demo using Metropolis-Hastings to sample from a 2D Gaussian, then plotting the samples.
+//! A small MCMC demo using Metropolis-Hastings to sample from a 2D Gaussian, then plotting the sample.
 
 use mini_mcmc::core::{init_det, ChainRunner};
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian, Proposal};
@@ -16,7 +16,7 @@ use std::error::Error;
 use mini_mcmc::io::parquet::save_parquet;
 
 /// Main entry point: sets up a 2D Gaussian target, runs Metropolis-Hastings,
-/// computes summary statistics, and generates a scatter plot of the samples.
+/// computes summary statistics, and generates a scatter plot of the sample.
 fn main() -> Result<(), Box<dyn Error>> {
     const SAMPLE_SIZE: usize = 5_000; // Reduced from 100,000
     const BURNIN: usize = 1_000; // Reduced from 10,000
@@ -30,11 +30,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let proposal = IsotropicGaussian::new(2.0).set_seed(seed);
     let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).seed(seed);
 
-    // Generate samples
-    let (samples, stats) = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
-    let pooled = samples.to_shape((SAMPLE_SIZE, 2)).unwrap();
+    // Generate sample
+    let (sample, stats) = mh.run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN).unwrap();
+    let pooled = sample.to_shape((SAMPLE_SIZE, 2)).unwrap();
 
-    println!("Generated {} samples\n{stats}", pooled.shape()[0]);
+    println!("Generated {} sample\n{stats}", pooled.shape()[0]);
 
     // Basic statistics
     let row_mean = pooled.mean_axis(Axis(0)).unwrap();
@@ -99,8 +99,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     #[cfg(feature = "parquet")]
     {
-        let _ = save_parquet(&samples, "samples.parquet");
-        println!("Saved samples in file samples.parquet.");
+        let _ = save_parquet(&sample, "sample.parquet");
+        println!("Saved sample in file sample.parquet.");
     }
 
     Ok(())
@@ -117,8 +117,8 @@ mod tests {
         );
         #[cfg(feature = "parquet")]
         assert!(
-            std::path::Path::new("samples.parquet").exists(),
-            "Expected samples.parquet to exist."
+            std::path::Path::new("sample.parquet").exists(),
+            "Expected sample.parquet to exist."
         );
     }
 }

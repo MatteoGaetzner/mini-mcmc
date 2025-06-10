@@ -52,7 +52,7 @@ use crate::core::{HasChains, MarkovChain};
 use crate::distributions::{Proposal, Target};
 
 /**
-The Metropolis–Hastings sampler generates samples from a target distribution by
+The Metropolis–Hastings sampler generates observations from a target distribution by
 using a proposal distribution to propose candidate moves and then accepting or rejecting
 these moves using the Metropolis–Hastings acceptance criterion.
 
@@ -330,7 +330,7 @@ mod tests {
     use ndarray::{arr1, arr2, Array3, Axis};
     use ndarray_stats::CorrelationExt;
 
-    /// Common test harness for checking that samples from a 2D Gaussian match
+    /// Common test harness for checking that sample mean from a 2D Gaussian matches
     /// the true mean and covariance within floating-point tolerance.
     ///
     /// - `n_chains`: number of parallel chains
@@ -352,25 +352,25 @@ mod tests {
         let mut mh =
             MetropolisHastings::new(target.clone(), proposal, init_det(n_chains, 2)).seed(SEED);
 
-        // Generate samples
-        let (samples, _stats) = if use_progress {
+        // Generate sample
+        let (sample, _stats) = if use_progress {
             mh.run_progress(sample_size / n_chains, BURNIN).unwrap()
         } else {
-            let samples = mh.run(sample_size / n_chains, BURNIN).unwrap();
-            let stats = RunStats::from(samples.view());
-            (samples, stats)
+            let sample = mh.run(sample_size / n_chains, BURNIN).unwrap();
+            let stats = RunStats::from(sample.view());
+            (sample, stats)
         };
 
         // Check correct shape
-        assert_eq!(samples.shape(), [n_chains, sample_size / n_chains, 2]);
+        assert_eq!(sample.shape(), [n_chains, sample_size / n_chains, 2]);
         if n_chains <= 1 {
             return;
         }
 
-        // Reshape samples into a [sample_size, 2] array
-        let stacked = samples
+        // Reshape sample into a [sample_size, 2] array
+        let stacked = sample
             .into_shape_with_order((sample_size, 2))
-            .expect("Failed to reshape samples");
+            .expect("Failed to reshape sample");
 
         // Check that mean and covariance match the target distribution
         let mean = stacked.mean_axis(Axis(0)).unwrap();
@@ -420,8 +420,8 @@ mod tests {
         let n_runs = 100;
         let n_chains = 3;
         let burn_in = 500_usize;
-        let n_samples_per_chain = 1500_usize; // total per chain (including burn-in)
-        let collected = n_samples_per_chain - burn_in; // actual collected samples per chain
+        let sample_size_chain = 1500_usize; // total per chain (including burn-in)
+        let collected = sample_size_chain - burn_in; // actual collected observations per chain
 
         // We'll store the mean ESS for x1 and x2 from each run
         let mut ess_x1s = Vec::with_capacity(n_runs);
@@ -450,25 +450,25 @@ mod tests {
             //    This depends on your actual method name.
             //    E.g. `mh.run(num_steps, burn_in)` returns an ndarray of shape (chains, num_steps, param_dim)
             //    Adjust according to your crate's actual interface.
-            let samples = mh.run(collected, burn_in).expect("MH run failed");
+            let sample = mh.run(collected, burn_in).expect("MH run failed");
 
-            // samples.shape() should be [3, 1000, 2]
-            assert_eq!(samples.shape(), &[n_chains, collected, 2]);
+            // sample.shape() should be [3, 1000, 2]
+            assert_eq!(sample.shape(), &[n_chains, collected, 2]);
 
-            // 5) Convert samples to an ndarray of f32 for stats
+            // 5) Convert sample to an ndarray of f32 for stats
             //    If your internal type is f64, you can map it to f32.
             //    We'll assume float is okay as f32. Adjust if needed.
-            let mut samples_f32 = Array3::<f32>::zeros((n_chains, collected, 2));
+            let mut sample_f32 = Array3::<f32>::zeros((n_chains, collected, 2));
             for c in 0..n_chains {
                 for t in 0..collected {
-                    samples_f32[[c, t, 0]] = samples[[c, t, 0]] as f32;
-                    samples_f32[[c, t, 1]] = samples[[c, t, 1]] as f32;
+                    sample_f32[[c, t, 0]] = sample[[c, t, 0]] as f32;
+                    sample_f32[[c, t, 1]] = sample[[c, t, 1]] as f32;
                 }
             }
 
             // 6) We use the function from your stats module to do split-Rhat & ESS
             //    `split_rhat_mean_ess` returns (rhat, ess) for each parameter as 1D arrays.
-            let (_, ess_vec) = split_rhat_mean_ess(samples_f32.view());
+            let (_, ess_vec) = split_rhat_mean_ess(sample_f32.view());
 
             // ess_vec is the ESS for each parameter: [ess_x1, ess_x2]
             let ess_x1 = ess_vec[0];
@@ -526,10 +526,10 @@ mod tests {
         let mut mh = MetropolisHastings::new(target, proposal, init_det(4, 2));
 
         // Run the sampler for 1100 steps, discarding the first 100 as burn-in
-        let samples = mh.run(1000, 100).unwrap();
+        let sample = mh.run(1000, 100).unwrap();
 
-        // We should have 900 * 4 = 3600 samples
-        assert_eq!(samples.shape()[0], 4);
-        assert_eq!(samples.shape()[1], 1000);
+        // We should have 900 * 4 = 3600 observations
+        assert_eq!(sample.shape()[0], 4);
+        assert_eq!(sample.shape()[1], 1000);
     }
 }

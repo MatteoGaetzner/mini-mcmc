@@ -19,16 +19,16 @@ mod tests {
     const INITIAL_STATE: [f64; 2] = [10.0, 12.0];
 
     /// Runs the Metropolis-Hastings sampler with the provided target distribution,
-    /// and returns the samples reshaped into a (SAMPLE_SIZE, 2) array.
+    /// and returns the sample reshaped into a (SAMPLE_SIZE, 2) array.
     fn run_sampler(target: &Gaussian2D<f64>) -> ndarray::Array2<f64> {
         let proposal = IsotropicGaussian::new(1.0).set_seed(SEED);
         let mut mh = MetropolisHastings::new(target.clone(), proposal, vec![INITIAL_STATE.into()])
             .seed(SEED);
-        let samples = mh.run(SAMPLE_SIZE, BURNIN).unwrap();
-        samples.to_shape((SAMPLE_SIZE, 2)).unwrap().to_owned()
+        let sample = mh.run(SAMPLE_SIZE, BURNIN).unwrap();
+        sample.to_shape((SAMPLE_SIZE, 2)).unwrap().to_owned()
     }
 
-    /// Checks that the sampler produces samples with mean and covariance close to the target.
+    /// Checks that the sampler produces sample with mean and covariance close to the target.
     #[test]
     fn test_two_d_gaussian_accept() {
         // Set up the target distribution.
@@ -37,11 +37,11 @@ mod tests {
             cov: arr2(&[[4.0, 2.0], [2.0, 3.0]]),
         };
 
-        let samples = run_sampler(&target);
+        let sample = run_sampler(&target);
 
         // Compute sample mean and covariance.
-        let mean_mcmc = samples.mean_axis(Axis(0)).unwrap();
-        let cov_mcmc = samples.t().cov(1.0).unwrap();
+        let mean_mcmc = sample.mean_axis(Axis(0)).unwrap();
+        let cov_mcmc = sample.t().cov(1.0).unwrap();
 
         // Check the sample mean (each component should differ by less than 0.5).
         let mean_diff = (mean_mcmc - target.mean).abs();
@@ -56,7 +56,7 @@ mod tests {
 
         assert!(
             max_diff < 0.5,
-            "Covariance of false target samples is unexpectedly close to true target covariance. max_diff: {}",
+            "Covariance of false target sample is unexpectedly close to true target covariance. max_diff: {}",
             max_diff
         );
     }
@@ -77,8 +77,8 @@ mod tests {
             cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
         };
 
-        let samples = run_sampler(&false_target);
-        let cov_mcmc = samples.t().cov(1.0).unwrap();
+        let sample = run_sampler(&false_target);
+        let cov_mcmc = sample.t().cov(1.0).unwrap();
 
         // Compute the maximum absolute difference in covariance.
         let max_diff = *(cov_mcmc - target.cov).abs().max().unwrap();
@@ -86,7 +86,7 @@ mod tests {
         // Expect at least one element to differ by more than 1.0.
         assert!(
             max_diff > 1.0,
-            "Covariance of false target samples is unexpectedly close to true target covariance. max_diff: {}",
+            "Covariance of false target sample is unexpectedly close to true target covariance. max_diff: {}",
             max_diff
         );
     }

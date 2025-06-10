@@ -16,7 +16,7 @@ use std::fs::File;
 use std::sync::Arc;
 
 /**
-Saves MCMC data (chain × sample × dimension) to a Parquet file.
+Saves MCMC data (chain × observation × dimension) to a Parquet file.
 
 # Arguments
 
@@ -39,7 +39,7 @@ error wrapped in a `Box<dyn Error>`.
 use mini_mcmc::io::parquet::save_parquet;
 use ndarray::arr3;
 
-// 1 chain, 2 samples, 3 dimensions
+// 1 chain, 2 observations, 3 dimensions
 let data = arr3(&[[[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]]);
 
 save_parquet(&data, "/tmp/output.parquet")?;
@@ -50,10 +50,10 @@ pub fn save_parquet<T: Into<f64> + Copy>(
     data: &Array3<T>,
     filename: &str,
 ) -> Result<(), Box<dyn Error>> {
-    // Define the Arrow schema: chain (UInt32), sample (UInt32), then dim_0..dim_n (Float64)
+    // Define the Arrow schema: chain (UInt32), observation (UInt32), then dim_0..dim_n (Float64)
     let mut fields = vec![
         Field::new("chain", DataType::UInt32, false),
-        Field::new("sample", DataType::UInt32, false),
+        Field::new("observation", DataType::UInt32, false),
     ];
     let n_dims = data.shape()[2];
     for dim_idx in 0..n_dims {
@@ -67,17 +67,17 @@ pub fn save_parquet<T: Into<f64> + Copy>(
 
     // Create builders for each column
     let mut chain_builder = UInt32Builder::new();
-    let mut sample_builder = UInt32Builder::new();
+    let mut observation_builder = UInt32Builder::new();
     let mut dim_builders: Vec<Float64Builder> =
         (0..n_dims).map(|_| Float64Builder::new()).collect();
 
     // Populate builders
     for (chain_idx, chain) in data.axis_iter(Axis(0)).enumerate() {
-        for (sample_idx, sample) in chain.axis_iter(Axis(0)).enumerate() {
+        for (observation_idx, observation) in chain.axis_iter(Axis(0)).enumerate() {
             chain_builder.append_value(chain_idx as u32);
-            sample_builder.append_value(sample_idx as u32);
+            observation_builder.append_value(observation_idx as u32);
 
-            for (dim_idx, val) in sample.iter().enumerate() {
+            for (dim_idx, val) in observation.iter().enumerate() {
                 dim_builders[dim_idx].append_value((*val).into());
             }
         }
@@ -85,14 +85,14 @@ pub fn save_parquet<T: Into<f64> + Copy>(
 
     // Convert builders into Arrow arrays
     let chain_array = Arc::new(chain_builder.finish()) as ArrayRef;
-    let sample_array = Arc::new(sample_builder.finish()) as ArrayRef;
+    let observation_array = Arc::new(observation_builder.finish()) as ArrayRef;
     let mut dim_arrays = Vec::with_capacity(n_dims);
     for mut builder in dim_builders {
         dim_arrays.push(Arc::new(builder.finish()) as ArrayRef);
     }
 
     // Create a single RecordBatch
-    let mut arrays = vec![chain_array, sample_array];
+    let mut arrays = vec![chain_array, observation_array];
     arrays.extend(dim_arrays);
     let record_batch = RecordBatch::try_new(schema.clone(), arrays)?;
 
@@ -109,19 +109,19 @@ pub fn save_parquet<T: Into<f64> + Copy>(
 }
 
 /**
-Saves a 3D Burn tensor (sample × chain × dimension) to a Parquet file.
+Saves a 3D Burn tensor (observation × chain × dimension) to a Parquet file.
 
 The tensor’s data is first converted into Apache Arrow arrays with the following schema:
-  - `"sample"` (UInt32): sample index,
+  - `"observation"` (UInt32): observation index,
   - `"chain"` (UInt32): chain index,
   - `"dim_0"`, `"dim_1"`, … (Float64): dimension values.
 
 All chains must have the same shape. The function writes a single RecordBatch containing all data,
-where each row corresponds to one (sample, chain) combination. For example, the coordinate `d` of
+where each row corresponds to one (observation, chain) combination. For example, the coordinate `d` of
 data point `s` that chain `c` generated is assumed to be in `tensor[n][s][d]`.
 
 # Arguments
-* `tensor` - A reference to a Burn tensor with shape `[num_sample, num_chains, num_dimensions]`.
+* `tensor` - A reference to a Burn tensor with shape `[num_observations, num_chains, num_dimensions]`.
 * `filename` - The file path where the Parquet data will be written.
 
 # Type Parameters
@@ -164,14 +164,14 @@ where
     // Extract data and shape from the tensor.
     let shape = tensor.dims();
     let data = tensor.to_data();
-    let (num_samples, num_chains, num_dims) = (shape[0], shape[1], shape[2]);
+    let (num_observations, num_chains, num_dims) = (shape[0], shape[1], shape[2]);
     let flat: Vec<T> = data.to_vec::<T>().map_err(|e| {
         format!("Conversion of data to Vec failed.\nData: {data:?}.\nError: {e:?}.",)
     })?;
 
-    // Build Arrow schema: sample (UInt32), chain (UInt32), then dim_0...dim_{num_dims-1} (Float64)
+    // Build Arrow schema: observation (UInt32), chain (UInt32), then dim_0...dim_{num_dims-1} (Float64)
     let mut fields = vec![
-        Field::new("sample", DataType::UInt32, false),
+        Field::new("observation", DataType::UInt32, false),
         Field::new("chain", DataType::UInt32, false),
     ];
     for dim_idx in 0..num_dims {
@@ -184,26 +184,26 @@ where
     let schema = Arc::new(Schema::new(fields));
 
     // Create builders for each column.
-    let mut sample_builder = UInt32Builder::new();
+    let mut observation_builder = UInt32Builder::new();
     let mut chain_builder = UInt32Builder::new();
     let mut dim_builders: Vec<Float64Builder> =
         (0..num_dims).map(|_| Float64Builder::new()).collect();
 
     // Populate the builders.
-    for sample in 0..num_samples {
+    for observation in 0..num_observations {
         for chain in 0..num_chains {
-            sample_builder.append_value(sample as u32);
+            observation_builder.append_value(observation as u32);
             chain_builder.append_value(chain as u32);
-            let offset = sample * num_chains * num_dims + chain * num_dims;
+            let offset = observation * num_chains * num_dims + chain * num_dims;
             for (dim_idx, value) in flat[offset..offset + num_dims].iter().enumerate() {
                 dim_builders[dim_idx].append_value((*value).into());
             }
         }
     }
 
-    let sample_array = Arc::new(sample_builder.finish()) as ArrayRef;
+    let observation_array = Arc::new(observation_builder.finish()) as ArrayRef;
     let chain_array = Arc::new(chain_builder.finish()) as ArrayRef;
-    let mut arrays = vec![sample_array, chain_array];
+    let mut arrays = vec![observation_array, chain_array];
     for mut builder in dim_builders {
         arrays.push(Arc::new(builder.finish()) as ArrayRef);
     }
@@ -257,10 +257,10 @@ mod tests {
         Ok(())
     }
 
-    /// Test saving a single chain, single sample (one dimension).
+    /// Test saving a single chain, single observation (one dimension).
     #[test]
-    fn test_save_parquet_single_chain_single_sample() -> Result<(), Box<dyn Error>> {
-        let data = arr3(&[[[42f64]]]); // chain=0, sample=0, dim_0=42
+    fn test_save_parquet_single_chain_single_observation() -> Result<(), Box<dyn Error>> {
+        let data = arr3(&[[[42f64]]]); // chain=0, observation=0, dim_0=42
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
 
@@ -275,7 +275,7 @@ mod tests {
         let batch = reader.next().expect("Expected a record batch")?.clone();
         assert!(reader.next().is_none(), "Expected only one batch");
 
-        // Should have 1 row and 3 columns (chain, sample, dim_0)
+        // Should have 1 row and 3 columns (chain, observation, dim_0)
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 3);
 
@@ -285,7 +285,7 @@ mod tests {
             .as_any()
             .downcast_ref::<UInt32Array>()
             .unwrap();
-        let sample_array = batch
+        let observation_array = batch
             .column(1)
             .as_any()
             .downcast_ref::<UInt32Array>()
@@ -297,18 +297,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(chain_array.value(0), 0);
-        assert_eq!(sample_array.value(0), 0);
+        assert_eq!(observation_array.value(0), 0);
         assert!((dim0_array.value(0) - 42.0).abs() < f64::EPSILON);
 
         Ok(())
     }
 
-    /// Test multiple chains, multiple samples, multiple dimensions to Parquet.
+    /// Test multiple chains, multiple observations, multiple dimensions to Parquet.
     #[test]
     fn test_save_parquet_multi_chain() -> Result<(), Box<dyn Error>> {
-        // data[chain][sample][dim]
-        // chain=0 => sample=0 => [1.0, 2.0], sample=1 => [3.0, 4.0]
-        // chain=1 => sample=0 => [10.0, 20.0], sample=1 => [30.0, 40.0]
+        // data[chain][observation][dim]
+        // chain=0 => observation=0 => [1.0, 2.0], observation=1 => [3.0, 4.0]
+        // chain=1 => observation=0 => [10.0, 20.0], observation=1 => [30.0, 40.0]
         let data = arr3(&[[[1.0, 2.0], [3.0, 4.0]], [[10.0, 20.0], [30.0, 40.0]]]);
 
         let file = NamedTempFile::new()?;
@@ -325,8 +325,8 @@ mod tests {
         let batch = reader.next().expect("No record batch found")?;
         assert!(reader.next().is_none(), "Expected only one batch");
 
-        // We expect 4 rows total: 2 chains × 2 samples each
-        // columns = chain, sample, dim_0, dim_1 => 4 columns
+        // We expect 4 rows total: 2 chains × 2 observations each
+        // columns = chain, observation, dim_0, dim_1 => 4 columns
         assert_eq!(batch.num_rows(), 4);
         assert_eq!(batch.num_columns(), 4);
 
@@ -335,7 +335,7 @@ mod tests {
             .as_any()
             .downcast_ref::<UInt32Array>()
             .unwrap();
-        let sample_array = batch
+        let observation_array = batch
             .column(1)
             .as_any()
             .downcast_ref::<UInt32Array>()
@@ -351,27 +351,27 @@ mod tests {
             .downcast_ref::<Float64Array>()
             .unwrap();
 
-        // Row 0: chain=0, sample=0, (dim_0=1.0, dim_1=2.0)
+        // Row 0: chain=0, observation=0, (dim_0=1.0, dim_1=2.0)
         assert_eq!(chain_array.value(0), 0);
-        assert_eq!(sample_array.value(0), 0);
+        assert_eq!(observation_array.value(0), 0);
         assert!((dim0_array.value(0) - 1.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(0) - 2.0).abs() < f64::EPSILON);
 
-        // Row 1: chain=0, sample=1, (dim_0=3.0, dim_1=4.0)
+        // Row 1: chain=0, observation=1, (dim_0=3.0, dim_1=4.0)
         assert_eq!(chain_array.value(1), 0);
-        assert_eq!(sample_array.value(1), 1);
+        assert_eq!(observation_array.value(1), 1);
         assert!((dim0_array.value(1) - 3.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(1) - 4.0).abs() < f64::EPSILON);
 
-        // Row 2: chain=1, sample=0, (dim_0=10.0, dim_1=20.0)
+        // Row 2: chain=1, observation=0, (dim_0=10.0, dim_1=20.0)
         assert_eq!(chain_array.value(2), 1);
-        assert_eq!(sample_array.value(2), 0);
+        assert_eq!(observation_array.value(2), 0);
         assert!((dim0_array.value(2) - 10.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(2) - 20.0).abs() < f64::EPSILON);
 
-        // Row 3: chain=1, sample=1, (dim_0=30.0, dim_1=40.0)
+        // Row 3: chain=1, observation=1, (dim_0=30.0, dim_1=40.0)
         assert_eq!(chain_array.value(3), 1);
-        assert_eq!(sample_array.value(3), 1);
+        assert_eq!(observation_array.value(3), 1);
         assert!((dim0_array.value(3) - 30.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(3) - 40.0).abs() < f64::EPSILON);
 
@@ -380,7 +380,7 @@ mod tests {
 
     #[test]
     fn test_save_parquet_tensor_data() -> Result<(), Box<dyn std::error::Error>> {
-        // Create a tensor with shape [2, 2, 2]: 2 samples, 2 chains, 2 dimensions.
+        // Create a tensor with shape [2, 2, 2]: 2 observations, 2 chains, 2 dimensions.
         let tensor = Tensor::<NdArray, 3>::from_floats(
             [[[1.0, 2.0], [3.0, 4.0]], [[1.1, 2.1], [3.1, 4.1]]],
             &NdArrayDevice::Cpu,
@@ -393,16 +393,16 @@ mod tests {
         let file = fs::File::open(filename)?;
         let mut reader = ParquetRecordBatchReader::try_new(file, 1024)?;
         let batch = reader.next().expect("Expected a record batch")?;
-        // We expect 2 samples * 2 chains = 4 rows and 2 (sample, chain) + 2 dims = 4 columns.
+        // We expect 2 observations * 2 chains = 4 rows and 2 (observation, chain) + 2 dims = 4 columns.
         assert_eq!(batch.num_rows(), 4);
         assert_eq!(batch.num_columns(), 4);
 
         // Extract and check the data.
-        let sample_array = batch
+        let observation_array = batch
             .column(0)
             .as_any()
             .downcast_ref::<UInt32Array>()
-            .expect("Failed to downcast sample column");
+            .expect("Failed to downcast observation column");
         let chain_array = batch
             .column(1)
             .as_any()
@@ -419,24 +419,24 @@ mod tests {
             .downcast_ref::<Float64Array>()
             .expect("Failed to downcast dim_1 column");
 
-        // Expected ordering: sample-major order:
-        // Row 0: sample=0, chain=0, dims: [1.0, 2.0]
-        assert_eq!(sample_array.value(0), 0);
+        // Expected ordering: observation-major order:
+        // Row 0: observation=0, chain=0, dims: [1.0, 2.0]
+        assert_eq!(observation_array.value(0), 0);
         assert_eq!(chain_array.value(0), 0);
         assert!((dim0_array.value(0) - 1.0).abs() < 1e-6);
         assert!((dim1_array.value(0) - 2.0).abs() < 1e-6);
-        // Row 1: sample=0, chain=1, dims: [3.0, 4.0]
-        assert_eq!(sample_array.value(1), 0);
+        // Row 1: observation=0, chain=1, dims: [3.0, 4.0]
+        assert_eq!(observation_array.value(1), 0);
         assert_eq!(chain_array.value(1), 1);
         assert!((dim0_array.value(1) - 3.0).abs() < 1e-6);
         assert!((dim1_array.value(1) - 4.0).abs() < 1e-6);
-        // Row 2: sample=1, chain=0, dims: [1.1, 2.1]
-        assert_eq!(sample_array.value(2), 1);
+        // Row 2: observation=1, chain=0, dims: [1.1, 2.1]
+        assert_eq!(observation_array.value(2), 1);
         assert_eq!(chain_array.value(2), 0);
         assert!((dim0_array.value(2) - 1.1).abs() < 1e-6);
         assert!((dim1_array.value(2) - 2.1).abs() < 1e-6);
-        // Row 3: sample=1, chain=1, dims: [3.1, 4.1]
-        assert_eq!(sample_array.value(3), 1);
+        // Row 3: observation=1, chain=1, dims: [3.1, 4.1]
+        assert_eq!(observation_array.value(3), 1);
         assert_eq!(chain_array.value(3), 1);
         assert!((dim0_array.value(3) - 3.1).abs() < 1e-6);
         assert!((dim1_array.value(3) - 4.1).abs() < 1e-6);

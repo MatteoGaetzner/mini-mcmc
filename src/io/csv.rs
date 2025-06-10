@@ -12,7 +12,7 @@ use std::fs::File;
 use csv::Writer;
 
 /**
-Saves MCMC sample data as a CSV file.
+Saves MCMC sample as a CSV file.
 
 The data is expected to be in a shape of **chain × observation × dimension**.
 

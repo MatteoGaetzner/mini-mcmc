@@ -98,19 +98,19 @@ mod tests {
         let mut mh = MetropolisHastings::new(target, proposal, initial_state).seed(42);
 
         // Sample
-        let samples = mh.run(20_000, 2_000).unwrap();
-        let samples = samples.to_shape(20_000).unwrap(); // single chain
+        let sample = mh.run(20_000, 2_000).unwrap();
+        let sample = sample.to_shape(20_000).unwrap(); // single chain
 
         // Build a histogram of sample frequencies for k in [0..10]
         let mut counts: HashMap<i32, usize> = HashMap::new();
-        for s in &samples {
+        for s in &sample {
             // For demonstration, we'll only look up to k=10
             if (0..=10).contains(s) {
                 *counts.entry(*s).or_default() += 1;
             }
         }
 
-        let total = samples.len() as f64;
+        let total = sample.len() as f64;
         println!("Poisson(4.0) MH sample frequencies (k=0..10):");
         for k in 0..=10 {
             let freq = *counts.get(&k).unwrap_or(&0) as f64 / total;
@@ -223,15 +223,15 @@ mod tests {
 
         let mut mh = MetropolisHastings::new(target, proposal, initial_state).seed(42);
 
-        let samples = mh.run(20_000, 2_000).unwrap();
-        let samples = samples.to_shape(20_000).unwrap();
+        let sample = mh.run(20_000, 2_000).unwrap();
+        let sample = sample.to_shape(20_000).unwrap();
 
         let mut counts: HashMap<i32, usize> = HashMap::new();
-        for s in &samples {
+        for s in &sample {
             *counts.entry(*s).or_default() += 1;
         }
 
-        let total = samples.len() as f64;
+        let total = sample.len() as f64;
         println!("Binomial(10, 0.3) MH sample frequencies:");
         for k in 0..=10 {
             let freq = *counts.get(&k).unwrap_or(&0) as f64 / total;

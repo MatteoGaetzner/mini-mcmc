@@ -45,8 +45,8 @@ fn main() {
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 10);
 
     // Run the sampler for 1000 iterations, discard 100
-    let samples = sampler.run(400, 50);
+    let sample = sampler.run(400, 50);
 
-    // Print the shape of the collected samples.
-    println!("Collected samples with shape: {:?}", samples.dims());
+    // Print the shape of the collected sample.
+    println!("Collected sample with shape: {:?}", sample.dims());
 }

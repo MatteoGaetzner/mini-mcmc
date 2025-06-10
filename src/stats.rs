@@ -391,8 +391,8 @@ impl fmt::Display for BasicStats {
     }
 }
 
-/// Takes a (chains, samples, parameters) view and returns a new
-/// (2*chains, samples/2, parameters) array by splitting each chain in half.
+/// Takes a (chains, observations, parameters) view and returns a new
+/// (2*chains, observations/2, parameters) array by splitting each chain in half.
 fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
     let n = sample.shape()[1];
     let half = (n / 2) as i32;
@@ -404,7 +404,7 @@ fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
 /// Computes both split-R-hat and ESS metrics following STAN's methodology.
 ///
 /// # Arguments
-/// - `sample`: 3D array of samples with shape (chains, samples, parameters).
+/// - `sample`: 3D array of observations with shape (chains, observations, parameters).
 ///
 /// # Returns
 /// A tuple containing:
@@ -483,7 +483,7 @@ fn withinvar(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
 /// within-chain to total variance.
 ///
 /// # Arguments
-/// - `sample`: 3D array of samples with shape (chains, samples, parameters).
+/// - `sample`: 3D array of observations with shape (chains, observations, parameters).
 /// - `within`: Array of within-chain variances for each parameter.
 /// - `var`: Array of total variances for each parameter.
 ///
@@ -498,8 +498,8 @@ fn ess(sample: ArrayView3<f32>, within: ArrayView1<f32>, var: ArrayView1<f32>) -
     let (n_chains, n_steps, n_params) = (shape[0], shape[1], shape[2]);
     let chain_rho: Vec<Array2<f32>> = (0..n_chains)
         .map(|c| {
-            let chain_samples = sample.index_axis(Axis(0), c);
-            autocov(chain_samples)
+            let chain_sample = sample.index_axis(Axis(0), c);
+            autocov(chain_sample)
         })
         .collect();
     let chain_rho: Vec<ArrayView2<f32>> = chain_rho.iter().map(|x| x.view()).collect();
@@ -657,7 +657,7 @@ fn autocov_bf(data: ArrayView2<f32>) -> Array2<f32> {
 /// We don't split chains here.
 ///
 /// # Arguments
-/// - `sample`: 3D array of samples with shape (chains, samples, parameters).
+/// - `sample`: 3D array of observations with shape (chains, observations, parameters).
 /// - `chain_stats`: Slice of references to `ChainStats` from multiple chains.
 ///
 /// # Returns

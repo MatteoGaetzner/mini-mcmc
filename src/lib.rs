@@ -36,8 +36,8 @@
 //! let initial_state = [0.0, 0.0];
 //!
 //! let mut mh = MetropolisHastings::new(target, proposal, init(4, 2));
-//! let samples = mh.run(1000, 100).unwrap();
-//! println!("Metropolis–Hastings samples shape: {:?}", samples.shape());
+//! let sample = mh.run(1000, 100).unwrap();
+//! println!("Metropolis–Hastings sample shape: {:?}", sample.shape());
 //! ```
 //!
 //! ## Example 2: Sampling a 3D Rosenbrock (HMC)
@@ -66,10 +66,10 @@
 //! {
 //!     fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
 //!         // Assume positions has shape [n_chains, d] with d = 3.
-//!         let k = positions.dims()[0] as i64;
-//!         let n = positions.dims()[1] as i64;
-//!         let low = positions.clone().slice([(0, k), (0, n - 1)]);
-//!         let high = positions.clone().slice([(0, k), (1, n)]);
+//!         let k = positions.dims()[0];
+//!         let n = positions.dims()[1];
+//!         let low = positions.clone().slice([0..k, 0..n-1]);
+//!         let high = positions.clone().slice([0..k, 1..n]);
 //!         let term_1 = (high - low.clone().powi_scalar(2))
 //!             .powi_scalar(2)
 //!             .mul_scalar(100);
@@ -95,11 +95,11 @@
 //!     5,
 //! );
 //!
-//! // Run the sampler for 123+45 iterations, discard 45 burnin samples
-//! let samples = sampler.run(123, 45);
+//! // Run the sampler for 123+45 iterations, discard 45 burnin observations
+//! let sample = sampler.run(123, 45);
 //!
-//! // Print the shape of the collected samples.
-//! println!("Collected samples with shape: {:?}", samples.dims());
+//! // Print the shape of the collected sample.
+//! println!("Collected sample with shape: {:?}", sample.dims());
 //! ```
 //!
 //! ## Example 3: Sampling a Poisson Distribution (Discrete)
@@ -164,8 +164,8 @@
 //! let initial_state = vec![vec![0]];
 //!
 //! let mut mh = MetropolisHastings::new(target, proposal, initial_state);
-//! let samples = mh.run(5000, 100).unwrap();
-//! println!("Poisson samples shape: {:?}", samples.shape());
+//! let sample = mh.run(5000, 100).unwrap();
+//! println!("Poisson sample shape: {:?}", sample.shape());
 //! ```
 //!
 //! For more complete implementations (including Gibbs sampling and I/O helpers),

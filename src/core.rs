@@ -48,7 +48,7 @@ pub trait MarkovChain<T> {
 ///
 /// This function repeatedly calls the chain's `step()` method and collects each state into a
 /// [`ndarray::Array2<T>`] of shape `[n_collect, D]` where:
-/// - `n_collect`: number of samples to collect
+/// - `n_collect`: number of observations to collect
 /// - `D`: dimensionality of the state space
 ///
 /// Each row corresponds to one collected state of the chain.
@@ -80,8 +80,8 @@ where
 /// # Arguments
 ///
 /// * `chain` - A mutable reference to an object implementing [`MarkovChain<T>`].
-/// * `n_collect` - The number of samples to collect and return.
-/// * `n_discard` - The number of samples to discard (burn-in).
+/// * `n_collect` - The number of observations to collect and return.
+/// * `n_discard` - The number of observations to discard (burn-in).
 /// * `tx` - A [`Sender<ChainStats>`] object for communication with chains-managing parent thread.
 ///
 /// # Returns
@@ -109,7 +109,7 @@ where
         let current_state = chain.step();
         tracker.step(current_state).map_err(|e| {
             let msg = format!(
-            "Chain statistics tracker caused error: {}.\nAborting generation of further samples.",
+            "Chain statistics tracker caused error: {}.\nAborting generation of further observations.",
             e
             );
             println!("{}", msg);
@@ -153,7 +153,7 @@ pub trait HasChains<S> {
 ///
 /// [`ChainRunner<T>`] extends [`HasChains<T>`] by providing default methods to run all chains
 /// in parallel. These methods allow you to:
-/// - Run all chains, collect `n_collect` samples and discard `n_discard` initial burn-in samples.
+/// - Run all chains, collect `n_collect` observations and discard `n_discard` initial burn-in observations.
 /// - Optionally display progress bars for each chain during execution.
 ///
 /// Any type that implements [`HasChains<T>`] (with appropriate bounds on `T`) automatically implements
@@ -166,8 +166,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `n_collect` - The number of samples to collect and return.
-    /// * `n_discard` - The number of samples to discard (burn-in).
+    /// * `n_collect` - The number of observations to collect and return.
+    /// * `n_discard` - The number of observations to discard (burn-in).
     ///
     /// # Returns
     ///
@@ -192,8 +192,8 @@ where
     ///
     /// # Arguments
     ///
-    /// * `n_collect` - The number of samples to collect and return.
-    /// * `n_discard` - The number of samples to discard (burn-in).
+    /// * `n_collect` - The number of observations to collect and return.
+    /// * `n_discard` - The number of observations to discard (burn-in).
     ///
     /// # Returns
     ///
@@ -323,7 +323,7 @@ where
             }
         });
 
-        let chain_samples: Vec<Array2<T>> = thread::scope(|s| {
+        let chain_sample: Vec<Array2<T>> = thread::scope(|s| {
             let handles: Vec<thread::ScopedJoinHandle<Array2<T>>> = chains
                 .iter_mut()
                 .zip(txs)
@@ -338,13 +338,13 @@ where
                 .into_iter()
                 .map(|h| {
                     h.join()
-                        .expect("Expected thread to succeed in generating sample.")
+                        .expect("Expected thread to succeed in generating observation.")
                 })
                 .collect()
         });
         let sample: Array3<T> = stack(
             Axis(0),
-            &chain_samples
+            &chain_sample
                 .iter()
                 .map(|x| x.view())
                 .collect::<Vec<ArrayView2<T>>>(),
@@ -381,7 +381,7 @@ impl<T: LinalgScalar + Send + PartialEq + num_traits::ToPrimitive, R: HasChains<
 /// A `Vec<Vec<T>>` where each inner vector is a position in `d`-dimensional space.
 ///
 /// # Panics
-/// Panics if a sample cannot be converted from `f64` to `T` (should never happen for `f32` or `f64`).
+/// Panics if an observation cannot be converted from `f64` to `T` (should never happen for `f32` or `f64`).
 ///
 /// # Examples
 /// ```
@@ -426,8 +426,8 @@ where
         .map(|_| {
             (0..d)
                 .map(|_| {
-                    let sample: f64 = StandardNormal.sample(&mut rng);
-                    T::from_f64(sample).unwrap()
+                    let observation: f64 = StandardNormal.sample(&mut rng);
+                    T::from_f64(observation).unwrap()
                 })
                 .collect()
         })

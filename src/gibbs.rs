@@ -35,7 +35,7 @@ pub struct GibbsMarkovChain<S, D>
 where
     D: Conditional<S>,
 {
-    /// The conditional distribution that provides samples for each coordinate.
+    /// The conditional distribution that provides observations for each coordinate.
     pub target: D,
     /// The current state of the chain.
     pub current_state: Vec<S>,
@@ -54,7 +54,7 @@ where
     ///
     /// # Arguments
     ///
-    /// * `target` - The conditional distribution that provides samples for each coordinate.
+    /// * `target` - The conditional distribution that provides observations for each coordinate.
     /// * `initial_state` - The initial state vector.
     ///
     /// # Example
@@ -309,12 +309,12 @@ mod tests {
         // Create a sampler with 4 chains.
         let mut sampler = GibbsSampler::new(conditional.clone(), init_det(4, 2)).set_seed(42);
         // Run each chain for 15 steps and discard the first 5 as burn-in.
-        let samples = sampler.run(10, 5).unwrap();
-        let shape = samples.shape();
+        let sample = sampler.run(10, 5).unwrap();
+        let shape = sample.shape();
         assert_eq!(shape[0], 4);
         assert_eq!(shape[1], 10);
         assert_eq!(shape[2], 2);
-        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 10, 2), 42.0));
+        assert_abs_diff_eq!(sample, Array3::<f64>::from_elem((4, 10, 2), 42.0));
     }
 
     /// Test the run_progress method on the GibbsSampler.
@@ -325,14 +325,14 @@ mod tests {
         // Create a sampler with 4 chains.
         let mut sampler = GibbsSampler::new(conditional, init_det(4, 2));
         // Run each chain for 15 steps and discard the first 5 as burn-in.
-        let (samples, stats) = sampler.run_progress(10, 5).unwrap();
-        let shape = samples.shape();
+        let (sample, stats) = sampler.run_progress(10, 5).unwrap();
+        let shape = sample.shape();
         println!("{stats}");
 
         assert_eq!(shape[0], 4);
         assert_eq!(shape[1], 10);
         assert_eq!(shape[2], 2);
-        assert_abs_diff_eq!(samples, Array3::<f64>::from_elem((4, 10, 2), 42.0));
+        assert_abs_diff_eq!(sample, Array3::<f64>::from_elem((4, 10, 2), 42.0));
     }
 
     /// Helper function that runs a GibbsSampler for a mixture distribution
@@ -363,10 +363,10 @@ mod tests {
             rng: SmallRng::seed_from_u64(seed),
         };
         let mut sampler = GibbsSampler::new(conditional, init_det(n_chains, 2)).set_seed(seed);
-        let samples = sampler.run(n_collect, n_discard).unwrap();
+        let sample = sampler.run(n_collect, n_discard).unwrap();
 
         // Collect all x-values from all chains.
-        let x = samples.index_axis(Axis(2), 0);
+        let x = sample.index_axis(Axis(2), 0);
         let x = x.flatten();
         let sample_mean = x.mean().unwrap();
         let sample_var = x.var(1.0);

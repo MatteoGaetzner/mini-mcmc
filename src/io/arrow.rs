@@ -17,7 +17,7 @@ use arrow::{
 };
 
 /**
-Saves MCMC data (chain × sample × dimension) as an Apache Arrow (IPC) file.
+Saves MCMC data (chain × observation × dimension) as an Apache Arrow (IPC) file.
 
 # Arguments
 
@@ -40,7 +40,7 @@ is returned if any I/O or Arrow related error occurs.
 use mini_mcmc::io::arrow::save_arrow;
 use ndarray::arr3;
 
-// Suppose we have 2 chains, each with 2 samples, and 3 dimensions.
+// Suppose we have 2 chains, each with 2 observations, and 3 dimensions.
 let data = arr3(&[[[1.0, 2.0, 3.0],
                 [4.0, 5.0, 6.0]],
                 [[10.0, 20.0, 30.0],
@@ -58,10 +58,10 @@ pub fn save_arrow<T: Into<f64> + Copy>(
     let shape = data.shape();
     let (n_chains, n_dims) = (shape[0], shape[2]);
 
-    // Define the schema: chain (UInt32), sample (UInt32), dim_0..dim_n (Float64)
+    // Define the schema: chain (UInt32), observation (UInt32), dim_0..dim_n (Float64)
     let mut fields = vec![
         Field::new("chain", DataType::UInt32, false),
-        Field::new("sample", DataType::UInt32, false),
+        Field::new("observation", DataType::UInt32, false),
     ];
     for dim_idx in 0..n_dims {
         fields.push(Field::new(
@@ -72,21 +72,21 @@ pub fn save_arrow<T: Into<f64> + Copy>(
     }
     let schema = Arc::new(Schema::new(fields));
 
-    // Create our Arrow builders for chain & sample (UInt32) + each dim (Float64).
+    // Create our Arrow builders for chain & observation (UInt32) + each dim (Float64).
     // Even if no data, we need them to create an empty batch.
     let mut chain_builder = UInt32Builder::new();
-    let mut sample_builder = UInt32Builder::new();
+    let mut observation_builder = UInt32Builder::new();
     let mut dim_builders: Vec<Float64Builder> =
         (0..n_dims).map(|_| Float64Builder::new()).collect();
 
     // If there's actual data, fill the builders
     if n_chains > 0 {
         for (chain_idx, chain) in data.axis_iter(Axis(0)).enumerate() {
-            for (sample_idx, sample) in chain.axis_iter(Axis(0)).enumerate() {
+            for (observation_idx, observation) in chain.axis_iter(Axis(0)).enumerate() {
                 chain_builder.append_value(chain_idx as u32);
-                sample_builder.append_value(sample_idx as u32);
+                observation_builder.append_value(observation_idx as u32);
 
-                for (dim_idx, val) in sample.iter().enumerate() {
+                for (dim_idx, val) in observation.iter().enumerate() {
                     dim_builders[dim_idx].append_value((*val).into());
                 }
             }
@@ -95,7 +95,7 @@ pub fn save_arrow<T: Into<f64> + Copy>(
 
     // Convert the builders into Arrow arrays
     let chain_array = Arc::new(chain_builder.finish()) as ArrayRef;
-    let sample_array = Arc::new(sample_builder.finish()) as ArrayRef;
+    let observation_array = Arc::new(observation_builder.finish()) as ArrayRef;
 
     let mut dim_arrays = Vec::with_capacity(n_dims);
     for mut builder in dim_builders {
@@ -103,7 +103,7 @@ pub fn save_arrow<T: Into<f64> + Copy>(
     }
 
     // Combine into a single RecordBatch
-    let mut arrays = vec![chain_array, sample_array];
+    let mut arrays = vec![chain_array, observation_array];
     arrays.extend(dim_arrays);
     let record_batch = RecordBatch::try_new(schema.clone(), arrays)?;
 
@@ -163,9 +163,9 @@ mod tests {
         assert!(reader.next().is_none());
     }
 
-    /// Test saving a single chain/single sample (with single dimension) to Arrow using `f64`.
+    /// Test saving a single chain/single observation (with single dimension) to Arrow using `f64`.
     #[test]
-    fn test_save_arrow_single_chain_single_sample_f64() -> Result<(), Box<dyn Error>> {
+    fn test_save_arrow_single_chain_single_observation_f64() -> Result<(), Box<dyn Error>> {
         let data = arr3(&[[[42f64]]]);
         let file = NamedTempFile::new()?;
         let filename = file.path().to_str().unwrap();
@@ -182,7 +182,7 @@ mod tests {
         let batch = reader.next().expect("No record batch found")?.clone(); // read first batch
         assert!(reader.next().is_none(), "Expected only one batch");
 
-        // We expect 1 row, 1 dimension => columns = chain(0), sample(0), dim_0(42.0)
+        // We expect 1 row, 1 dimension => columns = chain(0), observation(0), dim_0(42.0)
         assert_eq!(batch.num_rows(), 1);
         assert_eq!(batch.num_columns(), 3);
 
@@ -192,7 +192,7 @@ mod tests {
             .as_any()
             .downcast_ref::<UInt32Array>()
             .unwrap();
-        let sample_array = batch
+        let observation_array = batch
             .column(1)
             .as_any()
             .downcast_ref::<UInt32Array>()
@@ -204,20 +204,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(chain_array.value(0), 0);
-        assert_eq!(sample_array.value(0), 0);
+        assert_eq!(observation_array.value(0), 0);
         assert!((dim0_array.value(0) - 42.0).abs() < f64::EPSILON);
 
         Ok(())
     }
 
-    /// Test multiple chains, multiple samples, multiple dimensions with `f32`.
+    /// Test multiple chains, multiple observations, multiple dimensions with `f32`.
     #[test]
     fn test_save_arrow_multi_chain_f32() -> Result<(), Box<dyn Error>> {
-        // 2 chains, 2 samples each, 2 dims => total 4 rows
-        // chain=0, sample=0 => dims=[1.0, 2.5]
-        // chain=0, sample=1 => dims=[3.0, 4.5]
-        // chain=1, sample=0 => dims=[10.0, 20.5]
-        // chain=1, sample=1 => dims=[30.0, 40.5]
+        // 2 chains, 2 observations each, 2 dims => total 4 rows
+        // chain=0, observation=0 => dims=[1.0, 2.5]
+        // chain=0, observation=1 => dims=[3.0, 4.5]
+        // chain=1, observation=0 => dims=[10.0, 20.5]
+        // chain=1, observation=1 => dims=[30.0, 40.5]
         let data = arr3(&[
             [[1f32, 2.5f32], [3f32, 4.5f32]],
             [[10f32, 20.5f32], [30f32, 40.5f32]],
@@ -236,7 +236,7 @@ mod tests {
         let batch = reader.next().expect("No record batch found")?.clone();
         assert!(reader.next().is_none());
 
-        // Check shape: 4 rows, columns = chain, sample, dim_0, dim_1 => total 4 columns
+        // Check shape: 4 rows, columns = chain, observation, dim_0, dim_1 => total 4 columns
         dbg!(batch.clone());
         assert_eq!(batch.num_rows(), 4);
         assert_eq!(batch.num_columns(), 4);
@@ -246,7 +246,7 @@ mod tests {
             .as_any()
             .downcast_ref::<UInt32Array>()
             .unwrap();
-        let sample_array = batch
+        let observation_array = batch
             .column(1)
             .as_any()
             .downcast_ref::<UInt32Array>()
@@ -262,27 +262,27 @@ mod tests {
             .downcast_ref::<Float64Array>()
             .unwrap();
 
-        // Row 0: chain=0, sample=0, dim0=1.0, dim1=2.5
+        // Row 0: chain=0, observation=0, dim0=1.0, dim1=2.5
         assert_eq!(chain_array.value(0), 0);
-        assert_eq!(sample_array.value(0), 0);
+        assert_eq!(observation_array.value(0), 0);
         assert!((dim0_array.value(0) - 1.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(0) - 2.5).abs() < f64::EPSILON);
 
-        // Row 1: chain=0, sample=1, dim0=3.0, dim1=4.5
+        // Row 1: chain=0, observation=1, dim0=3.0, dim1=4.5
         assert_eq!(chain_array.value(1), 0);
-        assert_eq!(sample_array.value(1), 1);
+        assert_eq!(observation_array.value(1), 1);
         assert!((dim0_array.value(1) - 3.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(1) - 4.5).abs() < f64::EPSILON);
 
-        // Row 2: chain=1, sample=0, dim0=10.0, dim1=20.5
+        // Row 2: chain=1, observation=0, dim0=10.0, dim1=20.5
         assert_eq!(chain_array.value(2), 1);
-        assert_eq!(sample_array.value(2), 0);
+        assert_eq!(observation_array.value(2), 0);
         assert!((dim0_array.value(2) - 10.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(2) - 20.5).abs() < f64::EPSILON);
 
-        // Row 3: chain=1, sample=1, dim0=30.0, dim1=40.5
+        // Row 3: chain=1, observation=1, dim0=30.0, dim1=40.5
         assert_eq!(chain_array.value(3), 1);
-        assert_eq!(sample_array.value(3), 1);
+        assert_eq!(observation_array.value(3), 1);
         assert!((dim0_array.value(3) - 30.0).abs() < f64::EPSILON);
         assert!((dim1_array.value(3) - 40.5).abs() < f64::EPSILON);
 

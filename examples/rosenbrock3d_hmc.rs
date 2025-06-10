@@ -41,23 +41,23 @@ where
     }
 }
 
-/// Plots a 3D scatter plot of HMC samples (shape: [n_chains, n_collect, 3])
+/// Plots a 3D scatter plot of HMC sample (shape: [n_chains, n_collect, 3])
 /// using the plotly crate and saves the interactive plot as "hmc_scatter_plot.html".
 ///
 /// Each chain is rendered as a separate trace with its own transparent color (50% opaque).
-fn plot_samples_from_tensor<B>(samples: Tensor<B, 3>) -> Result<(), Box<dyn Error>>
+fn plot_sample_from_tensor<B>(sample: Tensor<B, 3>) -> Result<(), Box<dyn Error>>
 where
     B: burn::tensor::backend::Backend,
 {
-    // Get the dimensions: samples has shape [n_collect, n_chains, 3].
-    let dims = samples.dims();
+    // Get the dimensions: sample has shape [n_collect, n_chains, 3].
+    let dims = sample.dims();
     let n_chains = dims[0];
     let n_collect = dims[1];
     let dim = dims[2];
     assert_eq!(dim, 3, "Expected 3D positions for plotting");
 
     // Convert the tensor data to a flat Vec<f32>.
-    let flat: Vec<f32> = samples.to_data().to_vec::<f32>().unwrap();
+    let flat: Vec<f32> = sample.to_data().to_vec::<f32>().unwrap();
 
     // Reconstruct per-chain vectors for x, y, and z coordinates.
     let mut chains: Vec<(Vec<f32>, Vec<f32>, Vec<f32>)> = vec![
@@ -147,20 +147,20 @@ fn main() -> Result<(), Box<dyn Error>> {
     );
 
     let start = Instant::now();
-    // Run HMC for n_collect, collecting samples as a 3D tensor.
-    let (samples, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
-    println!("Shape: {:?}", samples.shape());
+    // Run HMC for n_collect, collecting sample as a 3D tensor.
+    let (sample, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
+    println!("Shape: {:?}", sample.shape());
     println!("{stats}");
 
     let duration = start.elapsed();
     println!(
-        "HMC sampler: generating {} samples took {:?}",
-        samples.dims()[0..2].iter().product::<usize>(),
+        "HMC sampler: generating {} observations took {:?}",
+        sample.dims()[0..2].iter().product::<usize>(),
         duration
     );
 
-    // Plot the samples using the 3D plot helper.
-    plot_samples_from_tensor(samples.clone())?;
+    // Plot the sample using the 3D plot helper.
+    plot_sample_from_tensor(sample.clone())?;
 
     Ok(())
 }

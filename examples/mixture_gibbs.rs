@@ -72,7 +72,7 @@ impl Conditional<f64> for MixtureConditional {
 }
 
 /// Main entry point: sets up a two-component Gaussian mixture target,
-/// runs Gibbs sampling, computes summary statistics, and plots the samples.
+/// runs Gibbs sampling, computes summary statistics, and plots the sample.
 fn main() -> Result<(), Box<dyn Error>> {
     // Mixture parameters.
     let mu0 = -2.0;
@@ -98,10 +98,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut sampler = GibbsSampler::new(conditional, init_det(N_CHAINS, 2)).set_seed(seed);
 
-    // Generate samples.
-    let samples = sampler.run(TOTAL_STEPS, BURNIN).unwrap();
-    let pooled = samples.to_shape((TOTAL_STEPS * 4, 2)).unwrap();
-    println!("Generated {} samples", pooled.len());
+    // Generate sample.
+    let sample = sampler.run(TOTAL_STEPS, BURNIN).unwrap();
+    let pooled = sample.to_shape((TOTAL_STEPS * 4, 2)).unwrap();
+    println!("Generated {} sample", pooled.len());
 
     // Compute basic statistics.
     let row_mean = pooled.mean_axis(Axis(0)).unwrap();
@@ -164,9 +164,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     plot.write_html("gibbs_scatter_plot.html");
     println!("Saved scatter plot to gibbs_scatter_plot.html");
 
-    // Optionally, save samples to file (if you have an IO module).
-    // let _ = mini_mcmc::io::save_parquet(&samples, "gibbs_samples.parquet");
-    // println!("Saved samples to gibbs_samples.parquet.");
+    // Optionally, save sample to file (if you have an IO module).
+    // let _ = mini_mcmc::io::save_parquet(&sample, "gibbs_sample.parquet");
+    // println!("Saved sample to gibbs_sample.parquet.");
 
     Ok(())
 }
@@ -185,8 +185,8 @@ mod tests {
         );
         // Optionally, check for parquet file if IO module is enabled
         // assert!(
-        //     Path::new("gibbs_samples.parquet").exists(),
-        //     "Expected gibbs_samples.parquet to exist"
+        //     Path::new("gibbs_sample.parquet").exists(),
+        //     "Expected gibbs_sample.parquet to exist"
         // );
     }
 }

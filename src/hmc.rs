@@ -123,17 +123,17 @@ where
     /// Run the HMC sampler for `n_collect` + `n_discard` steps.
     ///
     /// First, the sampler takes `n_discard` burn-in steps, then takes
-    /// `n_collect` further steps and collects those samples in a 3D tensor of
+    /// `n_collect` further steps and collects those observations in a 3D tensor of
     /// shape `[n_chains, n_collect, D]`.
     ///
     /// # Parameters
     ///
-    /// * `n_collect` - The number of samples to collect and return.
-    /// * `n_discard` - The number of samples to discard (burn-in).
+    /// * `n_collect` - The number of observations to collect and return.
+    /// * `n_discard` - The number of observations to discard (burn-in).
     ///
     /// # Returns
     ///
-    /// A tensor containing the collected samples.
+    /// A tensor containing the collected observations.
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
         let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
         let mut out = Tensor::<B, 3>::empty(
@@ -144,7 +144,7 @@ where
         // Discard the first `discard` positions.
         (0..n_discard).for_each(|_| self.step());
 
-        // Collect samples.
+        // Collect observations.
         for step in 1..(n_collect + 1) {
             self.step();
             out.inplace(|_out| {
@@ -161,7 +161,7 @@ where
     /// convergence statistics.
     ///
     /// First, the sampler takes `n_discard` burn-in steps, then takes
-    /// `n_collect` further steps and collects those samples in a 3D tensor of
+    /// `n_collect` further steps and collects those observations in a 3D tensor of
     /// shape `[n_chains, n_collect, D]`.
     ///
     /// This function displays a progress bar (using the `indicatif` crate) that is updated
@@ -170,13 +170,13 @@ where
     ///
     /// # Parameters
     ///
-    /// * `n_collect` - The number of samples to collect and return.
-    /// * `n_discard` - The number of samples to discard (burn-in).
+    /// * `n_collect` - The number of observations to collect and return.
+    /// * `n_discard` - The number of observations to discard (burn-in).
     ///
     /// # Returns
     ///
     /// A tuple containing:
-    /// - A tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
+    /// - A tensor of shape `[n_chains, n_collect, D]` containing the collected observations.
     /// - A `RunStats` object containing convergence statistics including:
     ///   - Acceptance probability
     ///   - Potential scale reduction factor (R-hat)
@@ -212,7 +212,7 @@ where
     /// );
     ///
     /// // Run sampler with progress tracking
-    /// let (samples, stats) = sampler.run_progress(12, 34).unwrap();
+    /// let (sample, stats) = sampler.run_progress(12, 34).unwrap();
     ///
     /// // Print convergence statistics
     /// println!("{stats}");
@@ -224,7 +224,7 @@ where
         n_collect: usize,
         n_discard: usize,
     ) -> Result<(Tensor<B, 3>, RunStats), Box<dyn Error>> {
-        // Discard initial burn-in samples.
+        // Discard initial burn-in observations.
         (0..n_discard).for_each(|_| self.step());
 
         let (n_chains, dim) = (self.positions.dims()[0], self.positions.dims()[1]);
@@ -502,7 +502,7 @@ mod tests {
     }
 
     #[test]
-    fn test_single() {
+    fn test_hmc_single() {
         // Create the Rosenbrock target (a = 1, b = 100)
         let target = Rosenbrock2D {
             a: 1.0_f32,
@@ -524,12 +524,12 @@ mod tests {
 
         // Run the sampler for n_collect steps.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
+        let sample: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
         timer.log(format!(
-            "Collected samples (10 chains) with shape: {:?}",
-            samples.dims()
+            "Collected sample (10 chains) with shape: {:?}",
+            sample.dims()
         ));
-        assert_eq!(samples.dims(), [1, 3, 2]);
+        assert_eq!(sample.dims(), [1, 3, 2]);
     }
 
     #[test]
@@ -558,12 +558,12 @@ mod tests {
 
         // Run the sampler for n_collect.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
+        let sample: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
         timer.log(format!(
-            "Collected samples (3 chains) with shape: {:?}",
-            samples.dims()
+            "Collected sample (3 chains) with shape: {:?}",
+            sample.dims()
         ));
-        assert_eq!(samples.dims(), [3, 10, 2]);
+        assert_eq!(sample.dims(), [3, 10, 2]);
     }
 
     #[test]
@@ -592,12 +592,12 @@ mod tests {
 
         // Run the sampler for n_collect with no discard.
         let mut timer = Timer::new();
-        let samples: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 3).unwrap().0;
+        let sample: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 3).unwrap().0;
         timer.log(format!(
-            "Collected samples (10 chains) with shape: {:?}",
-            samples.dims()
+            "Collected sample (10 chains) with shape: {:?}",
+            sample.dims()
         ));
-        assert_eq!(samples.dims(), [3, 10, 2]);
+        assert_eq!(sample.dims(), [3, 10, 2]);
     }
 
     #[test]
@@ -618,9 +618,9 @@ mod tests {
         )
         .set_seed(42);
 
-        let samples_3d = sampler.run(n_collect, n_discard);
+        let sample_3d = sampler.run(n_collect, n_discard);
 
-        assert_eq!(samples_3d.dims(), [n_chains, n_collect, 2]);
+        assert_eq!(sample_3d.dims(), [n_chains, n_collect, 2]);
     }
 
     #[test]
@@ -654,15 +654,15 @@ mod tests {
         .set_seed(42);
 
         // 4) Run the sampler for (burn_in + collected) steps, discard the first `burn_in`
-        //    The shape of `samples` will be [n_chains, collected, 2]
-        let samples_3d = sampler.run(n_collect, n_discard);
+        //    The shape of `sample` will be [n_chains, collected, 2]
+        let sample_3d = sampler.run(n_collect, n_discard);
 
         // Check shape is as expected
-        assert_eq!(samples_3d.dims(), [n_chains, n_collect, 2]);
+        assert_eq!(sample_3d.dims(), [n_chains, n_collect, 2]);
 
-        // 5) Convert the samples into an ndarray view
-        let data = samples_3d.to_data();
-        let arr = ArrayView3::from_shape(samples_3d.dims(), data.as_slice().unwrap()).unwrap();
+        // 5) Convert the sample into an ndarray view
+        let data = sample_3d.to_data();
+        let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice().unwrap()).unwrap();
 
         // 6) Compute split-Rhat and ESS
         let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
@@ -736,14 +736,15 @@ mod tests {
             .set_seed(run as u64); // Use run number as seed for reproducibility
 
             // 4) Run the sampler for (n_discard + n_collect) steps, discard the first `n_discard`
-            let samples_3d = sampler.run(n_collect, n_discard);
+            //    observations
+            let sample_3d = sampler.run(n_collect, n_discard);
 
             // Check shape is as expected
-            assert_eq!(samples_3d.dims(), [n_chains, n_collect, 2]);
+            assert_eq!(sample_3d.dims(), [n_chains, n_collect, 2]);
 
-            // 5) Convert the samples into an ndarray view
-            let data = samples_3d.to_data();
-            let arr = ArrayView3::from_shape(samples_3d.dims(), data.as_slice().unwrap()).unwrap();
+            // 5) Convert the sample into an ndarray view
+            let data = sample_3d.to_data();
+            let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice().unwrap()).unwrap();
 
             // 6) Compute split-Rhat and ESS
             let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
@@ -863,12 +864,12 @@ mod tests {
 
         // Run HMC for `n_collect` steps.
         let mut timer = Timer::new();
-        let samples = sampler.run(n_collect, n_discard);
+        let sample = sampler.run(n_collect, n_discard);
         timer.log(format!(
-            "HMC sampler: generated {} samples.",
-            samples.dims()[0..2].iter().product::<usize>()
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [6, 5000, 2]);
+        assert_eq!(sample.dims(), [6, 5000, 2]);
     }
 
     #[test]
@@ -901,25 +902,25 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_collect, n_discard).unwrap().0;
+        let sample = sampler.run_progress(n_collect, n_discard).unwrap().0;
         timer.log(format!(
-            "HMC sampler: generated {} samples.",
-            samples.dims()[0..2].iter().product::<usize>()
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
         ));
         println!(
             "Chain 1, first 10: {}",
-            samples.clone().slice([0..1, 0..10, 0..1])
+            sample.clone().slice([0..1, 0..10, 0..1])
         );
         println!(
             "Chain 2, first 10: {}",
-            samples.clone().slice([2..3, 0..10, 0..1])
+            sample.clone().slice([2..3, 0..10, 0..1])
         );
 
         #[cfg(feature = "arrow")]
-        crate::io::csv::save_csv_tensor(samples.clone(), "data.csv")
+        crate::io::csv::save_csv_tensor(sample.clone(), "data.csv")
             .expect("Expected saving to succeed");
 
-        assert_eq!(samples.dims(), [n_chains, n_collect, 2]);
+        assert_eq!(sample.dims(), [n_chains, n_collect, 2]);
     }
 
     #[test]
@@ -950,12 +951,12 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run(n_collect, n_discard);
+        let sample = sampler.run(n_collect, n_discard);
         timer.log(format!(
-            "HMC sampler: generated {} samples.",
-            samples.dims()[0..2].iter().product::<usize>()
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [n_chains, n_collect, d]);
+        assert_eq!(sample.dims(), [n_chains, n_collect, d]);
     }
 
     #[test]
@@ -986,11 +987,11 @@ mod tests {
 
         // Run HMC for n_collect steps.
         let mut timer = Timer::new();
-        let samples = sampler.run_progress(n_collect, n_discard).unwrap().0;
+        let sample = sampler.run_progress(n_collect, n_discard).unwrap().0;
         timer.log(format!(
-            "HMC sampler: generated {} samples.",
-            samples.dims()[0..2].iter().product::<usize>()
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
         ));
-        assert_eq!(samples.dims(), [n_chains, n_collect, d]);
+        assert_eq!(sample.dims(), [n_chains, n_collect, d]);
     }
 }

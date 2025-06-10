@@ -1,11 +1,11 @@
 //! A small MCMC demo using Metropolis-Hastings to sample from a 2D Rosenbrock distribution,
-//! then plotting the samples.
+//! then plotting the sample.
 
 use mini_mcmc::core::{init_det, ChainRunner};
 use mini_mcmc::distributions::{IsotropicGaussian, Proposal, Target};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 
-// Optionally, save samples to file (if you have an IO module).
+// Optionally, save sample to file (if you have an IO module).
 // use mini_mcmc::io::save_parquet;
 
 use ndarray::Axis;
@@ -42,7 +42,7 @@ where
 }
 
 /// Main entry point: sets up a 2D Rosenbrock target, runs Metropolis-Hastings,
-/// computes summary statistics, and generates a scatter plot of the samples.
+/// computes summary statistics, and generates a scatter plot of the sample.
 fn main() -> Result<(), Box<dyn Error>> {
     const SAMPLE_SIZE: usize = 5_000; // Reduced from 100,000
     const BURNIN: usize = 1_000; // Reduced from 10,000
@@ -58,16 +58,16 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let mut mh = MetropolisHastings::new(target, proposal, init_det(N_CHAINS, 2)).seed(seed);
 
-    // Generate samples
-    let (samples, stats) = mh
+    // Generate sample
+    let (sample, stats) = mh
         .run_progress(SAMPLE_SIZE / N_CHAINS, BURNIN)
-        .expect("Expected generating samples to succeed");
+        .expect("Expected generating sample to succeed");
     println!("{stats}");
-    let pooled = samples
+    let pooled = sample
         .to_shape((SAMPLE_SIZE, 2))
         .expect("Expected reshaping to succeed");
 
-    println!("Generated {:?} samples", pooled.shape()[0]);
+    println!("Generated {:?} sample", pooled.shape()[0]);
 
     // Basic statistics
     let row_mean = pooled.mean_axis(Axis(0)).unwrap();
@@ -130,9 +130,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     plot.write_html("rosenbrock_scatter_plot.html");
     println!("Saved scatter plot to rosenbrock_scatter_plot.html");
 
-    // Optionally, save samples to file (if you have an IO module).
-    // let _ = save_parquet(&samples, "rosenbrock_samples.parquet");
-    // println!("Saved samples in file rosenbrock_samples.parquet.");
+    // Optionally, save sample to file (if you have an IO module).
+    // let _ = save_parquet(&sample, "rosenbrock_sample.parquet");
+    // println!("Saved sample in file rosenbrock_sample.parquet.");
 
     Ok(())
 }
@@ -149,8 +149,8 @@ mod tests {
         );
         // Optionally, check for parquet file if IO module is enabled
         // assert!(
-        //     std::path::Path::new("rosenbrock_samples.parquet").exists(),
-        //     "Expected rosenbrock_samples.parquet to exist."
+        //     std::path::Path::new("rosenbrock_sample.parquet").exists(),
+        //     "Expected rosenbrock_sample.parquet to exist."
         // );
     }
 }

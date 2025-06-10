@@ -14,9 +14,9 @@ fn main() {
     let mut mh = MetropolisHastings::new(target, proposal, init_det(4, 2));
 
     // Run the sampler for 1,100 steps, discarding the first 100 as burn-in
-    let samples = mh.run(1000, 100).unwrap();
+    let sample = mh.run(1000, 100).unwrap();
 
-    // We should have 1000 * 4 = 3600 samples
-    assert_eq!(samples.shape()[0], 4);
-    assert_eq!(samples.shape()[1], 1000);
+    // We should have 1000 * 4 = 3600 observations
+    assert_eq!(sample.shape()[0], 4);
+    assert_eq!(sample.shape()[1], 1000);
 }
