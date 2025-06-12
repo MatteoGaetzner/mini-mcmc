@@ -435,71 +435,19 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{
-        core::init, dev_tools::Timer, distributions::DiffableGaussian2D, stats::split_rhat_mean_ess,
+        core::{init}, dev_tools::Timer, distributions::{DiffableGaussian2D, Rosenbrock2D, RosenbrockND}, stats::split_rhat_mean_ess,
     };
     use ndarray::ArrayView3;
+    use ndarray_stats::QuantileExt;
 
     use super::*;
     use burn::{
         backend::{Autodiff, NdArray},
-        tensor::{Element, Tensor},
+        tensor::{Tensor},
     };
-    use num_traits::Float;
 
     // Use the CPU backend (NdArray) wrapped in Autodiff.
     type BackendType = Autodiff<NdArray>;
-
-    // Define the Rosenbrock distribution.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    struct Rosenbrock2D<T: Float> {
-        a: T,
-        b: T,
-    }
-
-    // For the batched version we need to implement BatchGradientTarget.
-    impl<T, B> BatchedGradientTarget<T, B> for Rosenbrock2D<T>
-    where
-        T: Float + std::fmt::Debug + Element,
-        B: burn::tensor::backend::AutodiffBackend,
-    {
-        fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
-            let n = positions.dims()[0];
-            let x = positions.clone().slice([0..n, 0..1]);
-            let y = positions.slice([0..n, 1..2]);
-
-            // Compute (a - x)^2 in place.
-            let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
-
-            // Compute (y - x^2)^2 in place.
-            let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
-
-            // Return the negative sum as a flattened 1D tensor.
-            -(term_1 + term_2).flatten(0, 1)
-        }
-    }
-
-    // Define the Rosenbrock distribution.
-    // From: https://arxiv.org/pdf/1903.09556.
-    struct RosenbrockND {}
-
-    // For the batched version we need to implement BatchGradientTarget.
-    impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
-    where
-        T: Float + std::fmt::Debug + Element,
-        B: burn::tensor::backend::AutodiffBackend,
-    {
-        fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
-            let k = positions.dims()[0];
-            let n = positions.dims()[1];
-            let low = positions.clone().slice([0..k, 0..(n - 1)]);
-            let high = positions.slice([0..k, 1..n]);
-            let term_1 = (high - low.clone().powi_scalar(2))
-                .powi_scalar(2)
-                .mul_scalar(100);
-            let term_2 = low.neg().add_scalar(1).powi_scalar(2);
-            -(term_1 + term_2).sum_dim(1).squeeze(1)
-        }
-    }
 
     #[test]
     fn test_hmc_single() {
@@ -870,6 +818,12 @@ mod tests {
             sample.dims()[0..2].iter().product::<usize>()
         ));
         assert_eq!(sample.dims(), [6, 5000, 2]);
+
+        let data = sample.to_data();
+        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
+        let (split_rhat, ess) = split_rhat_mean_ess(array);
+        println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
+        println!("MIN ESS: {}", ess.min().unwrap());
     }
 
     #[test]

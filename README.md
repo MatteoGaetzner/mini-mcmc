@@ -420,6 +420,11 @@ The `RunStats` object contains statistics about:
 
 and potentially further metrics in the future.
 
+## Acknowledgements
+
+The NUTS implementation in this crate is inspired by and borrows heavily from Mathieu Fouesneau’s reference implementation ([mfouesneau/NUTS](https://github.com/mfouesneau/NUTS)) and from the original algorithm as described in Hoffman & Gelman, "The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo" (JMLR, 2014).
+
+
 ## License
 
 Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.  

@@ -426,8 +426,8 @@ where
         .map(|_| {
             (0..d)
                 .map(|_| {
-                    let observation: f64 = StandardNormal.sample(&mut rng);
-                    T::from_f64(observation).unwrap()
+                    let obs: f64 = StandardNormal.sample(&mut rng);
+                    T::from_f64(obs).unwrap()
                 })
                 .collect()
         })

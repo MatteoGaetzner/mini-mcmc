@@ -43,6 +43,7 @@ println!("Candidate state: {:?}", candidate);
 
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
+use burn::tensor::Element;
 use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
 use rand::rngs::SmallRng;
@@ -483,6 +484,67 @@ It is primarily used in Gibbs sampling to update one coordinate at a time.
 */
 pub trait Conditional<S> {
     fn sample(&mut self, index: usize, given: &[S]) -> S;
+}
+
+
+// Define the Rosenbrock distribution.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Rosenbrock2D<T: Float> {
+    pub a: T,
+    pub b: T,
+}
+
+// For the batched version we need to implement BatchGradientTarget.
+impl<T, B> BatchedGradientTarget<T, B> for Rosenbrock2D<T>
+where
+    T: Float + Element,
+    B: AutodiffBackend,
+{
+    fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        let n = positions.dims()[0];
+        let x = positions.clone().slice([0..n, 0..1]);
+        let y = positions.slice([0..n, 1..2]);
+        let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
+        let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
+        -(term_1 + term_2).flatten(0, 1)
+    }
+}
+
+impl<T, B> GradientTarget<T, B> for Rosenbrock2D<T> 
+where
+    T: Float + Element,
+    B: AutodiffBackend,
+{
+    fn unnorm_logp(&self, position: Tensor<B, 1>) -> Tensor<B, 1> {
+        let x = position.clone().slice(s![0..1]);
+        let y = position.slice(s![1..2]);
+        let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
+        let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
+        -(term_1 + term_2)
+    }
+}
+
+// Define the Rosenbrock distribution.
+// From: https://arxiv.org/pdf/1903.09556.
+pub struct RosenbrockND {}
+
+// For the batched version we need to implement BatchGradientTarget.
+impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
+where
+    T: Float + Element,
+    B: AutodiffBackend,
+{
+    fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
+        let k = positions.dims()[0];
+        let n = positions.dims()[1];
+        let low = positions.clone().slice([0..k, 0..(n - 1)]);
+        let high = positions.slice([0..k, 1..n]);
+        let term_1 = (high - low.clone().powi_scalar(2))
+            .powi_scalar(2)
+            .mul_scalar(100);
+        let term_2 = low.neg().add_scalar(1).powi_scalar(2);
+        -(term_1 + term_2).sum_dim(1).squeeze(1)
+    }
 }
 
 #[cfg(test)]
