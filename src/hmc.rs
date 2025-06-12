@@ -873,8 +873,8 @@ mod tests {
             sample.clone().slice([2..3, 0..10, 0..1])
         );
 
-        #[cfg(feature = "arrow")]
-        crate::io::csv::save_csv_tensor(sample.clone(), "data.csv")
+        #[cfg(feature = "csv")]
+        crate::io::csv::save_csv_tensor(sample.clone(), "/tmp/hmc-sample.csv")
             .expect("Expected saving to succeed");
 
         assert_eq!(sample.dims(), [n_chains, n_collect, 2]);

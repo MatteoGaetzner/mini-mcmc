@@ -976,6 +976,8 @@ mod tests {
         let (split_rhat, ess) = split_rhat_mean_ess(array);
         println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
         println!("MIN ESS: {}", ess.min().unwrap());
+
+        #[cfg(feature = "csv")]
         save_csv_tensor(sample, "/tmp/nuts-sample.csv").expect("saving data should succeed")
     }
 }
