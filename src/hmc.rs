@@ -435,7 +435,10 @@ where
 #[cfg(test)]
 mod tests {
     use crate::{
-        core::{init}, dev_tools::Timer, distributions::{DiffableGaussian2D, Rosenbrock2D, RosenbrockND}, stats::split_rhat_mean_ess,
+        core::init,
+        dev_tools::Timer,
+        distributions::{DiffableGaussian2D, Rosenbrock2D, RosenbrockND},
+        stats::split_rhat_mean_ess,
     };
     use ndarray::ArrayView3;
     use ndarray_stats::QuantileExt;
@@ -443,7 +446,7 @@ mod tests {
     use super::*;
     use burn::{
         backend::{Autodiff, NdArray},
-        tensor::{Tensor},
+        tensor::Tensor,
     };
 
     // Use the CPU backend (NdArray) wrapped in Autodiff.

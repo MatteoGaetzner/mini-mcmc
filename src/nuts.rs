@@ -31,7 +31,7 @@ use rayon::iter::ParallelIterator;
 /// - `B`: Autodiff backend from the `burn` crate.
 /// - `GTarget`: Target distribution type implementing the `GradientTarget` trait.
 #[derive(Debug, Clone)]
-pub struct NUTS<T, B, GTarget> 
+pub struct NUTS<T, B, GTarget>
 where
     T: Float
         + burn::tensor::ElementConversion
@@ -41,8 +41,9 @@ where
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
     StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>, rand_distr::Exp1: rand_distr::Distribution<T>
-    {
+    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::Exp1: rand_distr::Distribution<T>,
+{
     /// The vector of independent Markov chains.
     chains: Vec<NUTSChain<T, B, GTarget>>,
 }
@@ -61,7 +62,8 @@ where
     B: AutodiffBackend + Send,
     GTarget: GradientTarget<T, B> + Sync + Clone + Send,
     StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>, rand_distr::Exp1: rand_distr::Distribution<T>
+    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::Exp1: rand_distr::Distribution<T>,
 {
     /// Creates a new NUTS sampler with the given target distribution and initial state for each chain.
     ///
@@ -72,13 +74,11 @@ where
     ///
     /// # Returns
     /// A newly initialized `NUTS` instance.
-    pub fn new(
-        target: GTarget,
-        initial_positions: Vec<Vec<T>>,
-        target_accept_p: T,
-    ) -> Self {
-        let chains = initial_positions.into_iter().map(|pos| {
-    NUTSChain::new(target.clone(), pos, target_accept_p)}).collect();
+    pub fn new(target: GTarget, initial_positions: Vec<Vec<T>>, target_accept_p: T) -> Self {
+        let chains = initial_positions
+            .into_iter()
+            .map(|pos| NUTSChain::new(target.clone(), pos, target_accept_p))
+            .collect();
         Self { chains }
     }
 
@@ -94,9 +94,11 @@ where
     /// # Returns
     /// A 3D tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
-        let chain_samples: Vec<Tensor<B, 2>> = self.chains.par_iter_mut().map(|chain| {
-            chain.run(n_collect, n_discard)
-        }).collect();
+        let chain_samples: Vec<Tensor<B, 2>> = self
+            .chains
+            .par_iter_mut()
+            .map(|chain| chain.run(n_collect, n_discard))
+            .collect();
         Tensor::<B, 2>::stack(chain_samples, 0)
     }
 
@@ -115,7 +117,6 @@ where
         self
     }
 }
-
 
 /// Single-chain state and adaptation for NUTS.
 ///
@@ -163,7 +164,8 @@ where
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
     StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>, rand_distr::Exp1: rand_distr::Distribution<T>
+    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::Exp1: rand_distr::Distribution<T>,
 {
     /// Constructs a new NUTSChain for a single chain with the given initial position.
     ///
@@ -179,7 +181,7 @@ where
         let td: TensorData = TensorData::new(initial_position, [dim]);
         let position = Tensor::<B, 1>::from_data(td, &B::Device::default());
         let rng = SmallRng::from_entropy();
-        let epsilon =  -T::one();
+        let epsilon = -T::one();
 
         Self {
             target,
@@ -226,7 +228,9 @@ where
 
         for m in 1..(n_collect + n_discard) {
             self.step();
-            sample = sample.clone().slice_assign([m..m+1, 0..dim], self.position.clone().unsqueeze());
+            sample = sample
+                .clone()
+                .slice_assign([m..m + 1, 0..dim], self.position.clone().unsqueeze());
         }
         sample = sample.slice([n_discard..]);
         sample
@@ -240,7 +244,10 @@ where
         let mut sample = Tensor::<B, 2>::empty([n_collect + n_discard, dim], &B::Device::default());
 
         sample = sample.slice_assign([0..1, 0..dim], self.position.clone().unsqueeze());
-        let mom_0_data: Vec<T> = (&mut self.rng).sample_iter(StandardNormal).take(dim).collect();
+        let mom_0_data: Vec<T> = (&mut self.rng)
+            .sample_iter(StandardNormal)
+            .take(dim)
+            .collect();
         let mom_0 = Tensor::<B, 1>::from_data(mom_0_data.as_slice(), &B::Device::default());
         if T::abs(self.epsilon + T::one()) <= T::epsilon() {
             self.epsilon = find_reasonable_epsilon(self.position.clone(), mom_0, &self.target);
@@ -256,11 +263,15 @@ where
         self.m += 1;
 
         let dim = self.position.dims()[0];
-        let mom_0 = (&mut self.rng).sample_iter(StandardNormal).take(dim).collect::<Vec<T>>();
+        let mom_0 = (&mut self.rng)
+            .sample_iter(StandardNormal)
+            .take(dim)
+            .collect::<Vec<T>>();
         let mom_0 = Tensor::<B, 1>::from_data(mom_0.as_slice(), &B::Device::default());
         let (ulogp, grad) = self.target.unnorm_logp_and_grad(self.position.clone());
         let joint = ulogp.clone() - (mom_0.clone() * mom_0.clone()).sum() * 0.5;
-        let joint = T::from_f64(joint.into_scalar().to_f64()).expect("successful conversion from 64 to T");
+        let joint =
+            T::from_f64(joint.into_scalar().to_f64()).expect("successful conversion from 64 to T");
         let exp1_obs = self.rng.sample(Exp1);
         let logu = joint - exp1_obs;
 
@@ -282,8 +293,32 @@ where
 
             let (position_prime, n_prime, s_prime) = {
                 if v == -1 {
-                    let (position_minus_2, mom_minus_2, grad_minus_2, _, _, _, position_prime_2, _, _, n_prime_2, s_prime_2, alpha_2, n_alpha_2) = build_tree(
-                    position_minus.clone(), mom_minus.clone(), grad_minus.clone(), logu, v, j, self.epsilon, &self.target, joint, &mut self.rng);
+                    let (
+                        position_minus_2,
+                        mom_minus_2,
+                        grad_minus_2,
+                        _,
+                        _,
+                        _,
+                        position_prime_2,
+                        _,
+                        _,
+                        n_prime_2,
+                        s_prime_2,
+                        alpha_2,
+                        n_alpha_2,
+                    ) = build_tree(
+                        position_minus.clone(),
+                        mom_minus.clone(),
+                        grad_minus.clone(),
+                        logu,
+                        v,
+                        j,
+                        self.epsilon,
+                        &self.target,
+                        joint,
+                        &mut self.rng,
+                    );
 
                     position_minus = position_minus_2;
                     mom_minus = mom_minus_2;
@@ -293,7 +328,32 @@ where
 
                     (position_prime_2, n_prime_2, s_prime_2)
                 } else {
-                    let (_, _, _, position_plus_2, mom_plus_2, grad_plus_2, position_prime_2, _, _, n_prime_2, s_prime_2, alpha_2, n_alpha_2) = build_tree( position_plus.clone(), mom_plus.clone(), grad_plus.clone(), logu, v, j, self.epsilon, &self.target, joint, &mut self.rng);
+                    let (
+                        _,
+                        _,
+                        _,
+                        position_plus_2,
+                        mom_plus_2,
+                        grad_plus_2,
+                        position_prime_2,
+                        _,
+                        _,
+                        n_prime_2,
+                        s_prime_2,
+                        alpha_2,
+                        n_alpha_2,
+                    ) = build_tree(
+                        position_plus.clone(),
+                        mom_plus.clone(),
+                        grad_plus.clone(),
+                        logu,
+                        v,
+                        j,
+                        self.epsilon,
+                        &self.target,
+                        joint,
+                        &mut self.rng,
+                    );
 
                     position_plus = position_plus_2;
                     mom_plus = mom_plus_2;
@@ -305,24 +365,38 @@ where
                 }
             };
 
-            let tmp = T::one().min(T::from(n_prime).expect("successful conversion of n_prime from usize to T") / T::from(n).expect("successful conversion of n from usize to T"));
+            let tmp = T::one().min(
+                T::from(n_prime).expect("successful conversion of n_prime from usize to T")
+                    / T::from(n).expect("successful conversion of n from usize to T"),
+            );
             let u_run_2 = self.rng.gen::<T>();
             if s_prime && (u_run_2 < tmp) {
                 self.position = position_prime;
             }
             n += n_prime;
 
-            s = s_prime && stop_criterion(position_minus.clone(), position_plus.clone(), mom_minus.clone(), mom_plus.clone());
+            s = s_prime
+                && stop_criterion(
+                    position_minus.clone(),
+                    position_plus.clone(),
+                    mom_minus.clone(),
+                    mom_plus.clone(),
+                );
             j += 1
         }
 
-        let mut eta = T::one() / T::from(self.m + self.t_0).expect("successful conversion of m + t_0 to T");
-        self.h_bar = (T::one() - eta) * self.h_bar + eta * (self.target_accept_p - alpha / T::from(n_alpha).expect("successful conversion of n_alpha to T"));
+        let mut eta =
+            T::one() / T::from(self.m + self.t_0).expect("successful conversion of m + t_0 to T");
+        self.h_bar = (T::one() - eta) * self.h_bar
+            + eta
+                * (self.target_accept_p
+                    - alpha / T::from(n_alpha).expect("successful conversion of n_alpha to T"));
         if self.m <= self.n_discard {
             let _m = T::from(self.m).expect("successful conversion of m to T");
             self.epsilon = T::exp(self.mu - T::sqrt(_m) / self.gamma * self.h_bar);
             eta = _m.powf(-self.kappa);
-            self.epsilon_bar = T::exp((T::one() - eta) * T::ln(self.epsilon_bar) + eta * T::ln(self.epsilon));
+            self.epsilon_bar =
+                T::exp((T::one() - eta) * T::ln(self.epsilon_bar) + eta * T::ln(self.epsilon));
         } else {
             self.epsilon = self.epsilon_bar;
         }
@@ -387,10 +461,10 @@ where
         log_accept_prob = T::from(
             (ulogp_prime
                 - ulogp.clone()
-                - ((mom_prime.clone() * mom_prime).sum()
-                - (mom.clone() * mom.clone()).sum()) * 0.5)
-            .into_scalar()
-            .to_f64(),
+                - ((mom_prime.clone() * mom_prime).sum() - (mom.clone() * mom.clone()).sum())
+                    * 0.5)
+                .into_scalar()
+                .to_f64(),
         )
         .unwrap();
     }
@@ -398,36 +472,142 @@ where
     epsilon
 }
 
-#[allow(clippy::too_many_arguments,clippy::type_complexity)]
-fn build_tree<B, T, GTarget>(position: Tensor<B, 1>, mom: Tensor<B, 1>, grad: Tensor<B, 1>, logu: T, v: i8, j: usize, epsilon: T, gradient_target: &GTarget, joint_0: T, rng: &mut SmallRng) -> (Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, usize, bool, T, usize) 
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+fn build_tree<B, T, GTarget>(
+    position: Tensor<B, 1>,
+    mom: Tensor<B, 1>,
+    grad: Tensor<B, 1>,
+    logu: T,
+    v: i8,
+    j: usize,
+    epsilon: T,
+    gradient_target: &GTarget,
+    joint_0: T,
+    rng: &mut SmallRng,
+) -> (
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    Tensor<B, 1>,
+    usize,
+    bool,
+    T,
+    usize,
+)
 where
     T: Float + burn::tensor::Element,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
 {
     if j == 0 {
-            let (position_prime, mom_prime, grad_prime, logp_prime) = leapfrog(position.clone(), mom.clone(), grad.clone(), T::from(v as i32).unwrap() * epsilon, gradient_target);
-            let joint = logp_prime.clone() - (mom_prime.clone() * mom_prime.clone()).sum() * 0.5;
-            let joint = T::from(joint.into_scalar().to_f64()).expect("type conversion from joint tensor to scalar type T to succeed");
-            let n_prime = (logu < joint) as usize;
-            let s_prime = (logu - T::from(1000.0).unwrap()) < joint;
-            let position_minus = position_prime.clone();
-            let position_plus = position_prime.clone();
-            let mom_minus = mom_prime.clone();
-            let mom_plus = mom_prime.clone();
-            let grad_minus = grad_prime.clone();
-            let grad_plus = grad_prime.clone();
-            let alpha_prime = T::min(T::one(), (joint - joint_0).exp());
-            let n_alpha_prime = 1_usize;
-            (position_minus, mom_minus, grad_minus, position_plus, mom_plus, grad_plus, position_prime, grad_prime, logp_prime, n_prime, s_prime, alpha_prime, n_alpha_prime)
-        }
-    else {
-        let (mut position_minus, mut mom_minus, mut grad_minus, mut position_plus, mut mom_plus, mut grad_plus, mut position_prime, mut grad_prime, mut logp_prime, mut n_prime, mut s_prime, mut alpha_prime, mut n_alpha_prime) = build_tree(position, mom, grad, logu, v, j-1, epsilon, gradient_target, joint_0, rng);
+        let (position_prime, mom_prime, grad_prime, logp_prime) = leapfrog(
+            position.clone(),
+            mom.clone(),
+            grad.clone(),
+            T::from(v as i32).unwrap() * epsilon,
+            gradient_target,
+        );
+        let joint = logp_prime.clone() - (mom_prime.clone() * mom_prime.clone()).sum() * 0.5;
+        let joint = T::from(joint.into_scalar().to_f64())
+            .expect("type conversion from joint tensor to scalar type T to succeed");
+        let n_prime = (logu < joint) as usize;
+        let s_prime = (logu - T::from(1000.0).unwrap()) < joint;
+        let position_minus = position_prime.clone();
+        let position_plus = position_prime.clone();
+        let mom_minus = mom_prime.clone();
+        let mom_plus = mom_prime.clone();
+        let grad_minus = grad_prime.clone();
+        let grad_plus = grad_prime.clone();
+        let alpha_prime = T::min(T::one(), (joint - joint_0).exp());
+        let n_alpha_prime = 1_usize;
+        (
+            position_minus,
+            mom_minus,
+            grad_minus,
+            position_plus,
+            mom_plus,
+            grad_plus,
+            position_prime,
+            grad_prime,
+            logp_prime,
+            n_prime,
+            s_prime,
+            alpha_prime,
+            n_alpha_prime,
+        )
+    } else {
+        let (
+            mut position_minus,
+            mut mom_minus,
+            mut grad_minus,
+            mut position_plus,
+            mut mom_plus,
+            mut grad_plus,
+            mut position_prime,
+            mut grad_prime,
+            mut logp_prime,
+            mut n_prime,
+            mut s_prime,
+            mut alpha_prime,
+            mut n_alpha_prime,
+        ) = build_tree(
+            position,
+            mom,
+            grad,
+            logu,
+            v,
+            j - 1,
+            epsilon,
+            gradient_target,
+            joint_0,
+            rng,
+        );
         if s_prime {
-            let (position_minus_2, mom_minus_2, grad_minus_2, position_plus_2, mom_plus_2, grad_plus_2, position_prime_2, grad_prime_2, logp_prime_2, n_prime_2, s_prime_2, alpha_prime_2, n_alpha_prime_2) = if v == -1 {
-                build_tree(position_minus.clone(), mom_minus.clone(), grad_minus.clone(), logu, v, j-1, epsilon, gradient_target, joint_0, rng)
+            let (
+                position_minus_2,
+                mom_minus_2,
+                grad_minus_2,
+                position_plus_2,
+                mom_plus_2,
+                grad_plus_2,
+                position_prime_2,
+                grad_prime_2,
+                logp_prime_2,
+                n_prime_2,
+                s_prime_2,
+                alpha_prime_2,
+                n_alpha_prime_2,
+            ) = if v == -1 {
+                build_tree(
+                    position_minus.clone(),
+                    mom_minus.clone(),
+                    grad_minus.clone(),
+                    logu,
+                    v,
+                    j - 1,
+                    epsilon,
+                    gradient_target,
+                    joint_0,
+                    rng,
+                )
             } else {
-                build_tree(position_plus.clone(), mom_plus.clone(), grad_plus.clone(), logu, v, j-1, epsilon, gradient_target, joint_0, rng)
+                build_tree(
+                    position_plus.clone(),
+                    mom_plus.clone(),
+                    grad_plus.clone(),
+                    logu,
+                    v,
+                    j - 1,
+                    epsilon,
+                    gradient_target,
+                    joint_0,
+                    rng,
+                )
             };
             if v == -1 {
                 position_minus = position_minus_2;
@@ -448,11 +628,32 @@ where
 
             n_prime += n_prime_2;
 
-            s_prime = s_prime && s_prime_2 && stop_criterion(position_minus.clone(), position_plus.clone(), mom_minus.clone(), mom_plus.clone());
+            s_prime = s_prime
+                && s_prime_2
+                && stop_criterion(
+                    position_minus.clone(),
+                    position_plus.clone(),
+                    mom_minus.clone(),
+                    mom_plus.clone(),
+                );
             alpha_prime = alpha_prime + alpha_prime_2;
             n_alpha_prime += n_alpha_prime_2;
-        } 
-        (position_minus, mom_minus, grad_minus, position_plus, mom_plus, grad_plus, position_prime, grad_prime, logp_prime, n_prime, s_prime, alpha_prime, n_alpha_prime)
+        }
+        (
+            position_minus,
+            mom_minus,
+            grad_minus,
+            position_plus,
+            mom_plus,
+            grad_plus,
+            position_prime,
+            grad_prime,
+            logp_prime,
+            n_prime,
+            s_prime,
+            alpha_prime,
+            n_alpha_prime,
+        )
     }
 }
 
@@ -471,14 +672,20 @@ where
         .to_bool()
 }
 
-fn stop_criterion<B>(position_minus: Tensor<B, 1>, position_plus: Tensor<B, 1>, mom_minus: Tensor<B, 1>, mom_plus: Tensor<B, 1>) -> bool 
+fn stop_criterion<B>(
+    position_minus: Tensor<B, 1>,
+    position_plus: Tensor<B, 1>,
+    mom_minus: Tensor<B, 1>,
+    mom_plus: Tensor<B, 1>,
+) -> bool
 where
     B: AutodiffBackend,
 {
     let diff = position_plus - position_minus;
     let dot_minus = (diff.clone() * mom_minus).sum();
     let dot_plus = (diff * mom_plus).sum();
-    dot_minus.greater_equal_elem(0).into_scalar().to_bool() && dot_plus.greater_equal_elem(0).into_scalar().to_bool() 
+    dot_minus.greater_equal_elem(0).into_scalar().to_bool()
+        && dot_plus.greater_equal_elem(0).into_scalar().to_bool()
 }
 
 fn leapfrog<B, T, GTarget>(
@@ -504,7 +711,13 @@ where
 mod tests {
     use std::fmt::Debug;
 
-    use crate::{core::{init}, dev_tools::Timer, distributions::{DiffableGaussian2D, Rosenbrock2D}, io::csv::{save_csv_tensor}, stats::split_rhat_mean_ess};
+    use crate::{
+        core::init,
+        dev_tools::Timer,
+        distributions::{DiffableGaussian2D, Rosenbrock2D},
+        io::csv::save_csv_tensor,
+        stats::split_rhat_mean_ess,
+    };
 
     use super::*;
     use burn::{
@@ -536,7 +749,7 @@ mod tests {
     fn assert_tensor_approx_eq<T: Backend, F: Float + burn::tensor::Element>(
         actual: Tensor<T, 1>,
         expected: &[f64],
-        tol: Tolerance<F>
+        tol: Tolerance<F>,
     ) {
         let a = actual.clone().to_data();
         let e = Tensor::<T, 1>::from(expected).to_data();
@@ -563,30 +776,59 @@ mod tests {
         let epsilon: f64 = 0.01;
         let joint_0 = 0.1_f64;
         let mut rng = SmallRng::seed_from_u64(0);
-        let (position_minus, mom_minus, grad_minus, position_plus, mom_plus, grad_plus, position_prime, grad_prime, logp_prime, n_prime, s_prime, alpha_prime, n_alpha_prime) = build_tree::<BackendType, f64, _>(position, mom, grad, logu, v, j, epsilon, &gradient_target, joint_0, &mut rng);
-        let tol = Tolerance::<f64>::default().set_relative(1e-5).set_absolute(1e-6);
+        let (
+            position_minus,
+            mom_minus,
+            grad_minus,
+            position_plus,
+            mom_plus,
+            grad_plus,
+            position_prime,
+            grad_prime,
+            logp_prime,
+            n_prime,
+            s_prime,
+            alpha_prime,
+            n_alpha_prime,
+        ) = build_tree::<BackendType, f64, _>(
+            position,
+            mom,
+            grad,
+            logu,
+            v,
+            j,
+            epsilon,
+            &gradient_target,
+            joint_0,
+            &mut rng,
+        );
+        let tol = Tolerance::<f64>::default()
+            .set_relative(1e-5)
+            .set_absolute(1e-6);
 
         assert_tensor_approx_eq(position_minus, &[-0.1584001, 0.76208336], tol);
-        assert_tensor_approx_eq(mom_minus,      &[1.980_003_6,2.971_825_3], tol);
-        assert_tensor_approx_eq(grad_minus,     &[-7.912_36e-5, 7.935_829_5e-2], tol);
+        assert_tensor_approx_eq(mom_minus, &[1.980_003_6, 2.971_825_3], tol);
+        assert_tensor_approx_eq(grad_minus, &[-7.912_36e-5, 7.935_829_5e-2], tol);
 
-        assert_tensor_approx_eq(position_plus,  &[-0.0198, 0.97025], tol);
-        assert_tensor_approx_eq(mom_plus,       &[1.98, 2.974_950_3], tol);
-        assert_tensor_approx_eq(grad_plus,      &[-1.250e-05, 9.925e-03], tol);
+        assert_tensor_approx_eq(position_plus, &[-0.0198, 0.97025], tol);
+        assert_tensor_approx_eq(mom_plus, &[1.98, 2.974_950_3], tol);
+        assert_tensor_approx_eq(grad_plus, &[-1.250e-05, 9.925e-03], tol);
 
         assert_tensor_approx_eq(position_prime, &[-0.0198, 0.97025], tol);
-        assert_tensor_approx_eq(grad_prime,     &[-1.250e-05, 9.925e-03], tol);
+        assert_tensor_approx_eq(grad_prime, &[-1.250e-05, 9.925e-03], tol);
 
         assert_eq!(n_prime, 0);
         assert!(s_prime);
         assert_eq!(n_alpha_prime, 8);
 
         let logp_exp = -2.877_745_4_f64;
-        let alpha_exp =  0.000_686_661_7_f64;
-        assert!((logp_prime.into_scalar().to_f64()  - logp_exp).abs()  < 1e-6, "logp mismatch");
+        let alpha_exp = 0.000_686_661_7_f64;
+        assert!(
+            (logp_prime.into_scalar().to_f64() - logp_exp).abs() < 1e-6,
+            "logp mismatch"
+        );
         assert!((alpha_prime - alpha_exp).abs() < 1e-8, "alpha mismatch");
     }
-
 
     #[test]
     fn test_chain_1() {
@@ -594,12 +836,12 @@ mod tests {
         let initial_positions = vec![0.0_f64, 1.0];
         let n_discard = 1;
         let n_collect = 1;
-        let mut sampler =
-            NUTSChain::new(target, initial_positions, 0.8)
-                .set_seed(42);
+        let mut sampler = NUTSChain::new(target, initial_positions, 0.8).set_seed(42);
         let sample: Tensor<BackendType, 2> = sampler.run(n_collect, n_discard);
         assert_eq!(sample.dims(), [n_collect, 2]);
-        let tol = Tolerance::<f64>::default().set_relative(1e-5).set_absolute(1e-6);
+        let tol = Tolerance::<f64>::default()
+            .set_relative(1e-5)
+            .set_absolute(1e-6);
         assert_tensor_approx_eq(sample.flatten(0, 1), &[0.0, 1.0], tol);
     }
 
@@ -609,13 +851,24 @@ mod tests {
         let initial_positions = vec![0.0_f64, 1.0];
         let n_discard = 3;
         let n_collect = 3;
-        let mut sampler =
-            NUTSChain::new(target, initial_positions, 0.8)
-                .set_seed(42);
+        let mut sampler = NUTSChain::new(target, initial_positions, 0.8).set_seed(42);
         let sample: Tensor<BackendType, 2> = sampler.run(n_collect, n_discard);
         assert_eq!(sample.dims(), [n_collect, 2]);
-        let tol = Tolerance::<f64>::default().set_relative(1e-5).set_absolute(1e-6);
-        assert_tensor_approx_eq(sample.flatten(0, 1), &[0.44937651, -0.1170752, 0.75795663, -0.32304322,  0.58511739,  1.60916189], tol);
+        let tol = Tolerance::<f64>::default()
+            .set_relative(1e-5)
+            .set_absolute(1e-6);
+        assert_tensor_approx_eq(
+            sample.flatten(0, 1),
+            &[
+                0.44937651,
+                -0.1170752,
+                0.75795663,
+                -0.32304322,
+                0.58511739,
+                1.60916189,
+            ],
+            tol,
+        );
     }
 
     #[test]
@@ -624,13 +877,20 @@ mod tests {
         let initial_positions = vec![-2.0_f64, 1.0];
         let n_discard = 5;
         let n_collect = 5;
-        let mut sampler =
-            NUTSChain::new(target, initial_positions, 0.8)
-                .set_seed(42);
+        let mut sampler = NUTSChain::new(target, initial_positions, 0.8).set_seed(42);
         let sample: Tensor<BackendType, 2> = sampler.run(n_collect, n_discard);
         assert_eq!(sample.dims(), [n_collect, 2]);
-        let tol = Tolerance::<f64>::default().set_relative(1e-5).set_absolute(1e-6);
-        assert_tensor_approx_eq(sample.flatten(0, 1), &[1.2114488, 1.2120318, 1.2114488, 1.2120318, 1.2114488, 1.2120318, 0.6581087, 2.5633106, 1.2620386, 1.5624053], tol);
+        let tol = Tolerance::<f64>::default()
+            .set_relative(1e-5)
+            .set_absolute(1e-6);
+        assert_tensor_approx_eq(
+            sample.flatten(0, 1),
+            &[
+                1.2114488, 1.2120318, 1.2114488, 1.2120318, 1.2114488, 1.2120318, 0.6581087,
+                2.5633106, 1.2620386, 1.5624053,
+            ],
+            tol,
+        );
     }
 
     #[test]
@@ -639,13 +899,20 @@ mod tests {
         let initial_positions = vec![vec![-2_f64, 1.0]];
         let n_discard = 5;
         let n_collect = 5;
-        let mut sampler =
-            NUTS::new(target, initial_positions, 0.8)
-                .set_seed(41);
+        let mut sampler = NUTS::new(target, initial_positions, 0.8).set_seed(41);
         let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
         assert_eq!(sample.dims(), [1, n_collect, 2]);
-        let tol = Tolerance::<f64>::default().set_relative(1e-5).set_absolute(1e-6);
-        assert_tensor_approx_eq(sample.flatten(0, 2), &[1.2114488, 1.2120318, 1.2114488, 1.2120318, 1.2114488, 1.2120318, 0.6581087, 2.5633106, 1.2620386, 1.5624053], tol);
+        let tol = Tolerance::<f64>::default()
+            .set_relative(1e-5)
+            .set_absolute(1e-6);
+        assert_tensor_approx_eq(
+            sample.flatten(0, 2),
+            &[
+                1.2114488, 1.2120318, 1.2114488, 1.2120318, 1.2114488, 1.2120318, 0.6581087,
+                2.5633106, 1.2620386, 1.5624053,
+            ],
+            tol,
+        );
     }
 
     #[test]
@@ -661,9 +928,7 @@ mod tests {
         let n_collect = 5000;
         let n_discard = 500;
 
-        let mut sampler =
-            NUTS::new(target, initial_positions, 0.95)
-                .set_seed(42);
+        let mut sampler = NUTS::new(target, initial_positions, 0.95).set_seed(42);
         let mut timer = Timer::new();
         let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
         timer.log(format!(
@@ -693,9 +958,7 @@ mod tests {
         let n_collect = 1000;
         let n_discard = 1000;
 
-        let mut sampler =
-            NUTS::new(target, initial_positions, 0.95)
-                .set_seed(42);
+        let mut sampler = NUTS::new(target, initial_positions, 0.95).set_seed(42);
         let mut timer = Timer::new();
         let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
         timer.log(format!(

@@ -305,13 +305,12 @@ where
             [self.inv_cov[0][0], self.inv_cov[0][1]],
             [self.inv_cov[1][0], self.inv_cov[1][1]],
         ];
-        let inv_cov_t =
-            Tensor::<B, 2>::from_floats(inv_cov_data, &B::Device::default());
+        let inv_cov_t = Tensor::<B, 2>::from_floats(inv_cov_data, &B::Device::default());
 
-        let z = delta.clone().reshape([1_i32, 2_i32]).matmul(inv_cov_t); 
+        let z = delta.clone().reshape([1_i32, 2_i32]).matmul(inv_cov_t);
         let quad = (z.reshape([2_i32]) * delta).sum();
         let half = T::from(0.5).unwrap();
-         - quad.mul_scalar(half) + self.norm_const
+        -quad.mul_scalar(half) + self.norm_const
     }
 }
 
@@ -486,7 +485,6 @@ pub trait Conditional<S> {
     fn sample(&mut self, index: usize, given: &[S]) -> S;
 }
 
-
 // Define the Rosenbrock distribution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Rosenbrock2D<T: Float> {
@@ -510,7 +508,7 @@ where
     }
 }
 
-impl<T, B> GradientTarget<T, B> for Rosenbrock2D<T> 
+impl<T, B> GradientTarget<T, B> for Rosenbrock2D<T>
 where
     T: Float + Element,
     B: AutodiffBackend,

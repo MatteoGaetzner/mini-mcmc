@@ -3,8 +3,8 @@ use burn::prelude::Tensor;
 use mini_mcmc::core::init;
 use mini_mcmc::distributions::Rosenbrock2D;
 use mini_mcmc::nuts::NUTS;
-use ndarray::ArrayView3;
 use mini_mcmc::stats::split_rhat_mean_ess;
+use ndarray::ArrayView3;
 use ndarray_stats::QuantileExt;
 
 fn main() {
@@ -12,7 +12,10 @@ fn main() {
     type BackendType = Autodiff<burn::backend::NdArray>;
 
     // Create the 2D Rosenbrock target (a = 1, b = 100).
-    let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
+    let target = Rosenbrock2D {
+        a: 1.0_f32,
+        b: 100.0_f32,
+    };
 
     // Define 6 chains all initialized to (1.0, 2.0).
     let initial_positions = init::<f32>(4, 2);
