@@ -378,6 +378,7 @@ This library provides implementations of
 - **Hamiltonian Monte Carlo (HMC)**: an MCMC method that efficiently samples by simulating Hamiltonian dynamics using gradients of the target distribution.
 - **Metropolis-Hastings**: an MCMC algorithm that samples from a distribution by proposing candidates and probabilistically accepting or rejecting them.
 - **Gibbs Sampling**: an MCMC method that iteratively samples each variable from its conditional distribution given all other variables.
+- **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
 
 Additional features:
 
@@ -391,7 +392,8 @@ Additional features:
 
 ## Roadmap
 
-- **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
+- **Progress Bars for NUTS**: `run_progress(...)` implementation that shows
+progress while running the sampler.
 - **Rank Normalized Rhat**: Modern convergence diagnostic, see [paper](https://arxiv.org/abs/1903.08008).
 - **Ensemble Slice Sampling (ESS)**: Efficient gradient-free sampler, see [paper](https://arxiv.org/abs/2002.06212).
 - **Effective Size Estimation**: Online estimation of effective sample size for
