@@ -22,7 +22,7 @@ jobs:
       - name: Rust Cache Action
         uses: Swatinem/rust-cache@v2
       - name: Run tests
-        run: cargo test
+        run: cargo test --release
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
