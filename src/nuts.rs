@@ -715,9 +715,11 @@ mod tests {
         core::init,
         dev_tools::Timer,
         distributions::{DiffableGaussian2D, Rosenbrock2D},
-        io::csv::save_csv_tensor,
         stats::split_rhat_mean_ess,
     };
+
+    #[cfg(feature = "csv")]
+    use crate::io::csv::save_csv_tensor;
 
     use super::*;
     use burn::{
@@ -942,6 +944,8 @@ mod tests {
         let (split_rhat, ess) = split_rhat_mean_ess(array);
         println!("AVG Split Rhat: {}", split_rhat.mean().unwrap());
         println!("AVG ESS: {}", ess.mean().unwrap());
+
+        #[cfg(feature = "csv")]
         save_csv_tensor(sample, "/tmp/nuts-sample.csv").expect("saving data should succeed")
     }
 
