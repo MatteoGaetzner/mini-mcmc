@@ -168,6 +168,45 @@
 //! println!("Poisson sample shape: {:?}", sample.shape());
 //! ```
 //!
+//! //! ## Example 4: Sampling a 2D Rosenbrock (NUTS)
+//!
+//! ```rust
+//! use burn::backend::Autodiff;
+//! use burn::prelude::Tensor;
+//! use mini_mcmc::core::init;
+//! use mini_mcmc::distributions::Rosenbrock2D;
+//! use mini_mcmc::nuts::NUTS;
+//!
+//! fn main() {
+//!     // CPU backend with autodiff (NdArray).
+//!     type BackendType = Autodiff<burn::backend::NdArray>;
+//!
+//!     // 2D Rosenbrock target (a=1, b=100).
+//!     let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
+//!
+//!     // 4 independent chains starting at (1.0,2.0).
+//!     let initial_positions = init::<f32>(4, 2);
+//!
+//!     // NUTS with 0.95 target‐accept and a fixed seed.
+//!     let mut sampler = NUTS::new(target, initial_positions, 0.95)
+//!         .set_seed(42);
+//!
+//!     // 400 burn-in + 400 samples.
+//!     let n_collect = 400;
+//!     let n_discard = 400;
+//!
+//!     let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
+//!
+//!     println!(
+//!         \"Collected {{}} chains × {{}} samples × 2 dims\",
+//!         sample.dims()[0],
+//!         sample.dims()[1],
+//!     );
+//! }
+//! ```
+//!
+//! See [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs) for the full version with diagnostics.
+//!
 //! For more complete implementations (including Gibbs sampling and I/O helpers),
 //! see the `examples/` directory.
 //!

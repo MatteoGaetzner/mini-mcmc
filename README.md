@@ -334,6 +334,43 @@ fn main() {
 }
 ```
 
+## Example: Sampling with NUTS
+
+The following minimal example shows how to set up and run a NUTS sampler on a 2D Rosenbrock target with 4 parallel chains. It demonstrates initializing the sampler and invoking `.run(...)` to generate samples.
+
+```rust
+use burn::backend::Autodiff;
+use burn::prelude::Tensor;
+use mini_mcmc::core::init;
+use mini_mcmc::distributions::Rosenbrock2D;
+use mini_mcmc::nuts::NUTS;
+
+fn main() {
+    // Use the CPU backend (NdArray) wrapped in Autodiff.
+    type BackendType = Autodiff<burn::backend::NdArray>;
+
+    // Create the 2D Rosenbrock target (a = 1, b = 100).
+    let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
+
+    // Define 4 independent chains all initialized to (1.0, 2.0).
+    let initial_positions = init::<f32>(4, 2);
+
+    // Configure and seed the NUTS sampler with target_accept_p = 0.95.
+    let mut sampler = NUTS::new(target, initial_positions, 0.95)
+        .set_seed(42);
+
+    // Number of samples to collect and to discard (burn-in).
+    let n_collect = 400;
+    let n_discard = 400;
+
+    // Run the sampler for n_discard burn-in steps plus n_collect samples.
+    let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
+}
+```
+
+You can find this example with some additional logging in [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs).
+
+
 ## Overview
 
 This library provides implementations of
