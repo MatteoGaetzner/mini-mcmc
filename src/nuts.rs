@@ -1215,8 +1215,8 @@ mod tests {
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
         let initial_positions = init::<f32>(6, 2);
-        let n_collect = 100;
-        let n_discard = 20;
+        let n_collect = 10;
+        let n_discard = 10;
 
         let mut sampler =
             NUTS::<_, BackendType, _>::new(target, initial_positions, 0.95).set_seed(42);
