@@ -392,7 +392,6 @@ fn main() {
 
 You can find this example with some additional logging in [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs).
 
-
 ## Roadmap
 
 - **Rank Normalized Rhat**: Modern convergence diagnostic, see [paper](https://arxiv.org/abs/1903.08008).
