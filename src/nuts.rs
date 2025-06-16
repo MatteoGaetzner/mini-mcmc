@@ -1,24 +1,60 @@
-//! No-U-Turn Sampler (NUTS).
+//! Parallel No-U-Turn Sampler (NUTS).
 //!
-//! A parallel implementation of the NUTS algorithm that runs multiple independent Markov chains concurrently using Rayon.
-//! Each chain is updated independently rather than in lock‐step data‐parallel fashion.
+//! A parallel implementation of NUTS running independent Markov chains via Rayon.
+//!
+//! ## Example: custom 2D Rosenbrock target
+//! ```rust
+//! use mini_mcmc::core::init;
+//! use mini_mcmc::distributions::GradientTarget;
+//! use mini_mcmc::nuts::NUTS;
+//! use burn::backend::{Autodiff, NdArray};
+//! use burn::prelude::*;
+//!
+//! type B = Autodiff<NdArray>;
+//!
+//! #[derive(Clone)]
+//! struct Rosenbrock2D { a: f32, b: f32 }
+//!
+//! impl GradientTarget<f32, B> for Rosenbrock2D {
+//!     fn unnorm_logp(&self, position: Tensor<B, 1>) -> Tensor<B, 1> {
+//!         let x = position.clone().slice(s![0..1]);
+//!         let y = position.slice(s![1..2]);
+//!         let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
+//!         let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
+//!         -(term_1 + term_2)
+//!     }
+//! }
+//!
+//! let target = Rosenbrock2D { a: 1.0, b: 100.0 };
+//! let initial_positions = init::<f32>(4, 2);    // 4 chains in 2D
+//! let mut sampler = NUTS::new(target, initial_positions, 0.9);
+//! let (samples, stats) = sampler.run_progress(100, 20).unwrap();
+//! ```
 //!
 //! ## Inspiration
-//! This implementation is inspired by and borrows ideas from
-//! [mfouesneau/NUTS](https://github.com/mfouesneau/NUTS).
+//! Borrowed ideas from [mfouesneau/NUTS](https://github.com/mfouesneau/NUTS).
+
+use std::error::Error;
+use std::sync::mpsc;
+use std::sync::mpsc::{Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::distributions::GradientTarget;
+use crate::stats::{collect_rhat, ChainStats, ChainTracker, RunStats};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::cast::ToElement;
-use burn::tensor::Tensor;
-use num_traits::Float;
+use burn::tensor::Element;
+use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use ndarray::ArrayView3;
+use ndarray_stats::QuantileExt;
+use num_traits::{Float, FromPrimitive};
 use rand::prelude::*;
 use rand::Rng;
-use rand_distr::Exp1;
-use rand_distr::StandardNormal;
-use rayon::iter::IntoParallelRefMutIterator;
-use rayon::iter::ParallelIterator;
+use rand_distr::uniform::SampleUniform;
+use rand_distr::{Exp1, StandardNormal};
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
 /// No-U-Turn Sampler (NUTS).
 ///
@@ -33,13 +69,9 @@ use rayon::iter::ParallelIterator;
 #[derive(Debug, Clone)]
 pub struct NUTS<T, B, GTarget>
 where
-    T: Float
-        + burn::tensor::ElementConversion
-        + burn::tensor::Element
-        + rand_distr::uniform::SampleUniform
-        + num_traits::FromPrimitive,
+    T: Float + ElementConversion + Element + SampleUniform + FromPrimitive,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B> + std::marker::Sync,
+    GTarget: GradientTarget<T, B> + Sync,
     StandardNormal: rand::distributions::Distribution<T>,
     rand_distr::Standard: rand_distr::Distribution<T>,
     rand_distr::Exp1: rand_distr::Distribution<T>,
@@ -48,17 +80,9 @@ where
     chains: Vec<NUTSChain<T, B, GTarget>>,
 }
 
-// TODO: Make new(...) methods take n_chains and dim instead of initial positions; usual use case
-// probably doesn't want to manually generate initial positions.
-
 impl<T, B, GTarget> NUTS<T, B, GTarget>
 where
-    T: Float
-        + burn::tensor::ElementConversion
-        + burn::tensor::Element
-        + rand_distr::uniform::SampleUniform
-        + num_traits::FromPrimitive
-        + Send,
+    T: Float + ElementConversion + Element + SampleUniform + FromPrimitive + Send,
     B: AutodiffBackend + Send,
     GTarget: GradientTarget<T, B> + Sync + Clone + Send,
     StandardNormal: rand::distributions::Distribution<T>,
@@ -74,6 +98,28 @@ where
     ///
     /// # Returns
     /// A newly initialized `NUTS` instance.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use burn::backend::{Autodiff, NdArray};
+    /// # use mini_mcmc::nuts::NUTS;
+    /// # use mini_mcmc::distributions::DiffableGaussian2D;
+    /// type B = Autodiff<NdArray>;
+    ///
+    /// // Create a 2D Gaussian with mean [0,0] and identity covariance
+    /// let gauss = DiffableGaussian2D::new([0.0_f64, 0.0], [[1.0, 0.0], [0.0, 1.0]]);
+    ///
+    /// // Initialize 3 chains in 2D at different starting points
+    /// let init_positions = vec![
+    ///     vec![-1.0, -1.0],
+    ///     vec![ 0.0,  0.0],
+    ///     vec![ 1.0,  1.0],
+    /// ];
+    ///
+    /// // Build the sampler targeting 85% acceptance probability
+    /// let sampler: NUTS<f64, B, _> = NUTS::new(gauss, init_positions, 0.85);
+    /// ```
     pub fn new(target: GTarget, initial_positions: Vec<Vec<T>>, target_accept_p: T) -> Self {
         let chains = initial_positions
             .into_iter()
@@ -93,6 +139,26 @@ where
     ///
     /// # Returns
     /// A 3D tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use burn::backend::{Autodiff, NdArray};
+    /// # use mini_mcmc::nuts::NUTS;
+    /// # use mini_mcmc::distributions::DiffableGaussian2D;
+    /// type B = Autodiff<NdArray>;
+    ///
+    /// // As above, construct the sampler
+    /// let gauss = DiffableGaussian2D::new([0.0, 0.0], [[1.0,0.0],[0.0,1.0]]);
+    /// let mut sampler = NUTS::new(gauss, vec![vec![0.0,0.0]; 2], 0.8)
+    ///     .set_seed(2025);
+    ///
+    /// // Discard 50 warm-up steps, then collect 150 samples per chain
+    /// let samples = sampler.run(150, 50);
+    ///
+    /// // samples.dims() == [2 chains, 150 samples, 2 dimensions]
+    /// assert_eq!(samples.dims(), [2, 150, 2]);
+    /// ```
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
         let chain_samples: Vec<Tensor<B, 2>> = self
             .chains
@@ -100,6 +166,174 @@ where
             .map(|chain| chain.run(n_collect, n_discard))
             .collect();
         Tensor::<B, 2>::stack(chain_samples, 0)
+    }
+
+    /// Run with live progress bars and collect summary stats.
+    ///
+    /// Spawns a background thread to render per-chain and global bars,
+    /// then returns `(samples, RunStats)` when done.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use burn::backend::{Autodiff, NdArray};
+    /// use mini_mcmc::distributions::Rosenbrock2D;
+    /// use mini_mcmc::nuts::NUTS;
+    /// use mini_mcmc::core::init;
+    ///
+    /// type B = Autodiff<NdArray>;
+    ///
+    /// let target = Rosenbrock2D { a: 1.0, b: 100.0 };
+    /// let init   = init::<f64>(4, 2);    // 4 chains in 2D
+    /// let mut sampler = NUTS::<f64, B, RosenBrock2D>::new(target, init, 0.9);
+    /// let (samples, stats) = sampler.run_progress(100, 20).unwrap();
+    /// ```
+    ///
+    /// You can swap in any other [`GradientTarget`] just as easily.
+    pub fn run_progress(
+        &mut self,
+        n_collect: usize,
+        n_discard: usize,
+    ) -> Result<(Tensor<B, 3>, RunStats), Box<dyn Error>> {
+        let chains = &mut self.chains;
+
+        let mut rxs: Vec<Receiver<ChainStats>> = vec![];
+        let mut txs: Vec<Sender<ChainStats>> = vec![];
+        (0..chains.len()).for_each(|_| {
+            let (tx, rx) = mpsc::channel();
+            rxs.push(rx);
+            txs.push(tx);
+        });
+
+        let progress_handle = thread::spawn(move || {
+            let sleep_ms = Duration::from_millis(250);
+            let timeout_ms = Duration::from_millis(0);
+            let multi = MultiProgress::new();
+
+            let pb_style = ProgressStyle::default_bar()
+                .template("{prefix:8} {bar:40.cyan/blue} {pos}/{len} ({eta}) | {msg}")
+                .unwrap()
+                .progress_chars("=>-");
+            let total: u64 = (n_collect + n_discard).try_into().unwrap();
+
+            // Global Progress bar
+            let global_pb = multi.add(ProgressBar::new((rxs.len() as u64) * total));
+            global_pb.set_style(pb_style.clone());
+            global_pb.set_prefix("Global");
+
+            let mut active: Vec<(usize, ProgressBar)> = (0..rxs.len().min(5))
+                .map(|chain_idx| {
+                    let pb = multi.add(ProgressBar::new(total));
+                    pb.set_style(pb_style.clone());
+                    pb.set_prefix(format!("Chain {chain_idx}"));
+                    (chain_idx, pb)
+                })
+                .collect();
+            let mut next_active = active.len();
+            let mut n_finished = 0;
+            let mut most_recent = vec![None; rxs.len()];
+            let mut total_progress;
+
+            loop {
+                for (i, rx) in rxs.iter().enumerate() {
+                    while let Ok(stats) = rx.recv_timeout(timeout_ms) {
+                        most_recent[i] = Some(stats)
+                    }
+                }
+
+                // Update chain progress bar messages
+                // and compute average acceptance probability
+                let mut to_replace = vec![false; active.len()];
+                let mut avg_p_accept = 0.0;
+                let mut n_available_stats = 0.0;
+                for (vec_idx, (i, pb)) in active.iter().enumerate() {
+                    if let Some(stats) = &most_recent[*i] {
+                        pb.set_position(stats.n);
+                        pb.set_message(format!("p(accept)≈{:.2}", stats.p_accept));
+                        avg_p_accept += stats.p_accept;
+                        n_available_stats += 1.0;
+
+                        if stats.n == total {
+                            to_replace[vec_idx] = true;
+                            n_finished += 1;
+                        }
+                    }
+                }
+                avg_p_accept /= n_available_stats;
+
+                // Update global progress bar
+                total_progress = 0;
+                for stats in most_recent.iter().flatten() {
+                    total_progress += stats.n;
+                }
+                global_pb.set_position(total_progress);
+                let valid: Vec<&ChainStats> = most_recent.iter().flatten().collect();
+                if valid.len() >= 2 {
+                    let rhats = collect_rhat(valid.as_slice());
+                    let max = rhats.max_skipnan();
+                    global_pb.set_message(format!(
+                        "p(accept)≈{:.2} max(rhat)≈{:.2}",
+                        avg_p_accept, max
+                    ))
+                }
+
+                let mut to_remove = vec![];
+                for (i, replace) in to_replace.iter().enumerate() {
+                    if *replace && next_active < most_recent.len() {
+                        let pb = multi.add(ProgressBar::new(total));
+                        pb.set_style(pb_style.clone());
+                        pb.set_prefix(format!("Chain {next_active}"));
+                        active[i] = (next_active, pb);
+                        next_active += 1;
+                    } else if *replace {
+                        to_remove.push(i);
+                    }
+                }
+
+                to_remove.sort();
+                for i in to_remove.iter().rev() {
+                    active.remove(*i);
+                }
+
+                if n_finished >= most_recent.len() {
+                    break;
+                }
+                std::thread::sleep(sleep_ms);
+            }
+        });
+
+        let chain_sample: Vec<Tensor<B, 2>> = thread::scope(|s| {
+            let handles: Vec<thread::ScopedJoinHandle<Tensor<B, 2>>> = chains
+                .iter_mut()
+                .zip(txs)
+                .map(|(chain, tx)| {
+                    s.spawn(|| {
+                        chain
+                            .run_progress(n_collect, n_discard, tx)
+                            .expect("Expected running chain to succeed.")
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| {
+                    h.join()
+                        .expect("Expected thread to succeed in generating observation.")
+                })
+                .collect()
+        });
+        let sample = Tensor::<B, 2>::stack(chain_sample, 0);
+
+        if let Err(e) = progress_handle.join() {
+            eprintln!("Progress bar thread emitted error message: {:?}", e);
+        }
+
+        let sample_f32 = sample.to_data();
+        let view =
+            ArrayView3::<f32>::from_shape(sample.dims(), sample_f32.as_slice().unwrap()).unwrap();
+        let run_stats = RunStats::from(view);
+
+        Ok((sample, run_stats))
     }
 
     /// Sets a new random seed for all chains to ensure reproducibility.
@@ -156,11 +390,7 @@ where
 
 impl<T, B, GTarget> NUTSChain<T, B, GTarget>
 where
-    T: Float
-        + burn::tensor::ElementConversion
-        + burn::tensor::Element
-        + rand_distr::uniform::SampleUniform
-        + num_traits::FromPrimitive,
+    T: Float + ElementConversion + Element + SampleUniform + FromPrimitive,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
     StandardNormal: rand::distributions::Distribution<T>,
@@ -228,12 +458,71 @@ where
 
         for m in 1..(n_collect + n_discard) {
             self.step();
-            sample = sample
-                .clone()
-                .slice_assign([m..m + 1, 0..dim], self.position.clone().unsqueeze());
+
+            if m >= n_discard {
+                sample = sample.slice_assign(
+                    [m - n_discard..m - n_discard + 1, 0..dim],
+                    self.position.clone().unsqueeze(),
+                );
+            }
         }
-        sample = sample.slice([n_discard..]);
         sample
+    }
+
+    fn run_progress(
+        &mut self,
+        n_collect: usize,
+        n_discard: usize,
+        tx: Sender<ChainStats>,
+    ) -> Result<Tensor<B, 2>, Box<dyn Error>> {
+        let (dim, mut sample) = self.init_chain(n_collect, n_discard);
+        // let mut tracker = ChainTracker::new(dim, self.position.clone().to_element::<f32>(|x| x.to_f32()).to_data().as_slice().unwrap());
+        let pos_0: Vec<f32> = self
+            .position
+            .to_data()
+            .iter()
+            .map(|x: T| ToElement::to_f32(&x))
+            .collect();
+        let mut tracker = ChainTracker::new(dim, &pos_0);
+        let mut last = Instant::now();
+        let freq = Duration::from_secs(1);
+        let total = n_discard + n_collect;
+
+        for i in 0..total {
+            self.step();
+            let pos_i: Vec<f32> = self
+                .position
+                .to_data()
+                .iter()
+                .map(|x: T| ToElement::to_f32(&x))
+                .collect();
+            tracker.step(&pos_i).map_err(|e| {
+                let msg = format!(
+                "Chain statistics tracker caused error: {}.\nAborting generation of further observations.",
+                e
+                );
+                println!("{}", msg);
+                msg
+            })?;
+
+            let now = Instant::now();
+            if (now >= last + freq) | (i == total - 1) {
+                if let Err(e) = tx.send(tracker.stats()) {
+                    eprintln!("Sending chain statistics failed: {e}");
+                }
+                last = now;
+            }
+
+            if i >= n_discard {
+                sample = sample.slice_assign(
+                    [i - n_discard..i - n_discard + 1, 0..dim],
+                    self.position.clone().unsqueeze(),
+                );
+            }
+        }
+
+        // TODO: Somehow save state of the chains and enable continuing runs
+        Ok(sample)
     }
 
     fn init_chain(&mut self, n_collect: usize, n_discard: usize) -> (usize, Tensor<B, 2>) {
@@ -241,8 +530,7 @@ where
         self.n_collect = n_collect;
         self.n_discard = n_discard;
 
-        let mut sample = Tensor::<B, 2>::empty([n_collect + n_discard, dim], &B::Device::default());
-
+        let mut sample = Tensor::<B, 2>::empty([n_collect, dim], &B::Device::default());
         sample = sample.slice_assign([0..1, 0..dim], self.position.clone().unsqueeze());
         let mom_0_data: Vec<T> = (&mut self.rng)
             .sample_iter(StandardNormal)
@@ -410,9 +698,9 @@ fn find_reasonable_epsilon<B, T, GTarget>(
     gradient_target: &GTarget,
 ) -> T
 where
-    T: Float + burn::tensor::Element,
+    T: Float + Element,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B> + std::marker::Sync,
+    GTarget: GradientTarget<T, B> + Sync,
 {
     let mut epsilon = T::one();
     let half = T::from(0.5).unwrap();
@@ -500,9 +788,9 @@ fn build_tree<B, T, GTarget>(
     usize,
 )
 where
-    T: Float + burn::tensor::Element,
+    T: Float + Element,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B> + std::marker::Sync,
+    GTarget: GradientTarget<T, B> + Sync,
 {
     if j == 0 {
         let (position_prime, mom_prime, grad_prime, logp_prime) = leapfrog(
@@ -659,7 +947,7 @@ where
 
 fn all_real<B, T>(x: Tensor<B, 1>) -> bool
 where
-    T: Float + burn::tensor::Element,
+    T: Float + Element,
     B: AutodiffBackend,
 {
     x.clone()
@@ -696,7 +984,7 @@ fn leapfrog<B, T, GTarget>(
     gradient_target: &GTarget,
 ) -> (Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>, Tensor<B, 1>)
 where
-    T: Float + burn::tensor::ElementConversion,
+    T: Float + ElementConversion,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B>,
 {
@@ -738,7 +1026,7 @@ mod tests {
 
     impl<T, B> GradientTarget<T, B> for StandardNormal
     where
-        T: Float + Debug + ElementConversion + burn::tensor::Element,
+        T: Float + Debug + ElementConversion + Element,
         B: AutodiffBackend,
     {
         fn unnorm_logp(&self, positions: Tensor<B, 1>) -> Tensor<B, 1> {
@@ -915,6 +1203,33 @@ mod tests {
             ],
             tol,
         );
+    }
+
+    #[test]
+    fn test_progress_1() {
+        let target = Rosenbrock2D {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let initial_positions = init::<f32>(6, 2);
+        let n_collect = 100;
+        let n_discard = 20;
+
+        let mut sampler =
+            NUTS::<_, BackendType, _>::new(target, initial_positions, 0.95).set_seed(42);
+        let (sample, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
+        println!(
+            "NUTS sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
+        );
+        assert_eq!(sample.dims(), [6, n_collect, 2]);
+
+        println!("Statistics: {stats}");
+
+        #[cfg(feature = "csv")]
+        save_csv_tensor(sample, "/tmp/nuts-sample.csv").expect("saving data should succeed")
     }
 
     #[test]
