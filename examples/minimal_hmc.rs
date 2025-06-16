@@ -50,3 +50,10 @@ fn main() {
     // Print the shape of the collected sample.
     println!("Collected sample with shape: {:?}", sample.dims());
 }
+
+#[cfg(test)]
+mod tests {
+    fn test_main() {
+        main();
+    }
+}

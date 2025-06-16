@@ -8,6 +8,26 @@
 
 A compact Rust library for **Markov Chain Monte Carlo (MCMC)** methods with GPU support.
 
+## Overview
+
+This library provides implementations of
+
+- **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
+- **Hamiltonian Monte Carlo (HMC)**: an MCMC method that efficiently samples by simulating Hamiltonian dynamics using gradients of the target distribution.
+- **Gibbs Sampling**: an MCMC method that iteratively samples each variable from its conditional distribution given all other variables.
+- **Metropolis-Hastings**: an MCMC algorithm that samples from a distribution by proposing candidates and probabilistically accepting or rejecting them.
+
+Additional features:
+
+- **Implementations of Common Distributions**: featuring handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
+- **Parallelization**: for running multiple Markov chains in parallel.
+- **Progress Bars**: that show progress of MCMC algorithms with convergence
+  statistics and acceptance rates.
+- **Support for Discrete & Continuous Distributions**: for example, Metropolis-Hastings- and Gibbs Samplers can sample from continuous and discrete target distributions.
+- **Generic Datatypes**: enable sampling of vectors with various integer or floating point types.
+- **Standard Convergence Diagnostics**: estimate the effective sample size and Rhat.
+
+
 ## Installation
 
 To add the latest version of mini-mcmc to your project:
@@ -346,52 +366,35 @@ use mini_mcmc::distributions::Rosenbrock2D;
 use mini_mcmc::nuts::NUTS;
 
 fn main() {
-    // Use the CPU backend (NdArray) wrapped in Autodiff.
     type BackendType = Autodiff<burn::backend::NdArray>;
 
-    // Create the 2D Rosenbrock target (a = 1, b = 100).
+    // Create the 2D Rosenbrock target (a = 1, b = 100). 
+    // To sample from a custom distribution implement 
+    // mini_mcmc::distributions::GradientTarget for your CustomStruct
     let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
 
-    // Define 4 independent chains all initialized to (1.0, 2.0).
     let initial_positions = init::<f32>(4, 2);
-
-    // Configure and seed the NUTS sampler with target_accept_p = 0.95.
-    let mut sampler = NUTS::new(target, initial_positions, 0.95)
-        .set_seed(42);
-
-    // Number of samples to collect and to discard (burn-in).
+    let mut sampler = NUTS::new(target, initial_positions, 0.95);
     let n_collect = 400;
     let n_discard = 400;
 
-    // Run the sampler for n_discard burn-in steps plus n_collect samples.
+    // Run the sampler for n_discard burn-in steps, then collect n_collect observations.
     let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
+
+    assert_eq!(sample.dims(), [4, 400, 2]);
+
+    // Alternative: Run with progress bars and return additional statistics
+    // let (sample, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
+    // println!("{stats}");
+
 }
 ```
 
 You can find this example with some additional logging in [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs).
 
 
-## Overview
-
-This library provides implementations of
-
-- **Hamiltonian Monte Carlo (HMC)**: an MCMC method that efficiently samples by simulating Hamiltonian dynamics using gradients of the target distribution.
-- **Metropolis-Hastings**: an MCMC algorithm that samples from a distribution by proposing candidates and probabilistically accepting or rejecting them.
-- **Gibbs Sampling**: an MCMC method that iteratively samples each variable from its conditional distribution given all other variables.
-
-Additional features:
-
-- **Implementations of Common Distributions**: featuring handy Gaussian and isotropic Gaussian implementations, along with traits for defining custom log-prob functions.
-- **Parallelization**: for running multiple Markov chains in parallel.
-- **Progress Bars**: that show progress of MCMC algorithms with convergence
-  statistics and acceptance rates.
-- **Support for Discrete & Continuous Distributions**: for example, Metropolis-Hastings- and Gibbs Samplers can sample from continuous and discrete target distributions.
-- **Generic Datatypes**: enable sampling of vectors with various integer or floating point types.
-- **Standard Convergence Diagnostics**: estimate the effective sample size and Rhat.
-
 ## Roadmap
 
-- **No-U-Turn Sampler (NUTS)**: An extension of HMC that removes the need to choose path lengths.
 - **Rank Normalized Rhat**: Modern convergence diagnostic, see [paper](https://arxiv.org/abs/1903.08008).
 - **Ensemble Slice Sampling (ESS)**: Efficient gradient-free sampler, see [paper](https://arxiv.org/abs/2002.06212).
 - **Effective Size Estimation**: Online estimation of effective sample size for
@@ -401,8 +404,10 @@ Additional features:
 
 - **`src/lib.rs`**: The main library entry point—exports MCMC functionality.
 - **`src/distributions.rs`**: Target distributions (e.g., multivariate Gaussians) and proposal distributions.
-- **`src/metropolis_hastings.rs`**: The Metropolis-Hastings algorithm implementation.
+- **`src/nuts.rs`**: The NUTS algorithm implementation.
+- **`src/hmc.rs`**: The HMC algorithm implementation.
 - **`src/gibbs.rs`**: The Gibbs sampling algorithm implementation.
+- **`src/metropolis_hastings.rs`**: The Metropolis-Hastings algorithm implementation.
 - **`examples/`**: Examples on how to use this library.
 - **`src/io/arrow.rs`**: Helper functions for saving samples as Apache Arrow files. Enable via `arrow` feature.
 - **`src/io/parquet.rs`**: Helper functions for saving samples as Apache Parquet files. Enable via `parquet` feature.

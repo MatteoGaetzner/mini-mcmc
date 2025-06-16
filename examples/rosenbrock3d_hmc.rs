@@ -164,3 +164,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    fn test_main() {
+        main();
+    }
+}

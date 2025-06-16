@@ -20,3 +20,10 @@ fn main() {
     assert_eq!(sample.shape()[0], 4);
     assert_eq!(sample.shape()[1], 1000);
 }
+
+#[cfg(test)]
+mod tests {
+    fn test_main() {
+        main();
+    }
+}

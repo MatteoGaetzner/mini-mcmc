@@ -144,20 +144,21 @@ where
     ///
     /// ```rust
     /// # use burn::backend::{Autodiff, NdArray};
+    /// # use burn::prelude::Tensor;
     /// # use mini_mcmc::nuts::NUTS;
+    /// # use mini_mcmc::core::init;
     /// # use mini_mcmc::distributions::DiffableGaussian2D;
     /// type B = Autodiff<NdArray>;
     ///
     /// // As above, construct the sampler
-    /// let gauss = DiffableGaussian2D::new([0.0, 0.0], [[1.0,0.0],[0.0,1.0]]);
-    /// let mut sampler = NUTS::new(gauss, vec![vec![0.0,0.0]; 2], 0.8)
-    ///     .set_seed(2025);
+    /// let gauss = DiffableGaussian2D::new([0.0_f32, 0.0], [[1.0,0.0],[0.0,1.0]]);
+    /// let mut sampler = NUTS::new(gauss, init::<f32>(2, 2), 0.8);
     ///
-    /// // Discard 50 warm-up steps, then collect 150 samples per chain
-    /// let samples = sampler.run(150, 50);
+    /// // Discard 50 warm-up steps, then collect 150 observations per chain
+    /// let sample: Tensor<B, 3> = sampler.run(150, 50);
     ///
-    /// // samples.dims() == [2 chains, 150 samples, 2 dimensions]
-    /// assert_eq!(samples.dims(), [2, 150, 2]);
+    /// // sample.dims() == [2 chains, 150 observations, 2 dimensions]
+    /// assert_eq!(sample.dims(), [2, 150, 2]);
     /// ```
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
         let chain_samples: Vec<Tensor<B, 2>> = self
@@ -185,7 +186,7 @@ where
     ///
     /// let target = Rosenbrock2D { a: 1.0, b: 100.0 };
     /// let init   = init::<f64>(4, 2);    // 4 chains in 2D
-    /// let mut sampler = NUTS::<f64, B, RosenBrock2D>::new(target, init, 0.9);
+    /// let mut sampler = NUTS::<f64, B, Rosenbrock2D<f64>>::new(target, init, 0.9);
     /// let (samples, stats) = sampler.run_progress(100, 20).unwrap();
     /// ```
     ///
