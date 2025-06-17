@@ -1,4 +1,4 @@
-//! Parallel No-U-Turn Sampler (NUTS).
+//! No-U-Turn Sampler (NUTS).
 //!
 //! A parallel implementation of NUTS running independent Markov chains via Rayon.
 //!

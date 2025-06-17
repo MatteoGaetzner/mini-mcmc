@@ -1,7 +1,7 @@
 //! # Mini MCMC
 //!
-//! A compact Rust library offering **Markov Chain Monte Carlo (MCMC)** methods,
-//! including **Hamiltonian Monte Carlo (HMC)**, **Metropolis–Hastings**, and
+//! A compact Rust library offering **Markov Chain Monte Carlo (MCMC)** methods, including
+//! **No-U-Turn Sampler (NUTS)**, **Hamiltonian Monte Carlo (HMC)**, **Metropolis–Hastings**, and
 //! **Gibbs Sampling** for both discrete and continuous targets.
 //!
 //! ## Getting Started
@@ -12,32 +12,49 @@
 //! ```
 //!
 //! The library provides three main sampling approaches:
-//! 1. **Metropolis-Hastings**: For general-purpose sampling. You need to provide:
-//!    - A target distribution implementing the `Target` trait
-//!    - A proposal distribution implementing the `Proposal` trait
+//! 1. **No-U-Turn Sampler (NUTS)**: For continuous distributions with gradients. You need to provide:
+//!    - A target distribution implementing the `GradientTarget` trait
 //! 2. **Hamiltonian Monte Carlo (HMC)**: For continuous distributions with gradients. You need to provide:
 //!    - A target distribution implementing the `BatchedGradientTarget` trait
-//! 3. **Gibbs Sampling**: For sampling when conditional distributions are available. You need to provide:
+//! 3. **Metropolis-Hastings**: For general-purpose sampling. You need to provide:
+//!    - A target distribution implementing the `Target` trait
+//!    - A proposal distribution implementing the `Proposal` trait
+//! 4. **Gibbs Sampling**: For sampling when conditional distributions are available. You need to provide:
 //!    - A distribution implementing the `Conditional` trait
 //!
-//! ## Example 1: Sampling a 2D Gaussian (Metropolis–Hastings)
+//! ## Example 1: Sampling a 2D Rosenbrock (NUTS)
 //!
 //! ```rust
-//! use mini_mcmc::core::{ChainRunner, init};
-//! use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
-//! use mini_mcmc::metropolis_hastings::MetropolisHastings;
-//! use ndarray::{arr1, arr2};
+//! use burn::backend::Autodiff;
+//! use burn::prelude::Tensor;
+//! use mini_mcmc::core::init;
+//! use mini_mcmc::distributions::Rosenbrock2D;
+//! use mini_mcmc::nuts::NUTS;
 //!
-//! let target = Gaussian2D {
-//!     mean: arr1(&[0.0, 0.0]),
-//!     cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
-//! };
-//! let proposal = IsotropicGaussian::new(1.0);
-//! let initial_state = [0.0, 0.0];
+//! // CPU backend with autodiff (NdArray).
+//! type BackendType = Autodiff<burn::backend::NdArray>;
 //!
-//! let mut mh = MetropolisHastings::new(target, proposal, init(4, 2));
-//! let sample = mh.run(1000, 100).unwrap();
-//! println!("Metropolis–Hastings sample shape: {:?}", sample.shape());
+//! // 2D Rosenbrock target (a=1, b=100).
+//! let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
+//!
+//! // 4 independent chains starting at (1.0,2.0).
+//! let initial_positions = init::<f32>(4, 2);
+//!
+//! // NUTS with 0.95 target‐accept and a fixed seed.
+//! let mut sampler = NUTS::new(target, initial_positions, 0.95)
+//!     .set_seed(42);
+//!
+//! // 400 burn-in + 400 samples.
+//! let n_collect = 400;
+//! let n_discard = 400;
+//!
+//! let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
+//!
+//! println!(
+//!     "Collected {} chains × {} samples × 2 dims",
+//!     sample.dims()[0],
+//!     sample.dims()[1],
+//! );
 //! ```
 //!
 //! ## Example 2: Sampling a 3D Rosenbrock (HMC)
@@ -102,7 +119,30 @@
 //! println!("Collected sample with shape: {:?}", sample.dims());
 //! ```
 //!
-//! ## Example 3: Sampling a Poisson Distribution (Discrete)
+//!
+//! See [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs) for the full version with diagnostics.
+//!
+//! ## Example 3: Sampling a 2D Gaussian (Metropolis–Hastings, Continuous)
+//!
+//! ```rust
+//! use mini_mcmc::core::{ChainRunner, init};
+//! use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
+//! use mini_mcmc::metropolis_hastings::MetropolisHastings;
+//! use ndarray::{arr1, arr2};
+//!
+//! let target = Gaussian2D {
+//!     mean: arr1(&[0.0, 0.0]),
+//!     cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
+//! };
+//! let proposal = IsotropicGaussian::new(1.0);
+//! let initial_state = [0.0, 0.0];
+//!
+//! let mut mh = MetropolisHastings::new(target, proposal, init(4, 2));
+//! let sample = mh.run(1000, 100).unwrap();
+//! println!("Metropolis–Hastings sample shape: {:?}", sample.shape());
+//! ```
+//!
+//! ## Example 4: Sampling a Poisson Distribution (Metropolis-Hastings, Discrete)
 //!
 //! ```rust
 //! use mini_mcmc::core::{ChainRunner, init};
@@ -150,6 +190,7 @@
 //!             f64::NEG_INFINITY
 //!         }
 //!     }
+//!
 //!     fn set_seed(self, _seed: u64) -> Self {
 //!         self
 //!     }
@@ -168,56 +209,18 @@
 //! println!("Poisson sample shape: {:?}", sample.shape());
 //! ```
 //!
-//! //! ## Example 4: Sampling a 2D Rosenbrock (NUTS)
-//!
-//! ```rust
-//! use burn::backend::Autodiff;
-//! use burn::prelude::Tensor;
-//! use mini_mcmc::core::init;
-//! use mini_mcmc::distributions::Rosenbrock2D;
-//! use mini_mcmc::nuts::NUTS;
-//!
-//! // CPU backend with autodiff (NdArray).
-//! type BackendType = Autodiff<burn::backend::NdArray>;
-//!
-//! // 2D Rosenbrock target (a=1, b=100).
-//! let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
-//!
-//! // 4 independent chains starting at (1.0,2.0).
-//! let initial_positions = init::<f32>(4, 2);
-//!
-//! // NUTS with 0.95 target‐accept and a fixed seed.
-//! let mut sampler = NUTS::new(target, initial_positions, 0.95)
-//!     .set_seed(42);
-//!
-//! // 400 burn-in + 400 samples.
-//! let n_collect = 400;
-//! let n_discard = 400;
-//!
-//! let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
-//!
-//! println!(
-//!     "Collected {} chains × {} samples × 2 dims",
-//!     sample.dims()[0],
-//!     sample.dims()[1],
-//! );
-//! ```
-//!
-//! See [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs) for the full version with diagnostics.
-//!
 //! For more complete implementations (including Gibbs sampling and I/O helpers),
 //! see the `examples/` directory.
 //!
 //! ## Features
 //! - **Parallel Chains** for improved throughput
-//! - **Progress Indicators** (acceptance rates, iteration counts)
+//! - **Progress Indicators** (acceptance rates, max Rhat, iteration counts)
 //! - **Common Distributions** (e.g. Gaussian) plus easy traits for custom log‐prob
-//! - **Optional I/O** (CSV, Arrow, Parquet) and GPU sampling (WGPU)
+//! - **Optional I/O** (CSV, Arrow, Parquet) and GPU support (WGPU)
 //! - **Effective Sample Size (ESS)** estimation following STAN's methodology
 //! - **R-hat Diagnostics** for convergence monitoring
 //!
 //! ## Roadmap
-//! - No-U-Turn Sampler (NUTS)
 //! - Rank-Normalized R-hat diagnostics
 //! - Ensemble Slice Sampling (ESS)
 

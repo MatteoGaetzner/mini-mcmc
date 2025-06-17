@@ -1,17 +1,18 @@
 /*!
 Traits for defining continuous and discrete proposal- and target distributions.
-Includes an implementations of commonly used distributions.
+Includes implementations of commonly used distributions.
 
 This module is generic over the floating-point precision (e.g. `f32` or `f64`)
 using [`num_traits::Float`]. It also defines several traits:
-- [`Target`] for densities we want to sample from,
+- [`Target`] for densities or PMFs we want to sample from with **Metropolis-Hastings**,
+- [`GradientTarget`] for densities we want to sample from with **NUTS**,
+- [`BatchedGradientTarget`] for densities we want to sample from with **HMC**,
+- [`Conditional`] for densities or PMFs we want to sample from with **Gibbs Sampling**,
 - [`Proposal`] for proposal mechanisms,
-- [`Normalized`] for distributions that can compute a fully normalized log-prob,
+- [`Normalized`] for distributions that can compute a fully normalized log probability,
 - [`Discrete`] for distributions over finite sets.
 
-# Examples
-
-### Continuous Distributions
+## Examples
 
 ```rust
 use mini_mcmc::distributions::{

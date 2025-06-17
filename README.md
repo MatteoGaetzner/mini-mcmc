@@ -386,11 +386,11 @@ fn main() {
     // Alternative: Run with progress bars and return additional statistics
     // let (sample, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
     // println!("{stats}");
-
 }
 ```
 
 You can find this example with some additional logging in [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs).
+
 
 ## Roadmap
 
