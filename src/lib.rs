@@ -175,7 +175,7 @@
 //!         if x == 0 {
 //!             vec![1]
 //!         } else {
-//!             let step_up = rand::thread_rng().gen_bool(0.5);
+//!             let step_up = rand::rng().gen_bool(0.5);
 //!             vec![if step_up { x + 1 } else { x - 1 }]
 //!         }
 //!     }
@@ -230,7 +230,6 @@ pub mod distributions;
 pub mod gibbs;
 pub mod hmc;
 pub mod io;
-pub mod ks_test;
 pub mod metropolis_hastings;
 pub mod nuts;
 pub mod stats;

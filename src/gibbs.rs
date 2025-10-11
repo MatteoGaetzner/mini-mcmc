@@ -15,7 +15,7 @@ functions (e.g. via the [`crate::core::ChainRunner`] extension) work with Gibbs 
 
 use ndarray::LinalgScalar;
 use rand::rngs::SmallRng;
-use rand::{thread_rng, Rng, SeedableRng};
+use rand::{rng, Rng, SeedableRng};
 
 use crate::core::{HasChains, MarkovChain};
 use crate::distributions::Conditional;
@@ -76,7 +76,7 @@ where
     /// assert_eq!(chain.current_state, vec![0.0, 0.0]);
     /// ```
     pub fn new(target: D, initial_state: &[T]) -> Self {
-        let seed = rand::thread_rng().gen::<u64>();
+        let seed = rand::rng().random::<u64>();
         Self {
             target,
             current_state: initial_state.to_vec(),
@@ -157,7 +157,7 @@ where
     /// assert_eq!(sampler.chains.len(), 4);
     /// ```
     pub fn new(target: D, initial_states: Vec<Vec<T>>) -> Self {
-        let seed = thread_rng().gen::<u64>();
+        let seed = rng().random::<u64>();
 
         Self {
             target: target.clone(),
@@ -274,7 +274,7 @@ mod tests {
                     (1.0 - self.pi0) * MixtureConditional::normal_pdf(x, self.mu1, self.sigma1);
                 let total = p0 + p1;
                 let prob_z1 = if total > 0.0 { p1 / total } else { 0.5 };
-                if self.rng.gen::<f64>() < prob_z1 {
+                if self.rng.random::<f64>() < prob_z1 {
                     1.0
                 } else {
                     0.0
@@ -389,15 +389,15 @@ mod tests {
     #[test]
     fn test_gibbs_sampler_mixture_1() {
         assert_mixture_simulation(
-            -2.0,   // mu0
-            1.0,    // sigma0
-            3.0,    // mu1
-            1.5,    // sigma1
-            0.5,    // pi0
-            4,      // n_chains
-            40_000, // n_collect
-            1000,   // n_discard
-            42,     // seed
+            -2.0,    // mu0
+            1.0,     // sigma0
+            3.0,     // mu1
+            1.5,     // sigma1
+            0.5,     // pi0
+            4,       // n_chains
+            100_000, // n_collect
+            10_000,  // n_discard
+            42,      // seed
         );
     }
 

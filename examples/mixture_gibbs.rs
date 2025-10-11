@@ -9,7 +9,7 @@ use plotly::{
     common::{MarkerSymbol, Mode},
     Layout, Scatter,
 };
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use std::error::Error;
 
 // Define a conditional distribution for a two-component Gaussian mixture.
@@ -47,11 +47,11 @@ impl Conditional<f64> for MixtureConditional {
             if z < 0.5 {
                 // Mode 0: x ~ N(mu0, sigma0²)
                 let normal = rand_distr::Normal::new(self.mu0, self.sigma0).unwrap();
-                rand::thread_rng().sample(normal)
+                rand::rng().sample(normal)
             } else {
                 // Mode 1: x ~ N(mu1, sigma1²)
                 let normal = rand_distr::Normal::new(self.mu1, self.sigma1).unwrap();
-                rand::thread_rng().sample(normal)
+                rand::rng().sample(normal)
             }
         } else if i == 1 {
             // Sample z conditionally on x.
@@ -60,7 +60,7 @@ impl Conditional<f64> for MixtureConditional {
             let p1 = (1.0 - self.pi0) * MixtureConditional::normal_pdf(x, self.mu1, self.sigma1);
             let total = p0 + p1;
             let prob_z1 = if total > 0.0 { p1 / total } else { 0.5 };
-            if rand::thread_rng().gen::<f64>() < prob_z1 {
+            if rand::rng().random::<f64>() < prob_z1 {
                 1.0
             } else {
                 0.0
@@ -94,7 +94,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     const N_CHAINS: usize = 4;
     const BURNIN: usize = 1000;
     const TOTAL_STEPS: usize = 1100;
-    let seed: u64 = thread_rng().gen();
+    let seed: u64 = rng().random();
 
     let mut sampler = GibbsSampler::new(conditional, init_det(N_CHAINS, 2)).set_seed(seed);
 
@@ -173,12 +173,12 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::main;
     use std::path::Path;
 
     #[test]
     fn test_main() {
-        main().expect("Main should execute without error");
+        main().expect("main should succeed.");
         assert!(
             Path::new("gibbs_scatter_plot.html").exists(),
             "Expected gibbs_scatter_plot.html to exist"

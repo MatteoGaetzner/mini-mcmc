@@ -27,7 +27,6 @@ Additional features:
 - **Generic Datatypes**: enable sampling of vectors with various integer or floating point types.
 - **Standard Convergence Diagnostics**: estimate the effective sample size and Rhat.
 
-
 ## Installation
 
 To add the latest version of mini-mcmc to your project:
@@ -44,7 +43,6 @@ Then `use mini_mcmc` in your Rust code.
 use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Gaussian2D, IsotropicGaussian};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
-use mini_mcmc::stats::RunStats;
 use ndarray::{arr1, arr2};
 
 fn main() {
@@ -80,7 +78,7 @@ use mini_mcmc::core::ChainRunner;
 use mini_mcmc::distributions::{Proposal, Target};
 use mini_mcmc::metropolis_hastings::MetropolisHastings;
 use plotly::{Bar, Layout};
-use rand::Rng; // for thread_rng
+use rand::Rng;
 use std::error::Error;
 
 /// A Poisson(\lambda) distribution, seen as a discrete target over k=0,1,2,...
@@ -117,7 +115,7 @@ impl Proposal<usize, f64> for NonnegativeProposal {
             vec![1]
         } else {
             // 50% chance to do x+1, 50% x-1
-            let flip = rand::thread_rng().gen_bool(0.5);
+            let flip = rand::rng().random_bool(0.5);
             let next = if flip { x + 1 } else { x - 1 };
             vec![next]
         }
@@ -280,7 +278,6 @@ You can also find this example at `examples/poisson_mh.rs`.
   The log form of it is $\log p(k) = -\lambda + k \log \lambda - \log k!$.
 
 - **`NonnegativeProposal`** provides a random-walk in the set $\{0,1,2,\dots\}$:
-
   - If $x=0$, propose $1$ with probability $1$.
   - If $x>0$, propose $x+1$ or $x-1$ with probability $0.5$ each.
   - `logp` returns $\ln(0.5)$ for the possible moves, or $-\infty$ for
@@ -326,8 +323,8 @@ where
         // Assume positions has shape [n_chains, d] with d = 3.
         let k = positions.dims()[0] as i64;
         let n = positions.dims()[1] as i64;
-        let low = positions.clone().slice([(0, k), (0, n - 1)]);
-        let high = positions.clone().slice([(0, k), (1, n)]);
+        let low = positions.clone().slice([0..k, 0..n - 1]);
+        let high = positions.clone().slice([0..k, 1..n]);
         let term_1 = (high - low.clone().powi_scalar(2))
             .powi_scalar(2)
             .mul_scalar(100);
@@ -368,8 +365,8 @@ use mini_mcmc::nuts::NUTS;
 fn main() {
     type BackendType = Autodiff<burn::backend::NdArray>;
 
-    // Create the 2D Rosenbrock target (a = 1, b = 100). 
-    // To sample from a custom distribution implement 
+    // Create the 2D Rosenbrock target (a = 1, b = 100).
+    // To sample from a custom distribution implement
     // mini_mcmc::distributions::GradientTarget for your CustomStruct
     let target = Rosenbrock2D { a: 1.0_f32, b: 100.0_f32 };
 
@@ -390,7 +387,6 @@ fn main() {
 ```
 
 You can find this example with some additional logging in [`examples/minimal_nuts.rs`](examples/minimal_nuts.rs).
-
 
 ## Roadmap
 
@@ -465,8 +461,6 @@ and potentially further metrics in the future.
 
 The NUTS implementation in this crate is inspired by and borrows heavily from Mathieu Fouesneau’s reference implementation ([mfouesneau/NUTS](https://github.com/mfouesneau/NUTS)) and from the original algorithm as described in Hoffman & Gelman, "The No-U-Turn Sampler: Adaptively Setting Path Lengths in Hamiltonian Monte Carlo" (JMLR, 2014).
 
-
 ## License
 
-Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.  
-This project includes code from the `kolmogorov_smirnov` project, licensed under Apache 2.0 as noted in [NOTICE](NOTICE).
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.

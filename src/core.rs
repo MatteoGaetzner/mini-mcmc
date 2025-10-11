@@ -395,7 +395,7 @@ pub fn init<T>(n: usize, d: usize) -> Vec<Vec<T>>
 where
     T: Float + FromPrimitive,
 {
-    let rng = SmallRng::from_entropy();
+    let rng = SmallRng::from_os_rng();
     _init(n, d, rng)
 }
 

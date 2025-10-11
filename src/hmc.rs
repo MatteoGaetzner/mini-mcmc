@@ -19,7 +19,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use num_traits::Float;
 use rand::prelude::*;
 use rand::Rng;
-use rand_distr::StandardNormal;
+use rand_distr::{StandardNormal, StandardUniform};
 use std::error::Error;
 
 /// A data-parallel Hamiltonian Monte Carlo (HMC) sampler.
@@ -65,8 +65,8 @@ where
         + num_traits::FromPrimitive,
     B: AutodiffBackend,
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
-    StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    StandardNormal: rand::distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
 {
     /// Create a new data-parallel HMC sampler.
     ///
@@ -97,7 +97,7 @@ where
             [n_chains, dim],
         );
         let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
-        let rng = SmallRng::seed_from_u64(thread_rng().gen::<u64>());
+        let rng = SmallRng::seed_from_u64(rand::rng().random::<u64>());
         Self {
             target,
             step_size,
@@ -354,7 +354,7 @@ where
         // Draw a uniform random number for each chain.
         let mut uniform_data = Vec::with_capacity(n_chains);
         for _ in 0..n_chains {
-            uniform_data.push(self.rng.gen::<T>());
+            uniform_data.push(self.rng.random::<T>());
         }
         let uniform = Tensor::<B, 1>::random(
             Shape::new([n_chains]),
@@ -400,7 +400,6 @@ where
         mut mom: Tensor<B, 2>,
     ) -> (Tensor<B, 2>, Tensor<B, 2>, Tensor<B, 1>) {
         let half = T::from(0.5).unwrap();
-        // dbg!(&pos, &mom);
         for _step_i in 0..self.n_leapfrog {
             // Detach pos to ensure it's AD-enabled for the gradient computation.
             pos = pos.detach().require_grad();

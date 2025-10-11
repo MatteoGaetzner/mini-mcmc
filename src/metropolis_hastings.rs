@@ -116,7 +116,7 @@ where
     Q: Proposal<S, T> + std::clone::Clone + Send,
     T: Float + Send,
     S: Clone + std::cmp::PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::StandardUniform: rand_distr::Distribution<T>,
 {
     /**
     Constructs a new Metropolis-Hastings sampler with a given target and proposal,
@@ -199,7 +199,7 @@ where
     Q: Proposal<S, T> + Clone + Send,
     T: Float + Send,
     S: Clone + PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::StandardUniform: rand_distr::Distribution<T>,
 {
     /// The concrete chain type used by the sampler.
     type Chain = MHMarkovChain<S, T, D, Q>;
@@ -219,7 +219,7 @@ where
     Q: Proposal<S, T> + Clone,
     S: Clone + std::cmp::PartialEq + num_traits::Zero,
     T: Float,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::StandardUniform: rand_distr::Distribution<T>,
 {
     /**
     Creates a new Metropolis–Hastings chain.
@@ -250,7 +250,7 @@ where
             target,
             proposal,
             current_state: initial_state,
-            rng: SmallRng::from_entropy(),
+            rng: SmallRng::from_os_rng(),
             phantom: PhantomData,
         }
     }
@@ -262,7 +262,7 @@ where
     Q: Proposal<T, F> + Clone,
     T: Clone + PartialEq + num_traits::Zero,
     F: Float,
-    rand_distr::Standard: rand_distr::Distribution<F>,
+    rand_distr::StandardUniform: rand_distr::Distribution<F>,
 {
     /**
     Performs one Metropolis–Hastings update step.
@@ -307,7 +307,7 @@ where
         let log_q_forward = self.proposal.logp(&self.current_state, &proposed);
         let log_q_backward = self.proposal.logp(&proposed, &self.current_state);
         let log_accept_ratio = (proposed_lp + log_q_backward) - (current_lp + log_q_forward);
-        let u: F = self.rng.gen();
+        let u: F = self.rng.random();
         if log_accept_ratio > u.ln() {
             self.current_state = proposed;
         }
@@ -339,7 +339,7 @@ mod tests {
         const BURNIN: usize = 500;
         const SEED: u64 = 42;
 
-        assert!(n_chains > 0 && sample_size > 0 && sample_size % n_chains == 0);
+        assert!(n_chains > 0 && sample_size > 0 && sample_size.is_multiple_of(n_chains));
 
         // Target distribution
         let target = Gaussian2D {
@@ -387,7 +387,7 @@ mod tests {
 
     #[test]
     fn test_3_chains() {
-        run_gaussian_2d_test(3000, 3, false);
+        run_gaussian_2d_test(6000, 3, false);
     }
 
     #[test]
@@ -397,7 +397,7 @@ mod tests {
 
     #[test]
     fn test_progress_3_chains() {
-        run_gaussian_2d_test(3000, 3, true);
+        run_gaussian_2d_test(6000, 3, true);
     }
 
     #[test]

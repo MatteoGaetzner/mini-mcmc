@@ -49,7 +49,7 @@ use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use rand_distr::{Distribution, Normal};
+use rand_distr::{Distribution, Normal, StandardUniform};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
@@ -352,7 +352,7 @@ impl<T: Float> IsotropicGaussian<T> {
     pub fn new(std: T) -> Self {
         Self {
             std,
-            rng: SmallRng::from_entropy(),
+            rng: SmallRng::from_os_rng(),
         }
     }
 }
@@ -435,17 +435,17 @@ impl<T: Float + std::ops::AddAssign> Categorical<T> {
         let normalized: Vec<T> = probs.into_iter().map(|p| p / sum).collect();
         Self {
             probs: normalized,
-            rng: SmallRng::from_entropy(),
+            rng: SmallRng::from_os_rng(),
         }
     }
 }
 
 impl<T: Float + std::ops::AddAssign> Discrete<T> for Categorical<T>
 where
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    StandardUniform: rand::distr::Distribution<T>,
 {
     fn sample(&mut self) -> usize {
-        let r: T = self.rng.gen();
+        let r: T = self.rng.random();
         let mut cum: T = T::zero();
         let mut k = self.probs.len() - 1;
         for (i, &p) in self.probs.iter().enumerate() {
@@ -469,7 +469,7 @@ where
 
 impl<T: Float + AddAssign> Target<usize, T> for Categorical<T>
 where
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    rand_distr::StandardUniform: rand_distr::Distribution<T>,
 {
     fn unnorm_logp(&self, position: &[usize]) -> T {
         <Self as Discrete<T>>::logp(self, position[0])

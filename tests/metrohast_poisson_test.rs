@@ -55,7 +55,7 @@ mod tests {
     impl PoissonRandomWalk {
         pub fn new() -> Self {
             Self {
-                rng: SmallRng::from_entropy(),
+                rng: SmallRng::from_os_rng(),
             }
         }
     }
@@ -63,7 +63,7 @@ mod tests {
     impl Proposal<i32, f64> for PoissonRandomWalk {
         fn sample(&mut self, current: &[i32]) -> Vec<i32> {
             // Move +1 or -1 with 50% chance, but disallow going below 0.
-            let step = if self.rng.gen_bool(0.5) { 1 } else { -1 };
+            let step = if self.rng.random_bool(0.5) { 1 } else { -1 };
             let new_state = current[0] + step;
             if new_state < 0 {
                 // Reflect instead of going negative (or could do clamp)
@@ -188,7 +188,7 @@ mod tests {
         pub fn new(n: i32) -> Self {
             Self {
                 n,
-                rng: SmallRng::from_entropy(),
+                rng: SmallRng::from_os_rng(),
             }
         }
     }
@@ -196,7 +196,7 @@ mod tests {
     impl Proposal<i32, f64> for BinomialRandomWalk {
         fn sample(&mut self, current: &[i32]) -> Vec<i32> {
             // ±1 random walk, clamped to [0..n]
-            let step = if self.rng.gen_bool(0.5) { 1 } else { -1 };
+            let step = if self.rng.random_bool(0.5) { 1 } else { -1 };
             let new_val = current[0] + step;
             vec![new_val.max(0).min(self.n)]
         }

@@ -819,7 +819,7 @@ mod tests {
         let mut rng = SmallRng::seed_from_u64(42);
         for mut row in data.rows_mut() {
             for elem in row.iter_mut() {
-                *elem = rng.gen::<f32>(); // generates uniform random number between 0 and 1
+                *elem = rng.random::<f32>(); // generates uniform random number between 0 and 1
             }
         }
         let data = data
@@ -842,13 +842,13 @@ mod tests {
         // Write header row
         writeln!(file, "length,rep,time,algorithm").expect("Unable to write CSV header");
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for exp in 0..10 {
             let n = 1 << exp; // 2^exp
             for rep in 1..=10 {
                 // Generate random data of size (n x 1)
-                let sample_data: Vec<f32> = (0..n * 1000).map(|_| rng.gen()).collect();
+                let sample_data: Vec<f32> = (0..n * 1000).map(|_| rng.random()).collect();
                 let sample = Array2::from_shape_vec((n, 1000), sample_data)
                     .expect("Failed to create Array2");
 

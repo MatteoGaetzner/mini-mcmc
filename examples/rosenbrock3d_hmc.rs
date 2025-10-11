@@ -127,7 +127,7 @@ where
     Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+fn run_demo() -> Result<(), Box<dyn Error>> {
     // Use the CPU backend (NdArray) wrapped in Autodiff.
     type BackendType = Autodiff<burn::backend::NdArray>;
 
@@ -165,9 +165,16 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn main() {
+    run_demo().expect("run_demo should succeed.")
+}
+
 #[cfg(test)]
 mod tests {
+    use super::run_demo;
+
+    #[test]
     fn test_main() {
-        main();
+        run_demo().expect("run_demo should succeed");
     }
 }

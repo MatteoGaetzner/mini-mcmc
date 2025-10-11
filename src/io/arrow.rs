@@ -153,7 +153,6 @@ mod tests {
         let mut reader = FileReader::try_new(file, None).unwrap();
         // Should have exactly one batch, with 0 rows
         if let Some(Ok(batch)) = reader.next() {
-            dbg!(&batch);
             assert_eq!(batch.num_rows(), 0);
             assert_eq!(batch.num_columns(), 2);
         } else {
@@ -237,7 +236,6 @@ mod tests {
         assert!(reader.next().is_none());
 
         // Check shape: 4 rows, columns = chain, observation, dim_0, dim_1 => total 4 columns
-        dbg!(batch.clone());
         assert_eq!(batch.num_rows(), 4);
         assert_eq!(batch.num_columns(), 4);
 

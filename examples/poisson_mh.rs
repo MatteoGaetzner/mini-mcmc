@@ -39,7 +39,7 @@ impl Proposal<usize, f64> for NonnegativeProposal {
             vec![1]
         } else {
             // 50% chance to do x+1, 50% x-1
-            let flip = rand::thread_rng().gen_bool(0.5);
+            let flip = rand::rng().random_bool(0.5);
             let next = if flip { x + 1 } else { x - 1 };
             vec![next]
         }
@@ -194,10 +194,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::main;
+
     #[test]
     fn test_main() {
-        main().expect("Expected main to not return an error.");
+        main().expect("main should succeed.");
         assert!(
             std::path::Path::new("poisson_distribution.html").exists(),
             "Expected poisson_distribution.html to exist."

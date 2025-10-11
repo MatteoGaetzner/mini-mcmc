@@ -53,7 +53,7 @@ use num_traits::{Float, FromPrimitive};
 use rand::prelude::*;
 use rand::Rng;
 use rand_distr::uniform::SampleUniform;
-use rand_distr::{Exp1, StandardNormal};
+use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
 /// No-U-Turn Sampler (NUTS).
@@ -72,8 +72,8 @@ where
     T: Float + ElementConversion + Element + SampleUniform + FromPrimitive,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + Sync,
-    StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    StandardNormal: rand::distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
     rand_distr::Exp1: rand_distr::Distribution<T>,
 {
     /// The vector of independent Markov chains.
@@ -85,8 +85,8 @@ where
     T: Float + ElementConversion + Element + SampleUniform + FromPrimitive + Send,
     B: AutodiffBackend + Send,
     GTarget: GradientTarget<T, B> + Sync + Clone + Send,
-    StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    StandardNormal: rand::distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
     rand_distr::Exp1: rand_distr::Distribution<T>,
 {
     /// Creates a new NUTS sampler with the given target distribution and initial state for each chain.
@@ -394,8 +394,8 @@ where
     T: Float + ElementConversion + Element + SampleUniform + FromPrimitive,
     B: AutodiffBackend,
     GTarget: GradientTarget<T, B> + std::marker::Sync,
-    StandardNormal: rand::distributions::Distribution<T>,
-    rand_distr::Standard: rand_distr::Distribution<T>,
+    StandardNormal: rand::distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
     rand_distr::Exp1: rand_distr::Distribution<T>,
 {
     /// Constructs a new NUTSChain for a single chain with the given initial position.
@@ -411,7 +411,7 @@ where
         let dim = initial_position.len();
         let td: TensorData = TensorData::new(initial_position, [dim]);
         let position = Tensor::<B, 1>::from_data(td, &B::Device::default());
-        let rng = SmallRng::from_entropy();
+        let rng = SmallRng::from_os_rng();
         let epsilon = -T::one();
 
         Self {
@@ -477,7 +477,6 @@ where
         tx: Sender<ChainStats>,
     ) -> Result<Tensor<B, 2>, Box<dyn Error>> {
         let (dim, mut sample) = self.init_chain(n_collect, n_discard);
-        // let mut tracker = ChainTracker::new(dim, self.position.clone().to_element::<f32>(|x| x.to_f32()).to_data().as_slice().unwrap());
         let pos_0: Vec<f32> = self
             .position
             .to_data()
@@ -577,7 +576,7 @@ where
         let mut n_alpha: usize = 0;
 
         while s {
-            let u_run_1: T = self.rng.gen::<T>();
+            let u_run_1: T = self.rng.random::<T>();
             let v = (2 * (u_run_1 < T::from(0.5).unwrap()) as i8) - 1;
 
             let (position_prime, n_prime, s_prime) = {
@@ -658,7 +657,7 @@ where
                 T::from(n_prime).expect("successful conversion of n_prime from usize to T")
                     / T::from(n).expect("successful conversion of n from usize to T"),
             );
-            let u_run_2 = self.rng.gen::<T>();
+            let u_run_2 = self.rng.random::<T>();
             if s_prime && (u_run_2 < tmp) {
                 self.position = position_prime;
             }
@@ -908,7 +907,7 @@ where
                 grad_plus = grad_plus_2;
             }
 
-            let u_build_tree: f64 = (*rng).gen::<f64>();
+            let u_build_tree: f64 = (*rng).random::<f64>();
             if u_build_tree < (n_prime_2 as f64 / (n_prime + n_prime_2).max(1) as f64) {
                 position_prime = position_prime_2;
                 grad_prime = grad_prime_2;
@@ -1125,7 +1124,7 @@ mod tests {
     fn test_chain_1() {
         let target = DiffableGaussian2D::new([0.0_f64, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
         let initial_positions = vec![0.0_f64, 1.0];
-        let n_discard = 1;
+        let n_discard = 0;
         let n_collect = 1;
         let mut sampler = NUTSChain::new(target, initial_positions, 0.8).set_seed(42);
         let sample: Tensor<BackendType, 2> = sampler.run(n_collect, n_discard);
@@ -1151,12 +1150,12 @@ mod tests {
         assert_tensor_approx_eq(
             sample.flatten(0, 1),
             &[
-                0.44937651,
-                -0.1170752,
-                0.75795663,
-                -0.32304322,
-                0.58511739,
-                1.60916189,
+                -1.168318748474121,
+                -0.4077277183532715,
+                -1.8463939428329468,
+                0.19176559150218964,
+                -1.0662782192230225,
+                -0.3948383331298828,
             ],
             tol,
         );
@@ -1177,8 +1176,16 @@ mod tests {
         assert_tensor_approx_eq(
             sample.flatten(0, 1),
             &[
-                1.2114488, 1.2120318, 1.2114488, 1.2120318, 1.2114488, 1.2120318, 0.6581087,
-                2.5633106, 1.2620386, 1.5624053,
+                2.653707265853882,
+                5.560618877410889,
+                2.9760334491729736,
+                6.325948715209961,
+                2.187873125076294,
+                5.611990928649902,
+                2.1512224674224854,
+                5.416507720947266,
+                2.4165120124816895,
+                3.9120564460754395,
             ],
             tol,
         );
@@ -1199,8 +1206,16 @@ mod tests {
         assert_tensor_approx_eq(
             sample.flatten(0, 2),
             &[
-                1.2114488, 1.2120318, 1.2114488, 1.2120318, 1.2114488, 1.2120318, 0.6581087,
-                2.5633106, 1.2620386, 1.5624053,
+                2.653707265853882,
+                5.560618877410889,
+                2.9760334491729736,
+                6.325948715209961,
+                2.187873125076294,
+                5.611990928649902,
+                2.1512224674224854,
+                5.416507720947266,
+                2.4165120124816895,
+                3.9120564460754395,
             ],
             tol,
         );

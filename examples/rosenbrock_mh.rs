@@ -139,10 +139,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::main;
+
     #[test]
     fn test_main() {
-        main().expect("Expected main to not return an error.");
+        main().expect("run_demo should succeed.");
         assert!(
             std::path::Path::new("rosenbrock_scatter_plot.html").exists(),
             "Expected rosenbrock_scatter_plot.html to exist."
