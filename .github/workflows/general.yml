@@ -3,7 +3,7 @@
 name: Rust
 
 # Trigger the workflow on push or pull request events for any branch
-on: [push, pull_request]
+on: [push, pull_request, workflow_run]
 
 env:
   CARGO_TERM_COLOR: always
