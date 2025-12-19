@@ -5,9 +5,9 @@ use ndarray::{s, Array3, ArrayView1};
 use num_traits::{Float, FromPrimitive, ToPrimitive, Zero};
 use rand::distr::Distribution as RandDistribution;
 // rand_distr types implement rand::distr::Distribution for rand 0.9; use this trait to avoid conflicts.
-use rand_distr::{StandardNormal, StandardUniform};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rand_distr::{StandardNormal, StandardUniform};
 use std::error::Error;
 
 /// A target density that can write its gradient in-place for a given position.
@@ -34,6 +34,8 @@ where
     proposal_momenta: Vec<V>,
     dim: usize,
 }
+
+type RunResult<T> = Result<(Array3<T>, RunStats), Box<dyn Error>>;
 
 impl<V, Target> GenericHMC<V, Target>
 where
@@ -108,11 +110,7 @@ where
         out
     }
 
-    pub fn run_progress(
-        &mut self,
-        n_collect: usize,
-        n_discard: usize,
-    ) -> Result<(Array3<V::Scalar>, RunStats), Box<dyn Error>> {
+    pub fn run_progress(&mut self, n_collect: usize, n_discard: usize) -> RunResult<V::Scalar> {
         (0..n_discard).for_each(|_| self.step());
 
         let n_chains = self.positions.len();
@@ -156,7 +154,7 @@ where
         Ok((out, stats))
     }
 
-    fn flatten_positions(&self, out: &mut Vec<V::Scalar>) {
+    fn flatten_positions(&self, out: &mut [V::Scalar]) {
         let dim = self.dim;
         for (i, pos) in self.positions.iter().enumerate() {
             let start = i * dim;
@@ -194,8 +192,7 @@ where
             );
 
             let ke_proposed = proposal_mom.dot(proposal_mom) * half;
-            let log_accept =
-                (logp_proposed - logp_current) + (ke_current - ke_proposed);
+            let log_accept = (logp_proposed - logp_current) + (ke_current - ke_proposed);
             let ln_u: V::Scalar = self.rng.sample(StandardUniform).ln();
             if ln_u <= log_accept {
                 self.positions[i].assign(proposal_pos);
@@ -229,5 +226,4 @@ where
     pub(crate) fn rng_clone(&self) -> SmallRng {
         self.rng.clone()
     }
-
 }

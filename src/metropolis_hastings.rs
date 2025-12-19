@@ -45,8 +45,8 @@ See also the documentation for [`MHMarkovChain`] and the methods below.
 */
 
 use num_traits::Float;
-use rand::prelude::*;
 use rand::distr::Distribution as RandDistribution;
+use rand::prelude::*;
 // Use rand's Distribution for StandardUniform to avoid rand 0.8/0.9 conflicts.
 use rand_distr::StandardUniform;
 use std::marker::{PhantomData, Send};

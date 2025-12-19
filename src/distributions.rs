@@ -52,9 +52,9 @@ use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
 use rand::distr::Distribution as RandDistribution;
 // Use rand's Distribution trait to avoid version-mismatch when rand 0.8 and 0.9 coexist in deps.
-use rand_distr::{StandardNormal, StandardUniform};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rand_distr::{StandardNormal, StandardUniform};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 

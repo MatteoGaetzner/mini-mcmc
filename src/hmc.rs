@@ -15,9 +15,9 @@ use burn::tensor::Element;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::distr::Distribution as RandDistribution;
 // Keep trait bounds on rand's Distribution to avoid mixed-rand version mismatches.
+use rand::rngs::SmallRng;
 use rand_distr::uniform::SampleUniform;
 use rand_distr::{StandardNormal, StandardUniform};
-use rand::rngs::SmallRng;
 use std::error::Error;
 
 #[derive(Clone, Debug)]
@@ -27,11 +27,7 @@ struct BurnBatchedTarget<GTarget> {
 
 impl<T, B, GTarget> HamiltonianTarget<Tensor<B, 1>> for BurnBatchedTarget<GTarget>
 where
-    T: Float
-        + Element
-        + ElementConversion
-        + SampleUniform
-        + FromPrimitive,
+    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive,
     B: AutodiffBackend<FloatElem = T>,
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: RandDistribution<T>,
@@ -41,7 +37,9 @@ where
         let logp = self.inner.unnorm_logp_batch(pos.clone());
         let logp_scalar = logp.clone().into_scalar();
 
-        let grads_inner = pos.grad(&logp.backward()).expect("grad computation to succeed");
+        let grads_inner = pos
+            .grad(&logp.backward())
+            .expect("grad computation to succeed");
         let grad_tensor = Tensor::<B, 2>::from_inner(grads_inner).squeeze(0);
         grad.inplace(|_| grad_tensor.clone());
 
@@ -206,13 +204,9 @@ mod tests {
         let initial_positions = vec![vec![0.0_f32, 0.0]];
         let n_collect = 3;
 
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
-            target,
-            initial_positions,
-            0.01,
-            2,
-        )
-        .set_seed(42);
+        let mut sampler =
+            HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(target, initial_positions, 0.01, 2)
+                .set_seed(42);
 
         let mut timer = Timer::new();
         let sample: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
@@ -235,13 +229,9 @@ mod tests {
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 3];
         let n_collect = 10;
 
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
-            target,
-            initial_positions,
-            0.01,
-            2,
-        )
-        .set_seed(42);
+        let mut sampler =
+            HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(target, initial_positions, 0.01, 2)
+                .set_seed(42);
 
         let mut timer = Timer::new();
         let sample: Tensor<BackendType, 3> = sampler.run(n_collect, 0);
@@ -264,13 +254,9 @@ mod tests {
         let initial_positions = vec![vec![1.0_f32, 2.0_f32]; 3];
         let n_collect = 10;
 
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
-            target,
-            initial_positions,
-            0.05,
-            2,
-        )
-        .set_seed(42);
+        let mut sampler =
+            HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(target, initial_positions, 0.05, 2)
+                .set_seed(42);
 
         let mut timer = Timer::new();
         let sample: Tensor<BackendType, 3> = sampler.run_progress(n_collect, 3).unwrap().0;
@@ -318,13 +304,9 @@ mod tests {
         let n_collect = 5000;
         let n_discard = 500;
 
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
-            target,
-            initial_positions,
-            0.01,
-            50,
-        )
-        .set_seed(42);
+        let mut sampler =
+            HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(target, initial_positions, 0.01, 50)
+                .set_seed(42);
 
         let mut timer = Timer::new();
         let sample = sampler.run(n_collect, n_discard);

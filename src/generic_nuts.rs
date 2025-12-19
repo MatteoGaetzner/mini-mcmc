@@ -9,9 +9,9 @@ use ndarray_stats::QuantileExt;
 use num_traits::{Float, FromPrimitive, One, ToPrimitive, Zero};
 use rand::distr::Distribution as RandDistribution;
 // rand_distr provides the distributions, but we rely on rand's Distribution trait for compatibility.
-use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
+use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
 use std::sync::mpsc;
@@ -28,6 +28,8 @@ where
 {
     chains: Vec<GenericNUTSChain<V, Target>>,
 }
+
+type RunResult<T> = Result<(Array3<T>, RunStats), Box<dyn Error>>;
 
 impl<V, Target> GenericNUTS<V, Target>
 where
@@ -56,11 +58,7 @@ where
         ndarray::stack(Axis(0), &views).expect("expected stacking chain samples to succeed")
     }
 
-    pub fn run_progress(
-        &mut self,
-        n_collect: usize,
-        n_discard: usize,
-    ) -> Result<(Array3<V::Scalar>, RunStats), Box<dyn Error>> {
+    pub fn run_progress(&mut self, n_collect: usize, n_discard: usize) -> RunResult<V::Scalar> {
         let chains = &mut self.chains;
 
         let mut rxs: Vec<Receiver<ChainStats>> = vec![];
@@ -185,8 +183,7 @@ where
                 })
                 .collect()
         });
-        let views: Vec<ArrayView2<V::Scalar>> =
-            chain_sample.iter().map(|s| s.view()).collect();
+        let views: Vec<ArrayView2<V::Scalar>> = chain_sample.iter().map(|s| s.view()).collect();
         let sample = ndarray::stack(Axis(0), &views).expect("expected stacking sample to succeed");
 
         if let Err(e) = progress_handle.join() {
@@ -280,9 +277,7 @@ where
             if m >= n_discard {
                 self.position.write_to_slice(&mut scratch);
                 let view = ArrayView1::from(&scratch);
-                sample
-                    .slice_mut(s![m - n_discard, ..])
-                    .assign(&view);
+                sample.slice_mut(s![m - n_discard, ..]).assign(&view);
             }
         }
         sample
@@ -474,8 +469,7 @@ where
         }
 
         let mut eta = V::Scalar::one()
-            / V::Scalar::from_usize(self.m + self.t_0)
-                .expect("successful conversion of m + t_0");
+            / V::Scalar::from_usize(self.m + self.t_0).expect("successful conversion of m + t_0");
         self.h_bar = (V::Scalar::one() - eta) * self.h_bar
             + eta
                 * (self.target_accept_p
@@ -486,9 +480,8 @@ where
             let m = V::Scalar::from_usize(self.m).expect("successful conversion of m");
             self.epsilon = (self.mu - m.sqrt() / self.gamma * self.h_bar).exp();
             eta = m.powf(-self.kappa);
-            self.epsilon_bar = ((V::Scalar::one() - eta) * self.epsilon_bar.ln()
-                + eta * self.epsilon.ln())
-                .exp();
+            self.epsilon_bar =
+                ((V::Scalar::one() - eta) * self.epsilon_bar.ln() + eta * self.epsilon.ln()).exp();
         } else {
             self.epsilon = self.epsilon_bar;
         }
@@ -522,8 +515,13 @@ where
     let mut position_prime = position.clone();
     let mut mom_prime = mom.clone();
     let mut grad_prime = grad.clone();
-    let mut ulogp_prime =
-        leapfrog(&mut position_prime, &mut mom_prime, &mut grad_prime, epsilon, gradient_target);
+    let mut ulogp_prime = leapfrog(
+        &mut position_prime,
+        &mut mom_prime,
+        &mut grad_prime,
+        epsilon,
+        gradient_target,
+    );
     let mut k = V::Scalar::one();
 
     while !ulogp_prime.is_finite() && !all_real_vec(&grad_prime) {
@@ -541,9 +539,7 @@ where
     }
 
     epsilon = half * k * epsilon;
-    let log_accept_prob = ulogp_prime
-        - ulogp
-        - (mom_prime.dot(&mom_prime) - mom.dot(mom)) * half;
+    let log_accept_prob = ulogp_prime - ulogp - (mom_prime.dot(&mom_prime) - mom.dot(mom)) * half;
     let mut log_accept_prob = log_accept_prob;
 
     let a = if log_accept_prob > half.ln() {
@@ -564,9 +560,7 @@ where
             epsilon,
             gradient_target,
         );
-        log_accept_prob = ulogp_prime
-            - ulogp
-            - (mom_prime.dot(&mom_prime) - mom.dot(mom)) * half;
+        log_accept_prob = ulogp_prime - ulogp - (mom_prime.dot(&mom_prime) - mom.dot(mom)) * half;
     }
 
     epsilon

@@ -1,10 +1,10 @@
 use ndarray::LinalgScalar;
 use num_traits::Float;
-use rand_distr::uniform::SampleUniform;
 use rand::distr::Distribution as RandDistribution;
+use rand_distr::uniform::SampleUniform;
 // Bind to rand's Distribution to avoid trait mismatches from other deps pulling rand 0.8.
-use rand_distr::StandardNormal;
 use rand::Rng;
+use rand_distr::StandardNormal;
 
 /// Abstraction over a mutable Euclidean vector that supports the in-place
 /// operations required by the Hamiltonian integrators.
@@ -13,6 +13,11 @@ pub trait EuclideanVector: Clone {
 
     /// Returns the dimensionality of the vector.
     fn len(&self) -> usize;
+
+    /// Returns true if the vector is empty.
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 
     /// Creates a zero-initialized vector with the same shape.
     fn zeros_like(&self) -> Self;
@@ -116,9 +121,9 @@ mod burn_impl {
     use burn::tensor::ElementConversion;
     use num_traits::{Float, FromPrimitive};
     use rand::distr::Distribution as RandDistribution;
+    use rand::Rng;
     use rand_distr::uniform::SampleUniform;
     use rand_distr::StandardNormal;
-    use rand::Rng;
 
     impl<T, B> EuclideanVector for Tensor<B, 1>
     where

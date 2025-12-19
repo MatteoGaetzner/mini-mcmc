@@ -118,13 +118,7 @@ where
 #[derive(Clone)]
 pub struct NUTSChain<T, B, GTarget>
 where
-    T: Float
-        + Element
-        + ElementConversion
-        + SampleUniform
-        + FromPrimitive
-        + ToPrimitive
-        + Copy,
+    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + ToPrimitive + Copy,
     B: AutodiffBackend<FloatElem = T>,
     GTarget: GradientTarget<T, B> + Sync + Clone,
     StandardNormal: RandDistribution<T>,
@@ -138,13 +132,7 @@ where
 
 impl<T, B, GTarget> NUTSChain<T, B, GTarget>
 where
-    T: Float
-        + Element
-        + ElementConversion
-        + SampleUniform
-        + FromPrimitive
-        + ToPrimitive
-        + Copy,
+    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + ToPrimitive + Copy,
     B: AutodiffBackend<FloatElem = T>,
     GTarget: GradientTarget<T, B> + Sync + Clone,
     StandardNormal: RandDistribution<T>,
