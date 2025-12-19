@@ -15,6 +15,8 @@ use burn::tensor::Element;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::distr::Distribution as RandDistribution;
 // Keep trait bounds on rand's Distribution to avoid mixed-rand version mismatches.
+#[cfg(test)]
+use rand::prelude::*;
 use rand::rngs::SmallRng;
 use rand_distr::uniform::SampleUniform;
 use rand_distr::{StandardNormal, StandardUniform};
@@ -179,7 +181,7 @@ mod tests {
     use crate::{
         core::init,
         dev_tools::Timer,
-        distributions::{DiffableGaussian2D, Rosenbrock2D},
+        distributions::{DiffableGaussian2D, Rosenbrock2D, RosenbrockND},
         stats::split_rhat_mean_ess,
     };
     use ndarray::ArrayView3;
@@ -292,6 +294,219 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_gaussian_2d_hmc_single_run() {
+        // Each experiment uses 3 chains:
+        let n_chains = 3;
+
+        let n_discard = 500;
+        let n_collect = 1000;
+
+        // 1) Define the 2D Gaussian target distribution:
+        //    mean: [0.0, 1.0], cov: [[4.0, 2.0], [2.0, 3.0]]
+        let target = DiffableGaussian2D::new([0.0, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+
+        // 2) Define 3 chains, each chain is 2-dimensional:
+        let initial_positions = vec![
+            vec![1.0_f32, 2.0_f32],
+            vec![1.0_f32, 2.0_f32],
+            vec![1.0_f32, 2.0_f32],
+        ];
+
+        // 3) Create the HMC sampler using NdArray backend with autodiff
+        type BackendType = Autodiff<NdArray>;
+        let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+            target,
+            initial_positions,
+            0.1, // step size
+            10,  // leapfrog steps
+        )
+        .set_seed(42);
+
+        // 4) Run the sampler for (burn_in + collected) steps, discard the first `burn_in`
+        //    The shape of `sample` will be [n_chains, collected, 2]
+        let sample_3d = sampler.run(n_collect, n_discard);
+
+        // Check shape is as expected
+        assert_eq!(sample_3d.dims(), [n_chains, n_collect, 2]);
+
+        // 5) Convert the sample into an ndarray view
+        let data = sample_3d.to_data();
+        let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice().unwrap()).unwrap();
+
+        // 6) Compute split-Rhat and ESS
+        let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
+        let ess1 = ess_vals[0];
+        let ess2 = ess_vals[1];
+
+        println!("\nSingle Run Results:");
+        println!("Rhat: {:?}", rhat);
+        println!("ESS(Param1): {:.2}", ess1);
+        println!("ESS(Param2): {:.2}", ess2);
+
+        // Optionally, add some asserts about expected minimal ESS
+        assert!(ess1 > 50.0, "Expected param1 ESS > 50, got {:.2}", ess1);
+        assert!(ess2 > 50.0, "Expected param2 ESS > 50, got {:.2}", ess2);
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_gaussian_2d_hmc_ess_stats() {
+        use crate::stats::basic_stats;
+        use indicatif::{ProgressBar, ProgressStyle};
+        use ndarray::Array1;
+
+        let n_runs = 100;
+        let n_chains = 3;
+        let n_discard = 500;
+        let n_collect = 1000;
+        let mut rng = SmallRng::seed_from_u64(42);
+
+        // We'll store the ESS and R-hat values for each parameter across all runs
+        let mut ess_param1s = Vec::with_capacity(n_runs);
+        let mut ess_param2s = Vec::with_capacity(n_runs);
+        let mut rhat_param1s = Vec::with_capacity(n_runs);
+        let mut rhat_param2s = Vec::with_capacity(n_runs);
+
+        // Set up the progress bar
+        let pb = ProgressBar::new(n_runs as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{prefix:8} {bar:40.cyan/blue} {pos}/{len} ({eta}) | {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.set_prefix("HMC Test");
+
+        for run in 0..n_runs {
+            // 1) Define the 2D Gaussian target distribution:
+            //    mean: [0.0, 1.0], cov: [[4.0, 2.0], [2.0, 3.0]]
+            let target = DiffableGaussian2D::new([0.0_f32, 1.0], [[4.0, 2.0], [2.0, 3.0]]);
+
+            // 2) Define 3 chains, each chain is 2-dimensional:
+            // Create a seeded RNG for reproducible initial positions
+            let initial_positions: Vec<Vec<f32>> = (0..n_chains)
+                .map(|_| {
+                    // Sample 2D position from standard normal
+                    vec![
+                        rng.sample::<f32, _>(StandardNormal),
+                        rng.sample::<f32, _>(StandardNormal),
+                    ]
+                })
+                .collect();
+
+            // 3) Create the HMC sampler using NdArray backend with autodiff
+            type BackendType = Autodiff<NdArray>;
+            let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+                target,
+                initial_positions,
+                0.1, // step size
+                10,  // leapfrog steps
+            )
+            .set_seed(run as u64); // Use run number as seed for reproducibility
+
+            // 4) Run the sampler for (n_discard + n_collect) steps, discard the first `n_discard`
+            //    observations
+            let sample_3d = sampler.run(n_collect, n_discard);
+
+            // Check shape is as expected
+            assert_eq!(sample_3d.dims(), [n_chains, n_collect, 2]);
+
+            // 5) Convert the sample into an ndarray view
+            let data = sample_3d.to_data();
+            let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice().unwrap()).unwrap();
+
+            // 6) Compute split-Rhat and ESS
+            let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
+            let ess1 = ess_vals[0];
+            let ess2 = ess_vals[1];
+
+            // Store ESS values
+            ess_param1s.push(ess1);
+            ess_param2s.push(ess2);
+
+            // Store R-hat values from stats object
+            rhat_param1s.push(rhat[0]);
+            rhat_param2s.push(rhat[1]);
+
+            pb.inc(1);
+
+            // Update progress bar with current ESS statistics across runs
+            if run > 0 {
+                // Calculate mean and std of ESS for both parameters across all runs so far
+                let mean_ess1 = ess_param1s.iter().sum::<f32>() / (run as f32 + 1.0);
+                let mean_ess2 = ess_param2s.iter().sum::<f32>() / (run as f32 + 1.0);
+
+                // Calculate standard deviations
+                let var_ess1 = ess_param1s
+                    .iter()
+                    .map(|&x| (x - mean_ess1).powi(2))
+                    .sum::<f32>()
+                    / (run as f32 + 1.0);
+                let var_ess2 = ess_param2s
+                    .iter()
+                    .map(|&x| (x - mean_ess2).powi(2))
+                    .sum::<f32>()
+                    / (run as f32 + 1.0);
+
+                let std_ess1 = var_ess1.sqrt();
+                let std_ess2 = var_ess2.sqrt();
+
+                pb.set_message(format!(
+                    "ESS1={:.0}±{:.0} ESS2={:.0}±{:.0}",
+                    mean_ess1, std_ess1, mean_ess2, std_ess2
+                ));
+            } else {
+                // For the first run, just show the current values
+                pb.set_message(format!("ESS1={:.0} ESS2={:.0}", ess1, ess2));
+            }
+        }
+        pb.finish_with_message("All runs complete!");
+
+        // Convert to ndarray for statistics
+        let ess_param1_array = Array1::from_vec(ess_param1s);
+        let ess_param2_array = Array1::from_vec(ess_param2s);
+        let rhat_param1_array = Array1::from_vec(rhat_param1s);
+        let rhat_param2_array = Array1::from_vec(rhat_param2s);
+
+        // Compute and print statistics
+        let stats_p1_ess = basic_stats("ESS(Param1)", ess_param1_array);
+        let stats_p2_ess = basic_stats("ESS(Param2)", ess_param2_array);
+        let stats_p1_rhat = basic_stats("R-hat(Param1)", rhat_param1_array);
+        let stats_p2_rhat = basic_stats("R-hat(Param2)", rhat_param2_array);
+
+        println!("\nStatistics over {} runs:", n_runs);
+        println!("\nESS Statistics:");
+        println!("{stats_p1_ess}\n{stats_p2_ess}");
+        println!("\nR-hat Statistics:");
+        println!("{stats_p1_rhat}\n{stats_p2_rhat}");
+
+        // Assertions for ESS
+        assert!(
+            (135.0..=185.0).contains(&stats_p1_ess.mean),
+            "Expected param1 ESS to average in [135, 185], got {:.2}",
+            stats_p1_ess.mean
+        );
+        assert!(
+            (141.0..=191.0).contains(&stats_p2_ess.mean),
+            "Expected param2 ESS to average in [141, 191], got {:.2}",
+            stats_p2_ess.mean
+        );
+
+        // Assertions for R-hat (should be close to 1.0)
+        assert!(
+            (0.95..=1.05).contains(&stats_p1_rhat.mean),
+            "Expected param1 R-hat to be in [0.95, 1.05], got {:.2}",
+            stats_p1_rhat.mean
+        );
+        assert!(
+            (0.95..=1.05).contains(&stats_p2_rhat.mean),
+            "Expected param2 R-hat to be in [0.95, 1.05], got {:.2}",
+            stats_p2_rhat.mean
+        );
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
     fn test_bench_noprogress() {
         type BackendType = Autodiff<burn::backend::NdArray>;
 
@@ -321,5 +536,128 @@ mod tests {
         let (split_rhat, ess) = split_rhat_mean_ess(array);
         println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
         println!("MIN ESS: {}", ess.min().unwrap());
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_progress_bench() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<burn::backend::NdArray>;
+        BackendType::seed(42);
+
+        // Create the Rosenbrock target (a = 1, b = 100)
+        let target = Rosenbrock2D {
+            a: 1.0_f32,
+            b: 100.0_f32,
+        };
+
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let n_chains = 6;
+        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; n_chains];
+        let n_collect = 1000;
+        let n_discard = 1000;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
+            target,
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+        )
+        .set_seed(42);
+
+        // Run HMC for n_collect steps.
+        let mut timer = Timer::new();
+        let sample = sampler.run_progress(n_collect, n_discard).unwrap().0;
+        timer.log(format!(
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
+        ));
+        println!(
+            "Chain 1, first 10: {}",
+            sample.clone().slice([0..1, 0..10, 0..1])
+        );
+        println!(
+            "Chain 2, first 10: {}",
+            sample.clone().slice([2..3, 0..10, 0..1])
+        );
+
+        #[cfg(feature = "csv")]
+        crate::io::csv::save_csv_tensor(sample.clone(), "/tmp/hmc-sample.csv")
+            .expect("Expected saving to succeed");
+
+        assert_eq!(sample.dims(), [n_chains, n_collect, 2]);
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    fn test_bench_10000d() {
+        // Use the CPU backend (NdArray) wrapped in Autodiff.
+        type BackendType = Autodiff<burn::backend::NdArray>;
+
+        let seed = 42;
+        let d = 10000;
+        let n_chains = 6;
+        let n_collect = 100;
+        let n_discard = 100;
+
+        let rng = SmallRng::seed_from_u64(seed);
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let initial_positions: Vec<Vec<f32>> =
+            vec![rng.sample_iter(StandardNormal).take(d).collect(); n_chains];
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
+            RosenbrockND {},
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+        )
+        .set_seed(42);
+
+        // Run HMC for n_collect steps.
+        let mut timer = Timer::new();
+        let sample = sampler.run(n_collect, n_discard);
+        timer.log(format!(
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
+        ));
+        assert_eq!(sample.dims(), [n_chains, n_collect, d]);
+    }
+
+    #[test]
+    #[ignore = "Benchmark test: run only when explicitly requested"]
+    #[cfg(feature = "wgpu")]
+    fn test_progress_10000d_bench() {
+        type BackendType = Autodiff<burn::backend::Wgpu>;
+
+        let seed = 42;
+        let d = 10000;
+        let n_chains = 6;
+
+        let rng = SmallRng::seed_from_u64(seed);
+        // We'll define 6 chains all initialized to (1.0, 2.0).
+        let initial_positions: Vec<Vec<f32>> =
+            vec![rng.sample_iter(StandardNormal).take(d).collect(); n_chains];
+        let n_collect = 100;
+        let n_discard = 100;
+
+        // Create the data-parallel HMC sampler.
+        let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
+            RosenbrockND {},
+            initial_positions,
+            0.01, // step size
+            50,   // number of leapfrog steps per update
+        )
+        .set_seed(42);
+
+        // Run HMC for n_collect steps.
+        let mut timer = Timer::new();
+        let sample = sampler.run_progress(n_collect, n_discard).unwrap().0;
+        timer.log(format!(
+            "HMC sampler: generated {} observations.",
+            sample.dims()[0..2].iter().product::<usize>()
+        ));
+        assert_eq!(sample.dims(), [n_chains, n_collect, d]);
     }
 }

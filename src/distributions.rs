@@ -527,6 +527,7 @@ where
 
 // Define the Rosenbrock distribution.
 // From: https://arxiv.org/pdf/1903.09556.
+#[derive(Clone)]
 pub struct RosenbrockND {}
 
 // For the batched version we need to implement BatchGradientTarget.
