@@ -74,6 +74,7 @@
 //! ///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)².
 //! ///
 //! /// This implementation generalizes to d dimensions, but here we use it for 3D.
+//! #[derive(Clone)]
 //! struct RosenbrockND {}
 //!
 //! impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND

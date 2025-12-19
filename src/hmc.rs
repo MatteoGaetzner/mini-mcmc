@@ -70,7 +70,6 @@ where
     pub rng: SmallRng,
     /// Current positions stacked as a `[n_chains, dim]` tensor.
     pub positions: Tensor<B, 2>,
-    dim: usize,
 }
 
 impl<T, B, GTarget> HMC<T, B, GTarget>
@@ -100,7 +99,6 @@ where
                 Tensor::<B, 1>::from_data(td, &B::Device::default())
             })
             .collect();
-        let dim = positions_vec[0].dims()[0];
         let inner = GenericHMC::new(
             BurnBatchedTarget {
                 inner: target.clone(),
@@ -118,7 +116,6 @@ where
             n_leapfrog,
             rng,
             positions,
-            dim,
         }
     }
 
@@ -161,7 +158,13 @@ where
     T: Float + Element + ElementConversion,
 {
     let shape = arr.raw_dim();
-    let td = TensorData::new(arr.into_raw_vec(), [shape[0], shape[1], shape[2]]);
+    let (mut data, offset) = arr.into_raw_vec_and_offset();
+    if let Some(offset) = offset {
+        if offset != 0 {
+            data.rotate_left(offset);
+        }
+    }
+    let td = TensorData::new(data, [shape[0], shape[1], shape[2]]);
     Tensor::<B, 3>::from_data(td, &B::Device::default())
 }
 
@@ -178,7 +181,7 @@ mod tests {
     use crate::{
         core::init,
         dev_tools::Timer,
-        distributions::{DiffableGaussian2D, Rosenbrock2D, RosenbrockND},
+        distributions::{DiffableGaussian2D, Rosenbrock2D},
         stats::split_rhat_mean_ess,
     };
     use ndarray::ArrayView3;

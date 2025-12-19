@@ -358,15 +358,6 @@ pub struct RunStats {
     pub rhat: BasicStats,
 }
 
-impl RunStats {
-    fn from_f32_view(sample: ArrayView3<f32>) -> Self {
-        let (rhat, ess) = split_rhat_mean_ess(sample);
-        let ess = basic_stats("ESS", ess);
-        let rhat = basic_stats("Split R-hat", rhat);
-        RunStats { ess, rhat }
-    }
-}
-
 impl fmt::Display for RunStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Using the Display implementation of BasicStats
@@ -859,7 +850,7 @@ mod tests {
         // Write header row
         writeln!(file, "length,rep,time,algorithm").expect("Unable to write CSV header");
 
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
 
         for exp in 0..10 {
             let n = 1 << exp; // 2^exp

@@ -191,7 +191,13 @@ where
     T: Float + Element + ElementConversion,
 {
     let shape = arr.raw_dim();
-    let td = TensorData::new(arr.into_raw_vec(), [shape[0], shape[1]]);
+    let (mut data, offset) = arr.into_raw_vec_and_offset();
+    if let Some(offset) = offset {
+        if offset != 0 {
+            data.rotate_left(offset);
+        }
+    }
+    let td = TensorData::new(data, [shape[0], shape[1]]);
     Tensor::<B, 2>::from_data(td, &B::Device::default())
 }
 
@@ -201,6 +207,12 @@ where
     T: Float + Element + ElementConversion,
 {
     let shape = arr.raw_dim();
-    let td = TensorData::new(arr.into_raw_vec(), [shape[0], shape[1], shape[2]]);
+    let (mut data, offset) = arr.into_raw_vec_and_offset();
+    if let Some(offset) = offset {
+        if offset != 0 {
+            data.rotate_left(offset);
+        }
+    }
+    let td = TensorData::new(data, [shape[0], shape[1], shape[2]]);
     Tensor::<B, 3>::from_data(td, &B::Device::default())
 }

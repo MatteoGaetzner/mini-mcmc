@@ -230,7 +230,4 @@ where
         self.rng.clone()
     }
 
-    pub(crate) fn set_rng(&mut self, rng: SmallRng) {
-        self.rng = rng;
-    }
 }
