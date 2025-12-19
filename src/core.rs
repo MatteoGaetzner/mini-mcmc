@@ -20,9 +20,9 @@ use ndarray::stack;
 use ndarray::{prelude::*, LinalgScalar, ShapeError};
 use ndarray_stats::QuantileExt;
 use num_traits::{Float, FromPrimitive};
+use rand_distr::StandardNormal;
 use rand::rngs::SmallRng;
-use rand::SeedableRng;
-use rand_distr::{Distribution, StandardNormal};
+use rand::{Rng, SeedableRng};
 use rayon::prelude::*;
 use std::cmp::PartialEq;
 use std::error::Error;
@@ -395,7 +395,7 @@ pub fn init<T>(n: usize, d: usize) -> Vec<Vec<T>>
 where
     T: Float + FromPrimitive,
 {
-    let rng = SmallRng::from_os_rng();
+    let rng = SmallRng::seed_from_u64(rand::rng().random::<u64>());
     _init(n, d, rng)
 }
 
@@ -426,7 +426,7 @@ where
         .map(|_| {
             (0..d)
                 .map(|_| {
-                    let obs: f64 = StandardNormal.sample(&mut rng);
+                    let obs: f64 = rng.sample(StandardNormal);
                     T::from_f64(obs).unwrap()
                 })
                 .collect()

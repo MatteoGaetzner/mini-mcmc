@@ -1,7 +1,6 @@
 //! Computation and tracking of MCMC statistics like acceptance probability and Potential Scale
 //! Reduction.
 
-use burn::prelude::{Backend, Tensor};
 use core::fmt;
 use ndarray::{concatenate, prelude::*, stack};
 use ndarray_stats::QuantileExt;
@@ -258,11 +257,29 @@ impl MultiChainTracker {
         Ok(())
     }
 
-    pub fn stats<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<RunStats, Box<dyn Error>> {
+    #[cfg(feature = "burn")]
+    pub fn stats<B: burn::prelude::Backend>(
+        &self,
+        sample: burn::tensor::Tensor<B, 3>,
+    ) -> Result<RunStats, Box<dyn Error>>
+    where
+        B::FloatElem: num_traits::ToPrimitive,
+    {
         let sample_data = sample.to_data();
-        let sample_ndarray =
-            ArrayView3::from_shape(sample.dims(), sample_data.as_slice().unwrap())?;
-        Ok(RunStats::from_f32_view(sample_ndarray))
+        let sample_ndarray = ArrayView3::from_shape(
+            sample.dims(),
+            sample_data
+                .as_slice::<B::FloatElem>()
+                .map_err(|e| format!("{:?}", e))?,
+        )?;
+        self.stats_view(sample_ndarray)
+    }
+
+    pub fn stats_view<T>(&self, sample: ArrayView3<T>) -> Result<RunStats, Box<dyn Error>>
+    where
+        T: num_traits::ToPrimitive + Clone,
+    {
+        Ok(RunStats::from(sample))
     }
 
     /// Computes the maximum R-hat value across all parameters.
@@ -842,7 +859,7 @@ mod tests {
         // Write header row
         writeln!(file, "length,rep,time,algorithm").expect("Unable to write CSV header");
 
-        let mut rng = rand::rng();
+        let mut rng = rand::thread_rng();
 
         for exp in 0..10 {
             let n = 1 << exp; // 2^exp

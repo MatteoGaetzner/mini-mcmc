@@ -55,7 +55,7 @@ mod tests {
     impl PoissonRandomWalk {
         pub fn new() -> Self {
             Self {
-                rng: SmallRng::from_os_rng(),
+                rng: SmallRng::from_entropy(),
             }
         }
     }
@@ -188,7 +188,7 @@ mod tests {
         pub fn new(n: i32) -> Self {
             Self {
                 n,
-                rng: SmallRng::from_os_rng(),
+                rng: SmallRng::from_entropy(),
             }
         }
     }
