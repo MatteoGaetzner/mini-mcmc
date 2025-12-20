@@ -15,7 +15,7 @@ functions (e.g. via the [`crate::core::ChainRunner`] extension) work with Gibbs 
 
 use ndarray::LinalgScalar;
 use rand::rngs::SmallRng;
-use rand::{rng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng};
 
 use crate::core::{HasChains, MarkovChain};
 use crate::distributions::Conditional;
@@ -157,7 +157,7 @@ where
     /// assert_eq!(sampler.chains.len(), 4);
     /// ```
     pub fn new(target: D, initial_states: Vec<Vec<T>>) -> Self {
-        let seed = rng().random::<u64>();
+        let seed = rand::rng().random::<u64>();
 
         Self {
             target: target.clone(),
@@ -210,7 +210,7 @@ mod tests {
     use crate::core::{init_det, ChainRunner};
     use approx::assert_abs_diff_eq;
     use ndarray::{Array3, Axis};
-    use rand_distr::Normal;
+    use rand_distr::StandardNormal;
     use std::f64::consts::PI;
 
     /// A dummy conditional distribution that always returns the same constant value.
@@ -260,11 +260,11 @@ mod tests {
                 let z = given[1];
                 if z < 0.5 {
                     // Use mode 0: N(mu0, sigma0^2)
-                    let normal = Normal::new(self.mu0, self.sigma0).unwrap();
-                    self.rng.sample(normal)
+                    let noise: f64 = self.rng.sample(StandardNormal);
+                    self.mu0 + self.sigma0 * noise
                 } else {
-                    let normal = Normal::new(self.mu1, self.sigma1).unwrap();
-                    self.rng.sample(normal)
+                    let noise: f64 = self.rng.sample(StandardNormal);
+                    self.mu1 + self.sigma1 * noise
                 }
             } else if i == 1 {
                 // Sample z conditionally on x.

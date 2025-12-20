@@ -47,9 +47,11 @@ use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Element;
 use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
+use rand::distr::Distribution as RandDistribution;
+// Use rand's Distribution trait to avoid version-mismatch when rand 0.8 and 0.9 coexist in deps.
 use rand::rngs::SmallRng;
 use rand::{Rng, SeedableRng};
-use rand_distr::{Distribution, Normal, StandardUniform};
+use rand_distr::{StandardNormal, StandardUniform};
 use std::f64::consts::PI;
 use std::ops::AddAssign;
 
@@ -63,15 +65,6 @@ use std::ops::AddAssign;
 /// * `T`: The floating-point type (e.g., f32 or f64).
 /// * `B`: The autodiff backend from the `burn` crate.
 pub trait BatchedGradientTarget<T: Float, B: AutodiffBackend> {
-    /// Compute the log density for a batch of positions.
-    ///
-    /// # Parameters
-    ///
-    /// * `positions`: A tensor of shape `[n_chains, D]` representing the current positions for each chain.
-    ///
-    /// # Returns
-    ///
-    /// A 1D tensor of shape `[n_chains]` containing the log density for each chain.
     fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
@@ -251,6 +244,7 @@ where
     }
 }
 
+#[cfg(feature = "burn")]
 impl<T, B> BatchedGradientTarget<T, B> for DiffableGaussian2D<T>
 where
     T: Float + burn::tensor::ElementConversion + std::fmt::Debug + burn::tensor::Element,
@@ -288,6 +282,7 @@ where
     }
 }
 
+#[cfg(feature = "burn")]
 impl<T, B> GradientTarget<T, B> for DiffableGaussian2D<T>
 where
     T: Float + burn::tensor::ElementConversion + std::fmt::Debug + burn::tensor::Element,
@@ -352,22 +347,22 @@ impl<T: Float> IsotropicGaussian<T> {
     pub fn new(std: T) -> Self {
         Self {
             std,
-            rng: SmallRng::from_os_rng(),
+            rng: SmallRng::seed_from_u64(rand::rng().random::<u64>()),
         }
     }
 }
 
 impl<T: Float + std::ops::AddAssign> Proposal<T, T> for IsotropicGaussian<T>
 where
-    rand_distr::StandardNormal: rand_distr::Distribution<T>,
+    StandardNormal: RandDistribution<T>,
 {
     fn sample(&mut self, current: &[T]) -> Vec<T> {
-        let normal = Normal::new(T::zero(), self.std)
-            .expect("Expecting creation of normal distribution to succeed.");
-        normal
-            .sample_iter(&mut self.rng)
-            .zip(current)
-            .map(|(x, eps)| x + *eps)
+        current
+            .iter()
+            .map(|eps| {
+                let noise: T = self.rng.sample(StandardNormal);
+                *eps + noise * self.std
+            })
             .collect()
     }
 
@@ -435,14 +430,14 @@ impl<T: Float + std::ops::AddAssign> Categorical<T> {
         let normalized: Vec<T> = probs.into_iter().map(|p| p / sum).collect();
         Self {
             probs: normalized,
-            rng: SmallRng::from_os_rng(),
+            rng: SmallRng::seed_from_u64(rand::rng().random::<u64>()),
         }
     }
 }
 
 impl<T: Float + std::ops::AddAssign> Discrete<T> for Categorical<T>
 where
-    StandardUniform: rand::distr::Distribution<T>,
+    StandardUniform: RandDistribution<T>,
 {
     fn sample(&mut self) -> usize {
         let r: T = self.rng.random();
@@ -469,7 +464,7 @@ where
 
 impl<T: Float + AddAssign> Target<usize, T> for Categorical<T>
 where
-    rand_distr::StandardUniform: rand_distr::Distribution<T>,
+    StandardUniform: RandDistribution<T>,
 {
     fn unnorm_logp(&self, position: &[usize]) -> T {
         <Self as Discrete<T>>::logp(self, position[0])
@@ -494,6 +489,7 @@ pub struct Rosenbrock2D<T: Float> {
 }
 
 // For the batched version we need to implement BatchGradientTarget.
+#[cfg(feature = "burn")]
 impl<T, B> BatchedGradientTarget<T, B> for Rosenbrock2D<T>
 where
     T: Float + Element,
@@ -509,6 +505,7 @@ where
     }
 }
 
+#[cfg(feature = "burn")]
 impl<T, B> GradientTarget<T, B> for Rosenbrock2D<T>
 where
     T: Float + Element,
@@ -525,9 +522,11 @@ where
 
 // Define the Rosenbrock distribution.
 // From: https://arxiv.org/pdf/1903.09556.
+#[derive(Clone)]
 pub struct RosenbrockND {}
 
 // For the batched version we need to implement BatchGradientTarget.
+#[cfg(feature = "burn")]
 impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
 where
     T: Float + Element,

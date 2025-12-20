@@ -17,6 +17,7 @@ use std::{error::Error, time::Instant};
 ///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)²
 ///
 /// This implementation generalizes to d dimensions, but here we use it for 3D.
+#[derive(Clone)]
 struct RosenbrockND {}
 
 impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
@@ -149,7 +150,7 @@ fn run_demo() -> Result<(), Box<dyn Error>> {
     let start = Instant::now();
     // Run HMC for n_collect, collecting sample as a 3D tensor.
     let (sample, stats) = sampler.run_progress(n_collect, n_discard).unwrap();
-    println!("Shape: {:?}", sample.shape());
+    println!("Shape: {:?}", sample.dims());
     println!("{stats}");
 
     let duration = start.elapsed();
