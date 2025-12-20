@@ -6,9 +6,9 @@ use crate::generic_nuts::{GenericNUTS, GenericNUTSChain};
 use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
-use burn::tensor::{Element, ElementConversion};
 #[cfg(test)]
 use burn::tensor::Tensor;
+use burn::tensor::{Element, ElementConversion};
 use num_traits::{Float, FromPrimitive};
 use rand::distr::Distribution as RandDistribution;
 // Bind to rand's Distribution to avoid mismatches from transitive rand 0.8 deps.
