@@ -4,14 +4,12 @@
 //! batch of chains is treated as a single vector in phase space.
 
 use crate::euclidean::BatchVector;
-use crate::stats::RunStats;
 use ndarray::Array3;
 use num_traits::{Float, FromPrimitive, ToPrimitive, Zero};
 use rand::distr::Distribution as RandDistribution;
 use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::StandardNormal;
-use std::error::Error;
 
 /// A batched target density that returns per-chain log-probabilities.
 ///
@@ -50,8 +48,6 @@ where
     n_chains: usize,
     dim: usize,
 }
-
-type RunResult<T> = Result<(Array3<T>, RunStats), Box<dyn Error + Send + Sync>>;
 
 impl<V, Target> BatchedGenericHMC<V, Target>
 where

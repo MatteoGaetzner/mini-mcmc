@@ -220,10 +220,12 @@ where
         logp
     }
 
+    #[allow(dead_code)]
     pub(crate) fn positions(&self) -> &[V] {
         &self.positions
     }
 
+    #[allow(dead_code)]
     pub(crate) fn rng_clone(&self) -> SmallRng {
         self.rng.clone()
     }
