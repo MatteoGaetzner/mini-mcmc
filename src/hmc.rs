@@ -493,7 +493,8 @@ mod tests {
 
         // 5) Convert the sample into an ndarray view
         let data = sample_3d.to_data();
-        let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice::<f32>().unwrap()).unwrap();
+        let arr =
+            ArrayView3::from_shape(sample_3d.dims(), data.as_slice::<f32>().unwrap()).unwrap();
 
         // 6) Compute split-Rhat and ESS
         let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
@@ -575,7 +576,8 @@ mod tests {
 
             // 5) Convert the sample into an ndarray view
             let data = sample_3d.to_data();
-            let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice::<f32>().unwrap()).unwrap();
+            let arr =
+                ArrayView3::from_shape(sample_3d.dims(), data.as_slice::<f32>().unwrap()).unwrap();
 
             // 6) Compute split-Rhat and ESS
             let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
