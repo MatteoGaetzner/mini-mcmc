@@ -332,6 +332,8 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use ndarray::{arr1, arr2, Array3, Axis};
     use ndarray_stats::CorrelationExt;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
 
     /// Common test harness for checking that sample mean from a 2D Gaussian matches
     /// the true mean and covariance within floating-point tolerance.
@@ -430,6 +432,9 @@ mod tests {
         let mut ess_x1s = Vec::with_capacity(n_runs);
         let mut ess_x2s = Vec::with_capacity(n_runs);
 
+        // Outer RNG for reproducibility - each run gets a unique seed
+        let mut outer_rng = SmallRng::seed_from_u64(42);
+
         // For each run, we do a fresh Metropolis-Hastings
         for _ in 0..n_runs {
             // 1) Define target distribution
@@ -446,8 +451,9 @@ mod tests {
             //    deterministic initial states for each chain. Or use init(...) if you prefer random.
             let mut mh = MetropolisHastings::new(target, proposal, init_det(n_chains, 2));
 
-            // Optionally seed for reproducibility
-            mh = mh.seed(42); // or any global seed
+            // Generate a unique seed for this run (test is still reproducible overall)
+            let run_seed: u64 = outer_rng.random();
+            mh = mh.seed(run_seed);
 
             // 4) Run the sampler
             //    This depends on your actual method name.

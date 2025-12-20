@@ -701,12 +701,12 @@ mod tests {
     #[ignore = "Benchmark test: run only when explicitly requested"]
     fn test_bench_noprogress_1() {
         let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
+            a: 1.0_f64,
+            b: 100.0_f64,
         };
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = init::<f32>(6, 2);
+        let initial_positions = init::<f64>(6, 2);
         let n_collect = 5000;
         let n_discard = 500;
 
@@ -720,7 +720,7 @@ mod tests {
         assert_eq!(sample.dims(), [6, 5000, 2]);
 
         let data = sample.to_data();
-        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
+        let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f64>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
         println!("AVG Split Rhat: {}", split_rhat.mean().unwrap());
         println!("AVG ESS: {}", ess.mean().unwrap());
@@ -733,12 +733,12 @@ mod tests {
     #[ignore = "Benchmark test: run only when explicitly requested"]
     fn test_bench_noprogress_2() {
         let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
+            a: 1.0_f64,
+            b: 100.0_f64,
         };
 
         // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = init::<f32>(6, 2);
+        let initial_positions = init::<f64>(6, 2);
         let n_collect = 1000;
         let n_discard = 1000;
 
@@ -752,7 +752,7 @@ mod tests {
         assert_eq!(sample.dims(), [6, 1000, 2]);
 
         let data = sample.to_data();
-        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
+        let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f64>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
         println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
         println!("MIN ESS: {}", ess.min().unwrap());

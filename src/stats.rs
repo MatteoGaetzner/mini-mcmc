@@ -421,8 +421,12 @@ fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
 ///
 /// # References
 /// - STAN Reference Manual, Section on R-hat and Effective Sample Size
-pub fn split_rhat_mean_ess(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
-    let splitted = splitcat(sample); // shape: (2c, n/2, p)
+pub fn split_rhat_mean_ess<T>(sample: ArrayView3<T>) -> (Array1<f32>, Array1<f32>)
+where
+    T: ToPrimitive + Clone,
+{
+    let f32_sample = sample.mapv(|x| x.to_f32().unwrap());
+    let splitted = splitcat(f32_sample.view()); // shape: (2c, n/2, p)
     let (within, var) = withinvar(splitted.view());
     (
         rhat(within.view(), var.view()),

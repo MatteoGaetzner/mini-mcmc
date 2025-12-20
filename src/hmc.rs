@@ -493,7 +493,7 @@ mod tests {
 
         // 5) Convert the sample into an ndarray view
         let data = sample_3d.to_data();
-        let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice().unwrap()).unwrap();
+        let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice::<f32>().unwrap()).unwrap();
 
         // 6) Compute split-Rhat and ESS
         let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
@@ -575,7 +575,7 @@ mod tests {
 
             // 5) Convert the sample into an ndarray view
             let data = sample_3d.to_data();
-            let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice().unwrap()).unwrap();
+            let arr = ArrayView3::from_shape(sample_3d.dims(), data.as_slice::<f32>().unwrap()).unwrap();
 
             // 6) Compute split-Rhat and ESS
             let (rhat, ess_vals) = split_rhat_mean_ess(arr.view());
@@ -694,7 +694,7 @@ mod tests {
         assert_eq!(sample.dims(), [6, 5000, 2]);
 
         let data = sample.to_data();
-        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
+        let array = ArrayView3::from_shape(sample.dims(), data.as_slice::<f32>().unwrap()).unwrap();
         let (split_rhat, ess) = split_rhat_mean_ess(array);
         println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
         println!("MIN ESS: {}", ess.min().unwrap());
