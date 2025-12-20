@@ -225,6 +225,7 @@
 //! - Rank-Normalized R-hat diagnostics
 //! - Ensemble Slice Sampling (ESS)
 
+pub mod batched_hmc;
 pub mod core;
 mod dev_tools;
 pub mod distributions;

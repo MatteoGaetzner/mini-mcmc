@@ -129,7 +129,7 @@ where
 /// This enables GPU-parallel execution without serializing chains.
 pub trait BatchVector: EuclideanVector {
     /// Per-chain energy type. For single chain: `f64`. For batch: `Tensor<B, 1>`.
-    type Energy;
+    type Energy: Clone;
 
     /// Per-chain mask type. For single chain: `bool`. For batch: `Tensor<B, 1, Bool>`.
     type Mask;
@@ -158,6 +158,25 @@ pub trait BatchVector: EuclideanVector {
     fn sample_uniform(&self, rng: &mut impl Rng) -> Self::Energy
     where
         StandardNormal: RandDistribution<Self::Scalar>;
+
+    // --- Energy arithmetic (avoids trait bound issues with Add/Sub on Tensor) ---
+
+    /// Energy subtraction: a - b
+    fn energy_sub(a: &Self::Energy, b: &Self::Energy) -> Self::Energy;
+
+    /// Energy addition: a + b
+    fn energy_add(a: &Self::Energy, b: &Self::Energy) -> Self::Energy;
+
+    /// Energy negation: -a
+    fn energy_neg(a: &Self::Energy) -> Self::Energy;
+
+    /// Natural log of energy (for ln(u) in acceptance)
+    fn energy_ln(a: &Self::Energy) -> Self::Energy;
+
+    // --- Acceptance logic ---
+
+    /// Create acceptance mask: returns true where log_accept >= ln_u
+    fn accept_mask(log_accept: &Self::Energy, ln_u: &Self::Energy) -> Self::Mask;
 }
 
 /// Implementation for single-chain ndarray (run N instances in parallel via Rayon)
@@ -203,6 +222,26 @@ where
         use rand::distr::Uniform;
         let dist = Uniform::new(T::zero(), T::one()).unwrap();
         rng.sample(dist)
+    }
+
+    fn energy_sub(a: &T, b: &T) -> T {
+        *a - *b
+    }
+
+    fn energy_add(a: &T, b: &T) -> T {
+        *a + *b
+    }
+
+    fn energy_neg(a: &T) -> T {
+        T::zero() - *a
+    }
+
+    fn energy_ln(a: &T) -> T {
+        a.ln()
+    }
+
+    fn accept_mask(log_accept: &T, ln_u: &T) -> bool {
+        *log_accept >= *ln_u
     }
 }
 
@@ -429,6 +468,30 @@ mod burn_impl {
                 burn::tensor::Distribution::Uniform(0.0, 1.0),
                 &B::Device::default(),
             )
+        }
+
+        fn energy_sub(a: &Tensor<B, 1>, b: &Tensor<B, 1>) -> Tensor<B, 1> {
+            a.clone().sub(b.clone())
+        }
+
+        fn energy_add(a: &Tensor<B, 1>, b: &Tensor<B, 1>) -> Tensor<B, 1> {
+            a.clone().add(b.clone())
+        }
+
+        fn energy_neg(a: &Tensor<B, 1>) -> Tensor<B, 1> {
+            a.clone().neg()
+        }
+
+        fn energy_ln(a: &Tensor<B, 1>) -> Tensor<B, 1> {
+            a.clone().log()
+        }
+
+        fn accept_mask(
+            log_accept: &Tensor<B, 1>,
+            ln_u: &Tensor<B, 1>,
+        ) -> Tensor<B, 1, burn::tensor::Bool> {
+            // Returns true where log_accept >= ln_u
+            log_accept.clone().greater_equal(ln_u.clone())
         }
     }
 }
