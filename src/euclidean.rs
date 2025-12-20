@@ -122,6 +122,90 @@ where
     }
 }
 
+/// Trait for batch-aware vector operations needed by HMC.
+///
+/// This trait extends `EuclideanVector` with operations that support batched execution,
+/// where `Self` represents ALL chains (e.g., `Tensor<B, 2>` of shape `[n_chains, dim]`).
+/// This enables GPU-parallel execution without serializing chains.
+pub trait BatchVector: EuclideanVector {
+    /// Per-chain energy type. For single chain: `f64`. For batch: `Tensor<B, 1>`.
+    type Energy;
+
+    /// Per-chain mask type. For single chain: `bool`. For batch: `Tensor<B, 1, Bool>`.
+    type Mask;
+
+    /// Number of chains in the batch.
+    fn n_chains(&self) -> usize;
+
+    /// Dimension per chain.
+    fn dim_per_chain(&self) -> usize;
+
+    /// Per-chain kinetic energy: 0.5 * sum(p^2) for each chain.
+    /// Returns [n_chains] energies for batch, or single scalar for single chain.
+    fn kinetic_energy(&self) -> Self::Energy;
+
+    /// Conditional update: self[i] = other[i] where mask[i] is true.
+    /// For GPU: uses mask_where kernel. For CPU: simple if-else.
+    fn masked_assign(&mut self, other: &Self, mask: &Self::Mask);
+
+    /// Fill with N(0,1) random values using device-native RNG.
+    /// For GPU: uses Tensor::random. For CPU: uses rng.
+    fn fill_random_normal(&mut self, rng: &mut impl Rng)
+    where
+        StandardNormal: RandDistribution<Self::Scalar>;
+
+    /// Generate uniform [0,1] values for acceptance test, same shape as Energy.
+    fn sample_uniform(&self, rng: &mut impl Rng) -> Self::Energy
+    where
+        StandardNormal: RandDistribution<Self::Scalar>;
+}
+
+/// Implementation for single-chain ndarray (run N instances in parallel via Rayon)
+impl<T> BatchVector for ndarray::Array1<T>
+where
+    T: Float + LinalgScalar + SampleUniform + Copy,
+    StandardNormal: RandDistribution<T>,
+{
+    type Energy = T;
+    type Mask = bool;
+
+    fn n_chains(&self) -> usize {
+        1
+    }
+
+    fn dim_per_chain(&self) -> usize {
+        self.len()
+    }
+
+    fn kinetic_energy(&self) -> T {
+        self.dot(self) * T::from(0.5).unwrap()
+    }
+
+    fn masked_assign(&mut self, other: &Self, mask: &bool) {
+        if *mask {
+            self.assign(other);
+        }
+    }
+
+    fn fill_random_normal(&mut self, rng: &mut impl Rng)
+    where
+        StandardNormal: RandDistribution<Self::Scalar>,
+    {
+        self.iter_mut()
+            .for_each(|x| *x = rng.sample(StandardNormal));
+    }
+
+    fn sample_uniform(&self, rng: &mut impl Rng) -> T
+    where
+        StandardNormal: RandDistribution<Self::Scalar>,
+    {
+        // Use SampleUniform which is already bounded on T
+        use rand::distr::Uniform;
+        let dist = Uniform::new(T::zero(), T::one()).unwrap();
+        rng.sample(dist)
+    }
+}
+
 #[cfg(feature = "burn")]
 mod burn_impl {
     use super::EuclideanVector;
@@ -203,6 +287,148 @@ mod burn_impl {
                 "write_to_slice called with mismatched buffer length"
             );
             out.copy_from_slice(slice);
+        }
+    }
+
+    // Batched chains: Tensor<B, 2> of shape [n_chains, dim]
+    impl<T, B> EuclideanVector for Tensor<B, 2>
+    where
+        T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
+        B: Backend<FloatElem = T>,
+        StandardNormal: RandDistribution<T>,
+    {
+        type Scalar = T;
+
+        fn len(&self) -> usize {
+            // Total elements across all chains
+            self.dims()[0] * self.dims()[1]
+        }
+
+        fn zeros_like(&self) -> Self {
+            Tensor::<B, 2>::zeros_like(self)
+        }
+
+        fn fill_zero(&mut self) {
+            let zeros = Tensor::<B, 2>::zeros_like(self);
+            self.inplace(|_| zeros.clone());
+        }
+
+        fn assign(&mut self, other: &Self) {
+            self.inplace(|_| other.clone());
+        }
+
+        fn add_assign(&mut self, other: &Self) {
+            self.inplace(|x| x.add(other.clone()));
+        }
+
+        fn sub_assign(&mut self, other: &Self) {
+            self.inplace(|x| x.sub(other.clone()));
+        }
+
+        fn add_scaled_assign(&mut self, other: &Self, alpha: Self::Scalar) {
+            self.inplace(|x| x.add(other.clone().mul_scalar(alpha)));
+        }
+
+        fn scale_assign(&mut self, alpha: Self::Scalar) {
+            self.inplace(|x| x.mul_scalar(alpha));
+        }
+
+        fn dot(&self, other: &Self) -> Self::Scalar {
+            // Global dot product (sum over all elements)
+            self.clone().mul(other.clone()).sum().into_scalar()
+        }
+
+        fn fill_standard_normal(&mut self, _rng: &mut impl Rng)
+        where
+            StandardNormal: RandDistribution<Self::Scalar>,
+        {
+            // Device-native RNG for GPU efficiency
+            let shape = burn::tensor::Shape::new(self.dims());
+            let noise = Tensor::<B, 2>::random(
+                shape,
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &B::Device::default(),
+            );
+            self.inplace(|_| noise);
+        }
+
+        fn write_to_slice(&self, out: &mut [Self::Scalar]) {
+            let data = self.to_data();
+            let slice = data.as_slice().expect("Tensor data expected to be dense");
+            assert_eq!(
+                out.len(),
+                slice.len(),
+                "write_to_slice called with mismatched buffer length"
+            );
+            out.copy_from_slice(slice);
+        }
+    }
+
+    use super::BatchVector;
+
+    /// BatchVector for Tensor<B, 2>: all chains batched, GPU-parallel execution
+    impl<T, B> BatchVector for Tensor<B, 2>
+    where
+        T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
+        B: Backend<FloatElem = T>,
+        StandardNormal: RandDistribution<T>,
+    {
+        type Energy = Tensor<B, 1>; // [n_chains] energies
+        type Mask = Tensor<B, 1, burn::tensor::Bool>; // [n_chains] booleans
+
+        fn n_chains(&self) -> usize {
+            self.dims()[0]
+        }
+
+        fn dim_per_chain(&self) -> usize {
+            self.dims()[1]
+        }
+
+        fn kinetic_energy(&self) -> Tensor<B, 1> {
+            // Per-chain: 0.5 * sum(p^2) over dim axis
+            // [n_chains, dim] -> [n_chains]
+            self.clone()
+                .mul(self.clone())
+                .sum_dim(1)
+                .squeeze(1)
+                .mul_scalar(T::from(0.5).unwrap())
+        }
+
+        fn masked_assign(&mut self, other: &Self, mask: &Tensor<B, 1, burn::tensor::Bool>) {
+            // Expand mask from [n_chains] to [n_chains, dim]
+            let n_chains = self.dims()[0];
+            let dim = self.dims()[1];
+            // Explicitly specify output dimension for unsqueeze_dim
+            let mask_2d: Tensor<B, 2, burn::tensor::Bool> = mask.clone().unsqueeze_dim(1);
+            let mask_expanded = mask_2d.expand([n_chains, dim]);
+            self.inplace(|x| x.clone().mask_where(mask_expanded, other.clone()));
+        }
+
+        fn fill_random_normal(&mut self, _rng: &mut impl Rng)
+        where
+            StandardNormal: RandDistribution<Self::Scalar>,
+        {
+            // Device-native RNG for GPU efficiency
+            let shape = burn::tensor::Shape::new(self.dims());
+            let noise = Tensor::<B, 2>::random(
+                shape,
+                burn::tensor::Distribution::Normal(0.0, 1.0),
+                &B::Device::default(),
+            );
+            self.inplace(|_| noise);
+        }
+
+        fn sample_uniform(&self, _rng: &mut impl Rng) -> Tensor<B, 1>
+        where
+            StandardNormal: RandDistribution<Self::Scalar>,
+        {
+            // Device-native uniform sampling [n_chains]
+            let n_chains = self.dims()[0];
+            Tensor::<B, 1>::random(
+                burn::tensor::Shape::new([n_chains]),
+                burn::tensor::Distribution::Uniform(0.0, 1.0),
+                &B::Device::default(),
+            )
         }
     }
 }
