@@ -498,7 +498,11 @@ where
 }
 
 #[allow(dead_code)]
-fn find_reasonable_epsilon<V, Target>(position: &V, mom: &V, gradient_target: &Target) -> V::Scalar
+pub(crate) fn find_reasonable_epsilon<V, Target>(
+    position: &V,
+    mom: &V,
+    gradient_target: &Target,
+) -> V::Scalar
 where
     V: EuclideanVector,
     V::Scalar: Float + FromPrimitive,
@@ -567,7 +571,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
-fn build_tree<V, Target>(
+pub(crate) fn build_tree<V, Target>(
     position: V,
     mom: V,
     grad: V,
@@ -752,7 +756,12 @@ where
     }
 }
 
-fn stop_criterion<V>(position_minus: V, position_plus: V, mom_minus: V, mom_plus: V) -> bool
+pub(crate) fn stop_criterion<V>(
+    position_minus: V,
+    position_plus: V,
+    mom_minus: V,
+    mom_plus: V,
+) -> bool
 where
     V: EuclideanVector,
     V::Scalar: Float,
@@ -764,7 +773,7 @@ where
     dot_minus >= V::Scalar::zero() && dot_plus >= V::Scalar::zero()
 }
 
-fn leapfrog<V, Target>(
+pub(crate) fn leapfrog<V, Target>(
     position: &mut V,
     momentum: &mut V,
     grad: &mut V,
