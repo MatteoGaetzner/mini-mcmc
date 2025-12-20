@@ -121,10 +121,7 @@ where
             .inner
             .chains_mut()
             .par_iter_mut()
-            .map(|chain| {
-                let samples = chain.run_positions(n_collect, n_discard);
-                Tensor::<B, 1>::stack(samples, 0)
-            })
+            .map(|chain| chain.run(n_collect, n_discard))
             .collect();
         Tensor::<B, 2>::stack(chain_samples, 0)
     }
@@ -139,6 +136,7 @@ where
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
+        B::seed(seed);
         self.inner = self.inner.set_seed(seed);
         self
     }
@@ -204,6 +202,7 @@ where
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
+        B::seed(seed);
         self.inner = self.inner.set_seed(seed);
         self
     }
@@ -214,8 +213,25 @@ where
             return Tensor::<B, 2>::empty([0, dim], &B::Device::default());
         }
 
-        let samples = self.inner.run_positions(n_collect, n_discard);
-        Tensor::<B, 1>::stack(samples, 0)
+        let dim = self.inner.position().dims()[0];
+        let mut out = Tensor::<B, 2>::empty([n_collect, dim], &B::Device::default());
+        let total = n_collect + n_discard;
+
+        for step_idx in 0..total {
+            if step_idx > 0 {
+                self.inner.step();
+            }
+            if step_idx >= n_discard {
+                let row = self.inner.position().clone().unsqueeze_dim(0);
+                out.inplace(|tensor| {
+                    tensor.slice_assign(
+                        [step_idx - n_discard..step_idx - n_discard + 1, 0..dim],
+                        row,
+                    )
+                });
+            }
+        }
+        out
     }
 
     pub fn step(&mut self) {
