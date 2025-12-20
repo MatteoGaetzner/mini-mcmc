@@ -1,8 +1,13 @@
 //! Hamiltonian Monte Carlo (HMC) sampler.
 //!
-//! This module provides a batch-native HMC implementation using the
-//! `BatchedGenericHMC` engine. All chains are processed in parallel on GPU
-//! with device-native RNG and vectorized acceptance.
+//! This is modeled similarly to a Metropolis–Hastings sampler but uses gradient-based proposals
+//! for improved efficiency. The sampler works in a data-parallel fashion and can update multiple
+//! chains simultaneously.
+//!
+//! The code relies on a target distribution provided via the `BatchedGradientTarget` trait, which computes
+//! the unnormalized log probability for a batch of positions. The HMC implementation uses the leapfrog
+//! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
+//! validation.
 
 use crate::batched_hmc::{BatchedGenericHMC, BatchedHamiltonianTarget};
 use crate::distributions::BatchedGradientTarget;
@@ -56,10 +61,16 @@ where
     }
 }
 
-/// A data-parallel Hamiltonian Monte Carlo (HMC) sampler using the burn backend.
+/// A data-parallel Hamiltonian Monte Carlo (HMC) sampler.
 ///
-/// This struct uses `BatchedGenericHMC` internally to process all chains in parallel
-/// on GPU with device-native RNG and vectorized acceptance.
+/// This struct encapsulates the HMC algorithm, including the leapfrog integrator and the
+/// accept/reject mechanism, for sampling from a target distribution in a batched manner.
+///
+/// # Type Parameters
+///
+/// * `T`: Floating-point type for numerical calculations.
+/// * `B`: Autodiff backend from the `burn` crate.
+/// * `GTarget`: The target distribution type implementing the `BatchedGradientTarget` trait.
 #[derive(Debug)]
 pub struct HMC<T, B, GTarget>
 where
@@ -83,6 +94,22 @@ where
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: RandDistribution<T>,
 {
+    /// Create a new data-parallel HMC sampler.
+    ///
+    /// This method initializes the sampler with the target distribution, initial positions,
+    /// step size, number of leapfrog steps, and a random seed for reproducibility.
+    ///
+    /// # Parameters
+    ///
+    /// * `target`: The target distribution implementing the `BatchedGradientTarget` trait.
+    /// * `initial_positions`: A vector of vectors containing the initial positions for each chain, with shape `[n_chains][D]`.
+    /// * `step_size`: The step size used in the leapfrog integrator.
+    /// * `n_leapfrog`: The number of leapfrog steps per update.
+    /// * `seed`: A seed for initializing the random number generator.
+    ///
+    /// # Returns
+    ///
+    /// A new instance of `HMC`.
     pub fn new(
         target: GTarget,
         initial_positions: Vec<Vec<T>>,
@@ -106,6 +133,13 @@ where
         Self { inner }
     }
 
+    /// Sets a new random seed.
+    ///
+    /// This method ensures reproducibility across runs.
+    ///
+    /// # Arguments
+    ///
+    /// * `seed` - The new random seed value.
     pub fn set_seed(mut self, seed: u64) -> Self {
         // Note: Burn backend seeding is global; this affects other samplers on the same backend.
         B::seed(seed);
@@ -113,7 +147,20 @@ where
         self
     }
 
-    /// Run HMC sampling with device-native collection (no GPU→CPU sync per step).
+    /// Run the HMC sampler for `n_collect` + `n_discard` steps.
+    ///
+    /// First, the sampler takes `n_discard` burn-in steps, then takes
+    /// `n_collect` further steps and collects those observations in a 3D tensor of
+    /// shape `[n_chains, n_collect, D]`.
+    ///
+    /// # Parameters
+    ///
+    /// * `n_collect` - The number of observations to collect and return.
+    /// * `n_discard` - The number of observations to discard (burn-in).
+    ///
+    /// # Returns
+    ///
+    /// A tensor containing the collected observations.
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
         // Burn-in
         (0..n_discard).for_each(|_| self.inner.step());
@@ -133,8 +180,68 @@ where
         stacked.permute([1, 0, 2])
     }
 
-    /// Run HMC with progress tracking and device-native collection.
-    /// Shows live progress bar with iteration count, max R-hat, and acceptance rate.
+    /// Run the HMC sampler for `n_collect` + `n_discard` steps and displays progress with
+    /// convergence statistics.
+    ///
+    /// First, the sampler takes `n_discard` burn-in steps, then takes
+    /// `n_collect` further steps and collects those observations in a 3D tensor of
+    /// shape `[n_chains, n_collect, D]`.
+    ///
+    /// This function displays a progress bar (using the `indicatif` crate) that is updated
+    /// with an approximate acceptance probability computed over a sliding window of 100 iterations
+    /// as well as the potential scale reduction factor, see [Stan Reference Manual.][1]
+    ///
+    /// # Parameters
+    ///
+    /// * `n_collect` - The number of observations to collect and return.
+    /// * `n_discard` - The number of observations to discard (burn-in).
+    ///
+    /// # Returns
+    ///
+    /// A tuple containing:
+    /// - A tensor of shape `[n_chains, n_collect, D]` containing the collected observations.
+    /// - A `RunStats` object containing convergence statistics including:
+    ///   - Acceptance probability
+    ///   - Potential scale reduction factor (R-hat)
+    ///   - Effective sample size (ESS)
+    ///   - Other convergence diagnostics
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use mini_mcmc::hmc::HMC;
+    /// use mini_mcmc::distributions::DiffableGaussian2D;
+    /// use burn::backend::{Autodiff, NdArray};
+    /// use burn::prelude::*;
+    ///
+    /// // Create a 2D Gaussian target distribution
+    /// let target = DiffableGaussian2D::new(
+    ///     [0.0_f32, 1.0],  // mean
+    ///     [[4.0, 2.0],     // covariance
+    ///      [2.0, 3.0]]
+    /// );
+    ///
+    /// // Create HMC sampler with:
+    /// // - target distribution
+    /// // - initial positions for each chain
+    /// // - step size for leapfrog integration
+    /// // - number of leapfrog steps
+    /// type BackendType = Autodiff<NdArray>;
+    /// let mut sampler = HMC::<f32, BackendType, DiffableGaussian2D<f32>>::new(
+    ///     target,
+    ///     vec![vec![0.0; 2]; 4],    // Initial positions for 4 chains
+    ///     0.1,                      // Step size
+    ///     5,                       // Number of leapfrog steps
+    /// );
+    ///
+    /// // Run sampler with progress tracking
+    /// let (sample, stats) = sampler.run_progress(12, 34).unwrap();
+    ///
+    /// // Print convergence statistics
+    /// println!("{stats}");
+    /// ```
+    ///
+    /// [1]: https://mc-stan.org/docs/2_18/reference-manual/notation-for-samples-chains-and-draws.html
     pub fn run_progress(
         &mut self,
         n_collect: usize,
@@ -198,6 +305,14 @@ where
         Ok((sample, stats))
     }
 
+    /// Perform one batched HMC update for all chains in parallel.
+    ///
+    /// The update consists of:
+    /// 1) Sampling momenta from a standard normal distribution.
+    /// 2) Running the leapfrog integrator to propose new positions.
+    /// 3) Performing an accept/reject step for each chain.
+    ///
+    /// This method updates `self.positions` in-place.
     pub fn step(&mut self) {
         self.inner.step();
     }

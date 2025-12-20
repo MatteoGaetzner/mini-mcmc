@@ -65,6 +65,15 @@ use std::ops::AddAssign;
 /// * `T`: The floating-point type (e.g., f32 or f64).
 /// * `B`: The autodiff backend from the `burn` crate.
 pub trait BatchedGradientTarget<T: Float, B: AutodiffBackend> {
+    /// Compute the log density for a batch of positions.
+    ///
+    /// # Parameters
+    ///
+    /// * `positions`: A tensor of shape `[n_chains, D]` representing the current positions for each chain.
+    ///
+    /// # Returns
+    ///
+    /// A 1D tensor of shape `[n_chains]` containing the log density for each chain.
     fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 

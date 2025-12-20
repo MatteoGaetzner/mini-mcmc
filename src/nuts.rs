@@ -1,4 +1,38 @@
-//! Burn-backed NUTS wrapper over the backend-agnostic core.
+//! No-U-Turn Sampler (NUTS).
+//!
+//! A parallel implementation of NUTS running independent Markov chains via Rayon.
+//!
+//! ## Example: custom 2D Rosenbrock target
+//! ```rust
+//! use mini_mcmc::core::init;
+//! use mini_mcmc::distributions::GradientTarget;
+//! use mini_mcmc::nuts::NUTS;
+//! use burn::backend::{Autodiff, NdArray};
+//! use burn::prelude::*;
+//!
+//! type B = Autodiff<NdArray>;
+//!
+//! #[derive(Clone)]
+//! struct Rosenbrock2D { a: f32, b: f32 }
+//!
+//! impl GradientTarget<f32, B> for Rosenbrock2D {
+//!     fn unnorm_logp(&self, position: Tensor<B, 1>) -> Tensor<B, 1> {
+//!         let x = position.clone().slice(s![0..1]);
+//!         let y = position.slice(s![1..2]);
+//!         let term_1 = (-x.clone()).add_scalar(self.a).powi_scalar(2);
+//!         let term_2 = y.sub(x.powi_scalar(2)).powi_scalar(2).mul_scalar(self.b);
+//!         -(term_1 + term_2)
+//!     }
+//! }
+//!
+//! let target = Rosenbrock2D { a: 1.0, b: 100.0 };
+//! let initial_positions = init::<f32>(4, 2);    // 4 chains in 2D
+//! let mut sampler = NUTS::new(target, initial_positions, 0.9);
+//! let (samples, stats) = sampler.run_progress(100, 20).unwrap();
+//! ```
+//!
+//! ## Inspiration
+//! Borrowed ideas from [mfouesneau/NUTS](https://github.com/mfouesneau/NUTS).
 
 use crate::distributions::GradientTarget;
 use crate::generic_hmc::HamiltonianTarget;
@@ -42,7 +76,16 @@ where
     }
 }
 
-/// Burn-backed No-U-Turn Sampler (NUTS).
+/// No-U-Turn Sampler (NUTS).
+///
+/// Encapsulates multiple independent Markov chains using the NUTS algorithm. Utilizes dual-averaging
+/// step size adaptation and dynamic trajectory lengths to efficiently explore complex posterior geometries.
+/// Chains are executed concurrently via Rayon, each evolving independently.
+///
+/// # Type Parameters
+/// - `T`: Floating-point type for numerical calculations.
+/// - `B`: Autodiff backend from the `burn` crate.
+/// - `GTarget`: Target distribution type implementing the `GradientTarget` trait.
 pub struct NUTS<T, B, GTarget>
 where
     T: Float
@@ -79,6 +122,37 @@ where
     Exp1: RandDistribution<B::FloatElem>,
     B::FloatElem: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
 {
+    /// Creates a new NUTS sampler with the given target distribution and initial state for each chain.
+    ///
+    /// # Parameters
+    /// - `target`: The target distribution implementing `GradientTarget`.
+    /// - `initial_positions`: A vector of initial positions for each chain, shape `[n_chains, D]`.
+    /// - `target_accept_p`: Desired average acceptance probability for the dual-averaging adaptation. Try values between 0.6 and 0.95.
+    ///
+    /// # Returns
+    /// A newly initialized `NUTS` instance.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use burn::backend::{Autodiff, NdArray};
+    /// # use mini_mcmc::nuts::NUTS;
+    /// # use mini_mcmc::distributions::DiffableGaussian2D;
+    /// type B = Autodiff<NdArray>;
+    ///
+    /// // Create a 2D Gaussian with mean [0,0] and identity covariance
+    /// let gauss = DiffableGaussian2D::new([0.0_f64, 0.0], [[1.0, 0.0], [0.0, 1.0]]);
+    ///
+    /// // Initialize 3 chains in 2D at different starting points
+    /// let init_positions = vec![
+    ///     vec![-1.0, -1.0],
+    ///     vec![ 0.0,  0.0],
+    ///     vec![ 1.0,  1.0],
+    /// ];
+    ///
+    /// // Build the sampler targeting 85% acceptance probability
+    /// let sampler: NUTS<f64, B, _> = NUTS::new(gauss, init_positions, 0.85);
+    /// ```
     pub fn new(target: GTarget, initial_positions: Vec<Vec<T>>, target_accept_p: T) -> Self {
         let positions_vec: Vec<Tensor<B, 1>> = initial_positions
             .into_iter()
@@ -105,6 +179,38 @@ where
         }
     }
 
+    /// Runs all chains for a total of `n_collect + n_discard` steps and collects samples.
+    ///
+    /// First discards `n_discard` warm-up steps for each chain (during which adaptation occurs),
+    /// then collects `n_collect` samples per chain.
+    ///
+    /// # Parameters
+    /// - `n_collect`: Number of samples to collect after warm-up per chain.
+    /// - `n_discard`: Number of warm-up (burn-in) steps to discard per chain.
+    ///
+    /// # Returns
+    /// A 3D tensor of shape `[n_chains, n_collect, D]` containing the collected samples.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// # use burn::backend::{Autodiff, NdArray};
+    /// # use burn::prelude::Tensor;
+    /// # use mini_mcmc::nuts::NUTS;
+    /// # use mini_mcmc::core::init;
+    /// # use mini_mcmc::distributions::DiffableGaussian2D;
+    /// type B = Autodiff<NdArray>;
+    ///
+    /// // As above, construct the sampler
+    /// let gauss = DiffableGaussian2D::new([0.0_f32, 0.0], [[1.0,0.0],[0.0,1.0]]);
+    /// let mut sampler = NUTS::new(gauss, init::<f32>(2, 2), 0.8);
+    ///
+    /// // Discard 50 warm-up steps, then collect 150 observations per chain
+    /// let sample: Tensor<B, 3> = sampler.run(150, 50);
+    ///
+    /// // sample.dims() == [2 chains, 150 observations, 2 dimensions]
+    /// assert_eq!(sample.dims(), [2, 150, 2]);
+    /// ```
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
         // Note: On GPU backends, NUTS can be slower due to CPU-driven tree building
         // and synchronization when evaluating stop criteria. Prefer HMC for GPU-heavy workloads.
@@ -152,6 +258,28 @@ where
         out
     }
 
+    /// Run with live progress bars and collect summary stats.
+    ///
+    /// Spawns a background thread to render per-chain and global bars,
+    /// then returns `(samples, RunStats)` when done.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use burn::backend::{Autodiff, NdArray};
+    /// use mini_mcmc::distributions::Rosenbrock2D;
+    /// use mini_mcmc::nuts::NUTS;
+    /// use mini_mcmc::core::init;
+    ///
+    /// type B = Autodiff<NdArray>;
+    ///
+    /// let target = Rosenbrock2D { a: 1.0, b: 100.0 };
+    /// let init   = init::<f64>(4, 2);    // 4 chains in 2D
+    /// let mut sampler = NUTS::<f64, B, Rosenbrock2D<f64>>::new(target, init, 0.9);
+    /// let (samples, stats) = sampler.run_progress(100, 20).unwrap();
+    /// ```
+    ///
+    /// You can swap in any other [`GradientTarget`] just as easily.
     pub fn run_progress(
         &mut self,
         n_collect: usize,
@@ -161,6 +289,13 @@ where
         Ok((array3_to_tensor(sample), stats))
     }
 
+    /// Sets a new random seed for all chains to ensure reproducibility.
+    ///
+    /// # Parameters
+    /// - `seed`: Base seed value. Each chain will derive its own seed for independence.
+    ///
+    /// # Returns
+    /// `self` with the RNGs re-seeded.
     pub fn set_seed(mut self, seed: u64) -> Self {
         // Note: Burn backend seeding is global; this affects other samplers on the same backend.
         B::seed(seed);
@@ -169,7 +304,10 @@ where
     }
 }
 
-/// Burn-backed single-chain NUTS wrapper.
+/// Single-chain state and adaptation for NUTS.
+///
+/// Manages the dynamic trajectory building, dual-averaging adaptation of step size,
+/// and current position for one chain.
 pub struct NUTSChain<T, B, GTarget>
 where
     T: Float
@@ -206,6 +344,15 @@ where
     Exp1: RandDistribution<B::FloatElem>,
     B::FloatElem: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
 {
+    /// Constructs a new NUTSChain for a single chain with the given initial position.
+    ///
+    /// # Parameters
+    /// - `target`: The target distribution implementing `GradientTarget`.
+    /// - `initial_position`: Initial position vector of length `D`.
+    /// - `target_accept_p`: Desired average acceptance probability for adaptation.
+    ///
+    /// # Returns
+    /// An initialized `NUTSChain`.
     pub fn new(target: GTarget, initial_position: Vec<T>, target_accept_p: T) -> Self {
         let len = initial_position.len();
         let position_elem: Vec<B::FloatElem> = initial_position
@@ -228,6 +375,13 @@ where
         }
     }
 
+    /// Sets a new random seed for this chain to ensure reproducibility.
+    ///
+    /// # Parameters
+    /// - `seed`: Seed value for the chain's RNG.
+    ///
+    /// # Returns
+    /// `self` with the RNG re-seeded.
     pub fn set_seed(mut self, seed: u64) -> Self {
         // Note: Burn backend seeding is global; this affects other samplers on the same backend.
         B::seed(seed);
@@ -235,6 +389,15 @@ where
         self
     }
 
+    /// Runs the chain for `n_collect + n_discard` steps, adapting during burn-in and
+    /// returning collected samples.
+    ///
+    /// # Parameters
+    /// - `n_collect`: Number of samples to collect after adaptation.
+    /// - `n_discard`: Number of burn-in steps for adaptation.
+    ///
+    /// # Returns
+    /// A 2D tensor of shape `[n_collect, D]` containing collected samples.
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 2> {
         if n_collect == 0 {
             let dim = self.inner.position().dims()[0];
@@ -262,6 +425,9 @@ where
         out
     }
 
+    /// Performs one NUTS update step, including tree expansion and adaptation updates.
+    ///
+    /// This method updates `self.position` and adaptation statistics in-place.
     pub fn step(&mut self) {
         self.inner.step();
     }
