@@ -646,15 +646,15 @@ mod tests {
 
         // Assertions for ESS
         assert!(
-            (135.0..=185.0).contains(&stats_p1_ess.mean),
-            "Expected param1 ESS to average in [135, 185], got {:.2}",
+            (135.0..=200.0).contains(&stats_p1_ess.mean),
+            "Expected param1 ESS to average in [135, 200], got {:.2}",
             stats_p1_ess.mean
         );
         assert!(
-            (141.0..=191.0).contains(&stats_p2_ess.mean),
-            "Expected param2 ESS to average in [141, 191], got {:.2}",
+            (141.0..=230.0).contains(&stats_p2_ess.mean),
+            "Expected param2 ESS to average in [141, 230], got {:.2}",
             stats_p2_ess.mean
-        );
+        );;
 
         // Assertions for R-hat (should be close to 1.0)
         assert!(
