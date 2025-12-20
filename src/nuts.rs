@@ -18,9 +18,9 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::uniform::SampleUniform;
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
+use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
 use std::marker::PhantomData;
-use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
 #[derive(Debug)]
 struct BurnGradientTarget<GTarget, T> {

@@ -14,9 +14,9 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
-use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
