@@ -164,8 +164,9 @@ where
     }
 
     pub(crate) fn step(&mut self) {
-        let half = self.step_size * V::Scalar::from_f64(0.5).unwrap();
         let n_chains = self.positions.len();
+        // Kinetic energy uses 0.5 only (NOT step_size * 0.5)
+        let ke_half = V::Scalar::from_f64(0.5).unwrap();
 
         for i in 0..n_chains {
             let grad = &mut self.grad_buffers[i];
@@ -174,7 +175,7 @@ where
 
             let momentum = &mut self.momentum_buffers[i];
             momentum.fill_standard_normal(&mut self.rng);
-            let ke_current = momentum.dot(momentum) * half;
+            let ke_current = momentum.dot(momentum) * ke_half;
 
             let proposal_pos = &mut self.proposal_positions[i];
             proposal_pos.assign(&self.positions[i]);
@@ -191,7 +192,7 @@ where
                 logp_current,
             );
 
-            let ke_proposed = proposal_mom.dot(proposal_mom) * half;
+            let ke_proposed = proposal_mom.dot(proposal_mom) * ke_half;
             let log_accept = (logp_proposed - logp_current) + (ke_current - ke_proposed);
             let ln_u: V::Scalar = self.rng.sample(StandardUniform).ln();
             if ln_u <= log_accept {
