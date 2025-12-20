@@ -6,6 +6,7 @@
 
 use crate::batched_hmc::{BatchedGenericHMC, BatchedHamiltonianTarget};
 use crate::distributions::BatchedGradientTarget;
+use crate::euclidean::BatchVector;
 use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
@@ -133,22 +134,50 @@ where
         self
     }
 
+    /// Run HMC sampling with device-native collection (no GPU→CPU sync per step).
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
-        let sample = self.inner.run(n_collect, n_discard);
+        // Burn-in
+        (0..n_discard).for_each(|_| self.inner.step());
+
+        // Collect samples on-device: stack positions into Tensor<B, 3>
+        let (_n_chains, _dim) = (
+            self.inner.positions().n_chains(),
+            self.inner.positions().dim_per_chain(),
+        );
+        let mut samples: Vec<Tensor<B, 2>> = Vec::with_capacity(n_collect);
+
+        for _ in 0..n_collect {
+            self.inner.step();
+            // Clone positions tensor (stays on device, no CPU transfer)
+            samples.push(self.inner.positions().clone());
+        }
+
         self.refresh_positions();
-        array3_to_tensor(sample)
+
+        // Stack all samples: [n_collect] of [n_chains, dim] -> [n_collect, n_chains, dim]
+        let stacked = Tensor::<B, 2>::stack(samples, 0); // [n_collect, n_chains, dim]
+                                                         // Permute to [n_chains, n_collect, dim] for expected output format
+        stacked.permute([1, 0, 2])
     }
 
+    /// Run HMC with progress tracking and device-native collection.
     pub fn run_progress(
         &mut self,
         n_collect: usize,
         n_discard: usize,
     ) -> Result<(Tensor<B, 3>, RunStats), Box<dyn Error>> {
-        // For now, use simple run (run_progress not yet implemented in BatchedGenericHMC)
-        let sample = self.inner.run(n_collect, n_discard);
-        self.refresh_positions();
-        let stats = RunStats::from(sample.view());
-        Ok((array3_to_tensor(sample), stats))
+        // Use device-native collection
+        let sample = self.run(n_collect, n_discard);
+
+        // For stats, we need to transfer to CPU (once at the end, not every step)
+        let data = sample.to_data();
+        let slice: &[T] = data.as_slice().expect("Tensor data expected to be dense");
+        let dims = sample.dims();
+        let arr = ndarray::ArrayView3::from_shape((dims[0], dims[1], dims[2]), slice)
+            .expect("Shape mismatch");
+        let stats = RunStats::from(arr);
+
+        Ok((sample, stats))
     }
 
     pub fn step(&mut self) {
@@ -160,22 +189,6 @@ where
     fn refresh_positions(&mut self) {
         self.positions = self.inner.positions().clone();
     }
-}
-
-fn array3_to_tensor<B, T>(arr: ndarray::Array3<T>) -> Tensor<B, 3>
-where
-    B: AutodiffBackend<FloatElem = T>,
-    T: Float + Element + ElementConversion,
-{
-    let shape = arr.raw_dim();
-    let (mut data, offset) = arr.into_raw_vec_and_offset();
-    if let Some(offset) = offset {
-        if offset != 0 {
-            data.rotate_left(offset);
-        }
-    }
-    let td = TensorData::new(data, [shape[0], shape[1], shape[2]]);
-    Tensor::<B, 3>::from_data(td, &B::Device::default())
 }
 
 #[cfg(test)]

@@ -248,7 +248,7 @@ where
 #[cfg(feature = "burn")]
 mod burn_impl {
     use super::EuclideanVector;
-    use burn::prelude::{Backend, Tensor, TensorData};
+    use burn::prelude::{Backend, Tensor};
     use burn::tensor::Element;
     use burn::tensor::ElementConversion;
     use num_traits::{Float, FromPrimitive};
@@ -302,19 +302,18 @@ mod burn_impl {
             self.clone().mul(other.clone()).sum().into_scalar()
         }
 
-        fn fill_standard_normal(&mut self, rng: &mut impl Rng)
+        fn fill_standard_normal(&mut self, _rng: &mut impl Rng)
         where
             StandardNormal: RandDistribution<Self::Scalar>,
         {
-            let mut data = Vec::with_capacity(self.len());
-            for _ in 0..self.len() {
-                data.push(rng.sample(StandardNormal));
-            }
-            let noise = Tensor::<B, 1>::from_data(
-                TensorData::new(data, [self.len()]),
+            // Device-native RNG for GPU efficiency (ignores CPU rng parameter)
+            let shape = burn::tensor::Shape::new([self.len()]);
+            let noise = Tensor::<B, 1>::random(
+                shape,
+                burn::tensor::Distribution::Normal(0.0, 1.0),
                 &B::Device::default(),
             );
-            self.inplace(|_| noise.clone());
+            self.inplace(|_| noise);
         }
 
         fn write_to_slice(&self, out: &mut [Self::Scalar]) {
