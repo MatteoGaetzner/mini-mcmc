@@ -766,8 +766,9 @@ where
     V: EuclideanVector,
     V::Scalar: Float,
 {
+    // Use proper subtraction to match original Tensor semantics
     let mut diff = position_plus.clone();
-    diff.add_scaled_assign(&position_minus, -V::Scalar::one());
+    diff.sub_assign(&position_minus);
     let dot_minus = diff.dot(&mom_minus);
     let dot_plus = diff.dot(&mom_plus);
     dot_minus >= V::Scalar::zero() && dot_plus >= V::Scalar::zero()
@@ -785,10 +786,11 @@ where
     V::Scalar: Float + FromPrimitive,
     Target: HamiltonianTarget<V>,
 {
-    let half = V::Scalar::from_f64(0.5).unwrap() * epsilon;
-    momentum.add_scaled_assign(grad, half);
+    // Match original operation order: grad * epsilon * 0.5 (not grad * (0.5 * epsilon))
+    let half = V::Scalar::from_f64(0.5).unwrap();
+    momentum.add_scaled_assign(grad, epsilon * half);
     position.add_scaled_assign(momentum, epsilon);
     let logp = gradient_target.logp_and_grad(position, grad);
-    momentum.add_scaled_assign(grad, half);
+    momentum.add_scaled_assign(grad, epsilon * half);
     logp
 }

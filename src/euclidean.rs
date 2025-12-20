@@ -31,6 +31,9 @@ pub trait EuclideanVector: Clone {
     /// In-place addition.
     fn add_assign(&mut self, other: &Self);
 
+    /// In-place subtraction: `self -= other`.
+    fn sub_assign(&mut self, other: &Self);
+
     /// In-place fused multiply-add: `self += alpha * other`.
     fn add_scaled_assign(&mut self, other: &Self, alpha: Self::Scalar);
 
@@ -75,6 +78,12 @@ where
     fn add_assign(&mut self, other: &Self) {
         ndarray::Zip::from(self).and(other).for_each(|a, b| {
             *a = *a + *b;
+        });
+    }
+
+    fn sub_assign(&mut self, other: &Self) {
+        ndarray::Zip::from(self).and(other).for_each(|a, b| {
+            *a = *a - *b;
         });
     }
 
@@ -152,6 +161,10 @@ mod burn_impl {
 
         fn add_assign(&mut self, other: &Self) {
             self.inplace(|x| x.add(other.clone()));
+        }
+
+        fn sub_assign(&mut self, other: &Self) {
+            self.inplace(|x| x.sub(other.clone()));
         }
 
         fn add_scaled_assign(&mut self, other: &Self, alpha: Self::Scalar) {
