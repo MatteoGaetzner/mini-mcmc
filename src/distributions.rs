@@ -42,11 +42,8 @@ let candidate = proposal.sample(&current);
 println!("Candidate state: {:?}", candidate);
 */
 
-#[cfg(feature = "burn")]
 use burn::prelude::*;
-#[cfg(feature = "burn")]
 use burn::tensor::backend::AutodiffBackend;
-#[cfg(feature = "burn")]
 use burn::tensor::Element;
 use ndarray::{arr1, arr2, Array1, Array2, NdFloat};
 use num_traits::Float;
@@ -67,12 +64,10 @@ use std::ops::AddAssign;
 ///
 /// * `T`: The floating-point type (e.g., f32 or f64).
 /// * `B`: The autodiff backend from the `burn` crate.
-#[cfg(feature = "burn")]
 pub trait BatchedGradientTarget<T: Float, B: AutodiffBackend> {
     fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1>;
 }
 
-#[cfg(feature = "burn")]
 pub trait GradientTarget<T: Float, B: AutodiffBackend> {
     fn unnorm_logp(&self, position: Tensor<B, 1>) -> Tensor<B, 1>;
 

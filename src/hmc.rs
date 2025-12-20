@@ -6,7 +6,6 @@
 
 use crate::batched_hmc::{BatchedGenericHMC, BatchedHamiltonianTarget};
 use crate::distributions::BatchedGradientTarget;
-use crate::euclidean::BatchVector;
 use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
@@ -15,7 +14,6 @@ use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::distr::Distribution as RandDistribution;
 #[cfg(test)]
 use rand::prelude::*;
-use rand::rngs::SmallRng;
 use rand_distr::uniform::SampleUniform;
 use rand_distr::StandardNormal;
 use std::error::Error;
@@ -31,7 +29,7 @@ struct BatchedGradientTargetAdapter<GTarget> {
 
 impl<T, B, GTarget> BatchedHamiltonianTarget<Tensor<B, 2>> for BatchedGradientTargetAdapter<GTarget>
 where
-    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
+    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive,
     B: AutodiffBackend<FloatElem = T>,
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: RandDistribution<T>,
@@ -62,25 +60,15 @@ where
 ///
 /// This struct uses `BatchedGenericHMC` internally to process all chains in parallel
 /// on GPU with device-native RNG and vectorized acceptance.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct HMC<T, B, GTarget>
 where
-    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + ToPrimitive + Copy,
+    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + ToPrimitive,
     B: AutodiffBackend<FloatElem = T>,
-    GTarget: BatchedGradientTarget<T, B> + std::marker::Sync + Clone,
+    GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: RandDistribution<T>,
 {
     inner: BatchedGenericHMC<Tensor<B, 2>, BatchedGradientTargetAdapter<GTarget>>,
-    /// The target distribution which provides log probability evaluations and gradients.
-    pub target: GTarget,
-    /// The step size for the leapfrog integrator.
-    pub step_size: T,
-    /// The number of leapfrog steps to take per HMC update.
-    pub n_leapfrog: usize,
-    /// Exposed RNG for compatibility; mirrors the internal engine RNG.
-    pub rng: SmallRng,
-    /// Current positions stacked as a `[n_chains, dim]` tensor.
-    pub positions: Tensor<B, 2>,
 }
 
 impl<T, B, GTarget> HMC<T, B, GTarget>
@@ -92,7 +80,7 @@ where
         + num_traits::FromPrimitive
         + num_traits::ToPrimitive,
     B: AutodiffBackend<FloatElem = T>,
-    GTarget: BatchedGradientTarget<T, B> + std::marker::Sync + Clone,
+    GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: RandDistribution<T>,
 {
     pub fn new(
@@ -109,28 +97,17 @@ where
         let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
 
         let inner = BatchedGenericHMC::new(
-            BatchedGradientTargetAdapter {
-                inner: target.clone(),
-            },
-            positions.clone(),
+            BatchedGradientTargetAdapter { inner: target },
+            positions,
             step_size,
             n_leapfrog,
         );
-        let rng = inner.rng_clone();
 
-        Self {
-            inner,
-            target,
-            step_size,
-            n_leapfrog,
-            rng,
-            positions,
-        }
+        Self { inner }
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
         self.inner = self.inner.set_seed(seed);
-        self.rng = self.inner.rng_clone();
         self
     }
 
@@ -139,37 +116,76 @@ where
         // Burn-in
         (0..n_discard).for_each(|_| self.inner.step());
 
-        // Collect samples on-device: stack positions into Tensor<B, 3>
-        let (_n_chains, _dim) = (
-            self.inner.positions().n_chains(),
-            self.inner.positions().dim_per_chain(),
-        );
-        let mut samples: Vec<Tensor<B, 2>> = Vec::with_capacity(n_collect);
+        if n_collect == 0 {
+            let dims = self.inner.positions().dims();
+            return Tensor::<B, 3>::empty([dims[0], 0, dims[1]], &B::Device::default());
+        }
 
+        let mut samples: Vec<Tensor<B, 2>> = Vec::with_capacity(n_collect);
         for _ in 0..n_collect {
             self.inner.step();
-            // Clone positions tensor (stays on device, no CPU transfer)
             samples.push(self.inner.positions().clone());
         }
 
-        self.refresh_positions();
-
-        // Stack all samples: [n_collect] of [n_chains, dim] -> [n_collect, n_chains, dim]
-        let stacked = Tensor::<B, 2>::stack(samples, 0); // [n_collect, n_chains, dim]
-                                                         // Permute to [n_chains, n_collect, dim] for expected output format
+        let stacked = Tensor::<B, 2>::stack(samples, 0);
         stacked.permute([1, 0, 2])
     }
 
     /// Run HMC with progress tracking and device-native collection.
+    /// Shows live progress bar with iteration count, max R-hat, and acceptance rate.
     pub fn run_progress(
         &mut self,
         n_collect: usize,
         n_discard: usize,
     ) -> Result<(Tensor<B, 3>, RunStats), Box<dyn Error>> {
-        // Use device-native collection
-        let sample = self.run(n_collect, n_discard);
+        use crate::stats::MultiChainTracker;
+        use indicatif::{ProgressBar, ProgressStyle};
 
-        // For stats, we need to transfer to CPU (once at the end, not every step)
+        // Burn-in
+        (0..n_discard).for_each(|_| self.inner.step());
+
+        let dims = self.inner.positions().dims();
+        let (n_chains, dim) = (dims[0], dims[1]);
+
+        let pb = ProgressBar::new(n_collect as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{prefix:8} {bar:40.cyan/blue} {pos}/{len} ({eta}) | {msg}")
+                .unwrap()
+                .progress_chars("=>-"),
+        );
+        pb.set_prefix("HMC");
+
+        let mut tracker = MultiChainTracker::new(n_chains, dim);
+        let mut samples: Vec<Tensor<B, 2>> = Vec::with_capacity(n_collect);
+        let mut last_sync = std::time::Instant::now();
+        let sync_interval = std::time::Duration::from_millis(500);
+
+        for step_idx in 0..n_collect {
+            self.inner.step();
+            let current = self.inner.positions().clone();
+            samples.push(current.clone());
+            pb.inc(1);
+
+            if step_idx + 1 == n_collect || last_sync.elapsed() >= sync_interval {
+                let data = current.to_data();
+                if let Ok(slice) = data.as_slice::<T>() {
+                    let _ = tracker.step(slice);
+                    if let Ok(max_rhat) = tracker.max_rhat() {
+                        pb.set_message(format!(
+                            "p(accept)≈{:.2} max(rhat)≈{:.2}",
+                            tracker.p_accept, max_rhat
+                        ));
+                    }
+                }
+                last_sync = std::time::Instant::now();
+            }
+        }
+        pb.finish_with_message("Done!");
+
+        let stacked = Tensor::<B, 2>::stack(samples, 0);
+        let sample = stacked.permute([1, 0, 2]);
+
         let data = sample.to_data();
         let slice: &[T] = data.as_slice().expect("Tensor data expected to be dense");
         let dims = sample.dims();
@@ -182,12 +198,26 @@ where
 
     pub fn step(&mut self) {
         self.inner.step();
-        self.refresh_positions();
-        self.rng = self.inner.rng_clone();
     }
 
-    fn refresh_positions(&mut self) {
-        self.positions = self.inner.positions().clone();
+    /// Get a reference to the target distribution.
+    pub fn target(&self) -> &GTarget {
+        &self.inner.target().inner
+    }
+
+    /// Get a reference to the current positions.
+    pub fn positions(&self) -> &Tensor<B, 2> {
+        self.inner.positions()
+    }
+
+    /// Get a reference to the step size.
+    pub fn step_size(&self) -> &T {
+        self.inner.step_size()
+    }
+
+    /// Get the number of leapfrog steps.
+    pub fn n_leapfrog(&self) -> usize {
+        self.inner.n_leapfrog()
     }
 }
 

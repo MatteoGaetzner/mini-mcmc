@@ -23,14 +23,14 @@ num-traits = "0.2"
 csv = {version="1.3", optional=true}
 arrow = {version="56.2", optional=true}
 parquet = {version="56.2", optional=true}
-burn = { version = "0.18", features = ["autodiff", "ndarray"], optional = true }
+burn = { version = "0.18", features = ["autodiff", "ndarray"] }
 ndarray = { version = "0.16" }
 ndarray-stats = "0.6"
 rustfft = "6.4"
 
 [features]
 default = ["burn"]
-burn = ["dep:burn"]
+burn = []
 wgpu = ["burn", "burn/wgpu"]
 no_burn = []
 csv = ["dep:csv"]

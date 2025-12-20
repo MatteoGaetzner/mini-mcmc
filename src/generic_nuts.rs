@@ -14,13 +14,13 @@ use rand::{Rng, SeedableRng};
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
+use std::sync::Arc;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
 /// Backend-agnostic No-U-Turn Sampler (NUTS) spanning multiple chains.
-#[derive(Clone)]
 pub struct GenericNUTS<V, Target>
 where
     V: EuclideanVector,
@@ -35,17 +35,22 @@ impl<V, Target> GenericNUTS<V, Target>
 where
     V: EuclideanVector + Send,
     V::Scalar: Float + FromPrimitive + ToPrimitive + Send,
-    Target: HamiltonianTarget<V> + Sync + Clone + Send,
+    Target: HamiltonianTarget<V> + Sync + Send,
     StandardNormal: RandDistribution<V::Scalar>,
     StandardUniform: RandDistribution<V::Scalar>,
     Exp1: RandDistribution<V::Scalar>,
 {
     pub fn new(target: Target, initial_positions: Vec<V>, target_accept_p: V::Scalar) -> Self {
+        let target = Arc::new(target);
         let chains = initial_positions
             .into_iter()
-            .map(|pos| GenericNUTSChain::new(target.clone(), pos, target_accept_p))
+            .map(|pos| GenericNUTSChain::new_shared(Arc::clone(&target), pos, target_accept_p))
             .collect();
         Self { chains }
+    }
+
+    pub(crate) fn chains_mut(&mut self) -> &mut [GenericNUTSChain<V, Target>] {
+        &mut self.chains
     }
 
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Array3<V::Scalar> {
@@ -204,13 +209,13 @@ where
 }
 
 /// Single-chain state and adaptation for NUTS.
-#[derive(Clone)]
+#[derive(Debug)]
 pub struct GenericNUTSChain<V, Target>
 where
     V: EuclideanVector,
     Target: HamiltonianTarget<V>,
 {
-    target: Target,
+    target: Arc<Target>,
     position: V,
     target_accept_p: V::Scalar,
     epsilon: V::Scalar,
@@ -230,12 +235,21 @@ impl<V, Target> GenericNUTSChain<V, Target>
 where
     V: EuclideanVector,
     V::Scalar: Float + FromPrimitive + ToPrimitive,
-    Target: HamiltonianTarget<V> + Sync,
+    Target: HamiltonianTarget<V> + Sync + Send,
     StandardNormal: RandDistribution<V::Scalar>,
     StandardUniform: RandDistribution<V::Scalar>,
     Exp1: RandDistribution<V::Scalar>,
 {
     pub fn new(target: Target, initial_position: V, target_accept_p: V::Scalar) -> Self {
+        let target = Arc::new(target);
+        Self::new_shared(target, initial_position, target_accept_p)
+    }
+
+    pub(crate) fn new_shared(
+        target: Arc<Target>,
+        initial_position: V,
+        target_accept_p: V::Scalar,
+    ) -> Self {
         let mut thread_rng = rand::rng();
         let rng = SmallRng::from_rng(&mut thread_rng);
         let epsilon = -V::Scalar::one();
@@ -283,6 +297,25 @@ where
         sample
     }
 
+    pub(crate) fn run_positions(&mut self, n_collect: usize, n_discard: usize) -> Vec<V> {
+        if n_collect == 0 {
+            return Vec::new();
+        }
+
+        self.init_chain_state(n_collect, n_discard);
+        let mut samples = Vec::with_capacity(n_collect);
+        let total = n_collect + n_discard;
+        for m in 0..total {
+            if m > 0 {
+                self.step();
+            }
+            if m >= n_discard {
+                samples.push(self.position.clone());
+            }
+        }
+        samples
+    }
+
     fn run_progress(
         &mut self,
         n_collect: usize,
@@ -328,9 +361,7 @@ where
     }
 
     fn init_chain(&mut self, n_collect: usize, n_discard: usize) -> (usize, Array2<V::Scalar>) {
-        let dim = self.position.len();
-        self.n_collect = n_collect;
-        self.n_discard = n_discard;
+        let dim = self.init_chain_state(n_collect, n_discard);
 
         let mut sample = Array2::<V::Scalar>::zeros((n_collect, dim));
         let mut scratch = vec![V::Scalar::zero(); dim];
@@ -338,13 +369,21 @@ where
         let view = ArrayView1::from(&scratch);
         sample.slice_mut(s![0, ..]).assign(&view);
 
+        (dim, sample)
+    }
+
+    fn init_chain_state(&mut self, n_collect: usize, n_discard: usize) -> usize {
+        let dim = self.position.len();
+        self.n_collect = n_collect;
+        self.n_discard = n_discard;
+
         let mut mom_0 = self.position.zeros_like();
         mom_0.fill_standard_normal(&mut self.rng);
         if V::Scalar::abs(self.epsilon + V::Scalar::one()) <= V::Scalar::epsilon() {
-            self.epsilon = find_reasonable_epsilon(&self.position, &mom_0, &self.target);
+            self.epsilon = find_reasonable_epsilon(&self.position, &mom_0, self.target.as_ref());
         }
         self.mu = (V::Scalar::from_f64(10.0).unwrap() * self.epsilon).ln();
-        (dim, sample)
+        dim
     }
 
     pub fn step(&mut self) {
@@ -398,7 +437,7 @@ where
                     v,
                     j,
                     self.epsilon,
-                    &self.target,
+                    self.target.as_ref(),
                     joint,
                     &mut self.rng,
                 );
@@ -433,7 +472,7 @@ where
                     v,
                     j,
                     self.epsilon,
-                    &self.target,
+                    self.target.as_ref(),
                     joint,
                     &mut self.rng,
                 );

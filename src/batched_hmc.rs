@@ -25,7 +25,7 @@ pub trait BatchedHamiltonianTarget<V: BatchVector> {
 ///
 /// This struct stores all chains as a single batch vector `V`. For GPU backends,
 /// this enables parallel execution without serialization.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct BatchedGenericHMC<V, Target>
 where
     V: BatchVector,
@@ -53,7 +53,7 @@ impl<V, Target> BatchedGenericHMC<V, Target>
 where
     V: BatchVector,
     V::Scalar: Float + FromPrimitive + ToPrimitive + Zero,
-    Target: BatchedHamiltonianTarget<V> + Clone,
+    Target: BatchedHamiltonianTarget<V>,
     StandardNormal: RandDistribution<V::Scalar>,
 {
     /// Create a new batch-native HMC sampler.
@@ -109,6 +109,17 @@ where
             }
         }
         out
+    }
+
+    /// Run the sampler and return device-native samples without host readback.
+    pub fn run_positions(&mut self, n_collect: usize, n_discard: usize) -> Vec<V> {
+        (0..n_discard).for_each(|_| self.step());
+        let mut samples = Vec::with_capacity(n_collect);
+        for _ in 0..n_collect {
+            self.step();
+            samples.push(self.position.clone());
+        }
+        samples
     }
 
     /// Perform one HMC step on ALL chains simultaneously.
@@ -181,6 +192,21 @@ where
     /// Get a reference to the current positions.
     pub fn positions(&self) -> &V {
         &self.position
+    }
+
+    /// Get a reference to the target distribution.
+    pub fn target(&self) -> &Target {
+        &self.target
+    }
+
+    /// Get a reference to the step size.
+    pub fn step_size(&self) -> &V::Scalar {
+        &self.step_size
+    }
+
+    /// Get the number of leapfrog steps.
+    pub fn n_leapfrog(&self) -> usize {
+        self.n_leapfrog
     }
 
     /// Clone the RNG state.

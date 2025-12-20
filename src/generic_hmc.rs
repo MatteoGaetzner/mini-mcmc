@@ -17,7 +17,7 @@ pub trait HamiltonianTarget<V: EuclideanVector> {
 }
 
 /// Backend-agnostic, in-place Hamiltonian Monte Carlo engine.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct GenericHMC<V, Target>
 where
     V: EuclideanVector,
@@ -41,7 +41,7 @@ impl<V, Target> GenericHMC<V, Target>
 where
     V: EuclideanVector,
     V::Scalar: Float + FromPrimitive + ToPrimitive,
-    Target: HamiltonianTarget<V> + Clone,
+    Target: HamiltonianTarget<V>,
     StandardNormal: RandDistribution<V::Scalar>,
     StandardUniform: RandDistribution<V::Scalar>,
 {

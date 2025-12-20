@@ -20,8 +20,9 @@ use rand_distr::uniform::SampleUniform;
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
 use std::error::Error;
 use std::marker::PhantomData;
+use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 struct BurnGradientTarget<GTarget, T> {
     inner: GTarget,
     _marker: PhantomData<T>,
@@ -43,7 +44,6 @@ where
 }
 
 /// Burn-backed No-U-Turn Sampler (NUTS).
-#[derive(Clone)]
 pub struct NUTS<T, B, GTarget>
 where
     T: Float
@@ -52,10 +52,9 @@ where
         + SampleUniform
         + FromPrimitive
         + num_traits::ToPrimitive
-        + Copy
         + Send,
     B: AutodiffBackend + Send,
-    GTarget: GradientTarget<T, B> + Sync + Clone + Send,
+    GTarget: GradientTarget<T, B> + Sync + Send,
     StandardNormal: RandDistribution<B::FloatElem>,
     StandardUniform: RandDistribution<B::FloatElem>,
     Exp1: RandDistribution<B::FloatElem>,
@@ -73,10 +72,9 @@ where
         + SampleUniform
         + FromPrimitive
         + num_traits::ToPrimitive
-        + Copy
         + Send,
     B: AutodiffBackend + Send,
-    GTarget: GradientTarget<T, B> + Sync + Clone + Send,
+    GTarget: GradientTarget<T, B> + Sync + Send,
     StandardNormal: RandDistribution<B::FloatElem>,
     StandardUniform: RandDistribution<B::FloatElem>,
     Exp1: RandDistribution<B::FloatElem>,
@@ -96,7 +94,7 @@ where
         let target_accept_p_elem = B::FloatElem::from_elem(target_accept_p);
         let inner = GenericNUTS::new(
             BurnGradientTarget {
-                inner: target.clone(),
+                inner: target,
                 _marker: PhantomData,
             },
             positions_vec,
@@ -109,8 +107,26 @@ where
     }
 
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
-        let sample = self.inner.run(n_collect, n_discard);
-        array3_to_tensor(sample)
+        if n_collect == 0 {
+            let (n_chains, dim) = {
+                let chains = self.inner.chains_mut();
+                let n_chains = chains.len();
+                let dim = chains[0].position().dims()[0];
+                (n_chains, dim)
+            };
+            return Tensor::<B, 3>::empty([n_chains, 0, dim], &B::Device::default());
+        }
+
+        let chain_samples: Vec<Tensor<B, 2>> = self
+            .inner
+            .chains_mut()
+            .par_iter_mut()
+            .map(|chain| {
+                let samples = chain.run_positions(n_collect, n_discard);
+                Tensor::<B, 1>::stack(samples, 0)
+            })
+            .collect();
+        Tensor::<B, 2>::stack(chain_samples, 0)
     }
 
     pub fn run_progress(
@@ -129,7 +145,6 @@ where
 }
 
 /// Burn-backed single-chain NUTS wrapper.
-#[derive(Clone)]
 pub struct NUTSChain<T, B, GTarget>
 where
     T: Float
@@ -138,16 +153,15 @@ where
         + SampleUniform
         + FromPrimitive
         + num_traits::ToPrimitive
-        + Copy,
+        + Send,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B> + Sync + Clone,
+    GTarget: GradientTarget<T, B> + Sync + Send,
     StandardNormal: RandDistribution<B::FloatElem>,
     StandardUniform: RandDistribution<B::FloatElem>,
     Exp1: RandDistribution<B::FloatElem>,
     B::FloatElem: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
 {
     inner: GenericNUTSChain<Tensor<B, 1>, BurnGradientTarget<GTarget, T>>,
-    pub position: Tensor<B, 1>,
     _phantom: PhantomData<T>,
 }
 
@@ -159,9 +173,9 @@ where
         + SampleUniform
         + FromPrimitive
         + num_traits::ToPrimitive
-        + Copy,
+        + Send,
     B: AutodiffBackend,
-    GTarget: GradientTarget<T, B> + Sync + Clone,
+    GTarget: GradientTarget<T, B> + Sync + Send,
     StandardNormal: RandDistribution<B::FloatElem>,
     StandardUniform: RandDistribution<B::FloatElem>,
     Exp1: RandDistribution<B::FloatElem>,
@@ -185,43 +199,32 @@ where
         );
         Self {
             inner,
-            position,
             _phantom: PhantomData,
         }
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
         self.inner = self.inner.set_seed(seed);
-        self.position = self.inner.position().clone();
         self
     }
 
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 2> {
-        let sample = self.inner.run(n_collect, n_discard);
-        self.position = self.inner.position().clone();
-        array2_to_tensor(sample)
+        if n_collect == 0 {
+            let dim = self.inner.position().dims()[0];
+            return Tensor::<B, 2>::empty([0, dim], &B::Device::default());
+        }
+
+        let samples = self.inner.run_positions(n_collect, n_discard);
+        Tensor::<B, 1>::stack(samples, 0)
     }
 
     pub fn step(&mut self) {
         self.inner.step();
-        self.position = self.inner.position().clone();
     }
-}
 
-fn array2_to_tensor<B, T>(arr: ndarray::Array2<T>) -> Tensor<B, 2>
-where
-    B: AutodiffBackend<FloatElem = T>,
-    T: Float + Element + ElementConversion,
-{
-    let shape = arr.raw_dim();
-    let (mut data, offset) = arr.into_raw_vec_and_offset();
-    if let Some(offset) = offset {
-        if offset != 0 {
-            data.rotate_left(offset);
-        }
+    pub fn position(&self) -> &Tensor<B, 1> {
+        self.inner.position()
     }
-    let td = TensorData::new(data, [shape[0], shape[1]]);
-    Tensor::<B, 2>::from_data(td, &B::Device::default())
 }
 
 fn array3_to_tensor<B, T>(arr: ndarray::Array3<T>) -> Tensor<B, 3>
