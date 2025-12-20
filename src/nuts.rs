@@ -18,7 +18,6 @@ use rand::rngs::SmallRng;
 use rand::SeedableRng;
 use rand_distr::uniform::SampleUniform;
 use rand_distr::{Exp1, StandardNormal, StandardUniform};
-use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator};
 use std::error::Error;
 use std::marker::PhantomData;
 
@@ -117,13 +116,38 @@ where
             return Tensor::<B, 3>::empty([n_chains, 0, dim], &B::Device::default());
         }
 
-        let chain_samples: Vec<Tensor<B, 2>> = self
-            .inner
-            .chains_mut()
-            .par_iter_mut()
-            .map(|chain| chain.run(n_collect, n_discard))
-            .collect();
-        Tensor::<B, 2>::stack(chain_samples, 0)
+        let chains = self.inner.chains_mut();
+        let n_chains = chains.len();
+        let dim = chains[0].position().dims()[0];
+        let mut out = Tensor::<B, 3>::empty([n_chains, n_collect, dim], &B::Device::default());
+
+        for (chain_idx, chain) in chains.iter_mut().enumerate() {
+            chain.init_chain_state(n_collect, n_discard);
+            let total = n_collect + n_discard;
+            for step_idx in 0..total {
+                if step_idx > 0 {
+                    chain.step();
+                }
+                if step_idx >= n_discard {
+                    let pos = chain
+                        .position()
+                        .clone()
+                        .unsqueeze_dim::<2>(0)
+                        .unsqueeze_dim::<3>(0);
+                    out.inplace(|tensor| {
+                        tensor.slice_assign(
+                            [
+                                chain_idx..chain_idx + 1,
+                                step_idx - n_discard..step_idx - n_discard + 1,
+                                0..dim,
+                            ],
+                            pos,
+                        )
+                    });
+                }
+            }
+        }
+        out
     }
 
     pub fn run_progress(
@@ -213,7 +237,7 @@ where
             return Tensor::<B, 2>::empty([0, dim], &B::Device::default());
         }
 
-        let dim = self.inner.position().dims()[0];
+        let dim = self.inner.init_chain_state(n_collect, n_discard);
         let mut out = Tensor::<B, 2>::empty([n_collect, dim], &B::Device::default());
         let total = n_collect + n_discard;
 
@@ -222,7 +246,7 @@ where
                 self.inner.step();
             }
             if step_idx >= n_discard {
-                let row = self.inner.position().clone().unsqueeze_dim(0);
+                let row = self.inner.position().clone().unsqueeze_dim::<2>(0);
                 out.inplace(|tensor| {
                     tensor.slice_assign(
                         [step_idx - n_discard..step_idx - n_discard + 1, 0..dim],

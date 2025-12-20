@@ -297,25 +297,6 @@ where
         sample
     }
 
-    pub(crate) fn run_positions(&mut self, n_collect: usize, n_discard: usize) -> Vec<V> {
-        if n_collect == 0 {
-            return Vec::new();
-        }
-
-        self.init_chain_state(n_collect, n_discard);
-        let mut samples = Vec::with_capacity(n_collect);
-        let total = n_collect + n_discard;
-        for m in 0..total {
-            if m > 0 {
-                self.step();
-            }
-            if m >= n_discard {
-                samples.push(self.position.clone());
-            }
-        }
-        samples
-    }
-
     fn run_progress(
         &mut self,
         n_collect: usize,
@@ -372,7 +353,7 @@ where
         (dim, sample)
     }
 
-    fn init_chain_state(&mut self, n_collect: usize, n_discard: usize) -> usize {
+    pub(crate) fn init_chain_state(&mut self, n_collect: usize, n_discard: usize) -> usize {
         let dim = self.position.len();
         self.n_collect = n_collect;
         self.n_discard = n_discard;
