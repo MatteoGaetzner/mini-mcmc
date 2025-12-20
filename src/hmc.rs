@@ -107,6 +107,7 @@ where
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
+        // Note: Burn backend seeding is global; this affects other samplers on the same backend.
         B::seed(seed);
         self.inner = self.inner.set_seed(seed);
         self

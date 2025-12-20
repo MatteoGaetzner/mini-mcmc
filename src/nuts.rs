@@ -106,6 +106,8 @@ where
     }
 
     pub fn run(&mut self, n_collect: usize, n_discard: usize) -> Tensor<B, 3> {
+        // Note: On GPU backends, NUTS can be slower due to CPU-driven tree building
+        // and synchronization when evaluating stop criteria. Prefer HMC for GPU-heavy workloads.
         if n_collect == 0 {
             let (n_chains, dim) = {
                 let chains = self.inner.chains_mut();
@@ -160,6 +162,7 @@ where
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
+        // Note: Burn backend seeding is global; this affects other samplers on the same backend.
         B::seed(seed);
         self.inner = self.inner.set_seed(seed);
         self
@@ -226,6 +229,7 @@ where
     }
 
     pub fn set_seed(mut self, seed: u64) -> Self {
+        // Note: Burn backend seeding is global; this affects other samplers on the same backend.
         B::seed(seed);
         self.inner = self.inner.set_seed(seed);
         self

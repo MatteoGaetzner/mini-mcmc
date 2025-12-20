@@ -548,7 +548,7 @@ where
     );
     let mut k = V::Scalar::one();
 
-    while !ulogp_prime.is_finite() && !all_real_vec(&grad_prime) {
+    while !ulogp_prime.is_finite() || !all_real_vec(&grad_prime) {
         k = k * half;
         position_prime.assign(position);
         mom_prime.assign(mom);
