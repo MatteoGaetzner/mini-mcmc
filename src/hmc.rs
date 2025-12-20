@@ -1,55 +1,66 @@
 //! Hamiltonian Monte Carlo (HMC) sampler.
 //!
-//! This module now routes the public `HMC` API through a backend-agnostic,
-//! in-place core (`GenericHMC`). When the `burn` feature is enabled (default),
-//! the familiar `HMC<T, B, GTarget>` wrapper is available and backwards
-//! compatible with previous versions while benefiting from the allocation-free
-//! integrator underneath.
+//! This module provides a batch-native HMC implementation using the
+//! `BatchedGenericHMC` engine. All chains are processed in parallel on GPU
+//! with device-native RNG and vectorized acceptance.
 
+use crate::batched_hmc::{BatchedGenericHMC, BatchedHamiltonianTarget};
 use crate::distributions::BatchedGradientTarget;
-use crate::generic_hmc::{GenericHMC, HamiltonianTarget};
 use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Element;
 use num_traits::{Float, FromPrimitive, ToPrimitive};
 use rand::distr::Distribution as RandDistribution;
-// Keep trait bounds on rand's Distribution to avoid mixed-rand version mismatches.
 #[cfg(test)]
 use rand::prelude::*;
 use rand::rngs::SmallRng;
 use rand_distr::uniform::SampleUniform;
-use rand_distr::{StandardNormal, StandardUniform};
+use rand_distr::StandardNormal;
 use std::error::Error;
 
+/// Adapter to convert BatchedGradientTarget to BatchedHamiltonianTarget<Tensor<B, 2>>.
+///
+/// This enables the public BatchedGradientTarget trait to work with the
+/// internal BatchedHamiltonianTarget trait used by BatchedGenericHMC.
 #[derive(Clone, Debug)]
-struct BurnBatchedTarget<GTarget> {
+struct BatchedGradientTargetAdapter<GTarget> {
     inner: GTarget,
 }
 
-impl<T, B, GTarget> HamiltonianTarget<Tensor<B, 1>> for BurnBatchedTarget<GTarget>
+impl<T, B, GTarget> BatchedHamiltonianTarget<Tensor<B, 2>> for BatchedGradientTargetAdapter<GTarget>
 where
-    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive,
+    T: Float + Element + ElementConversion + SampleUniform + FromPrimitive + Copy,
     B: AutodiffBackend<FloatElem = T>,
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync,
     StandardNormal: RandDistribution<T>,
 {
-    fn logp_and_grad(&self, position: &Tensor<B, 1>, grad: &mut Tensor<B, 1>) -> T {
-        let pos = position.clone().unsqueeze_dim(0).detach().require_grad();
+    fn logp_and_grad(&self, position: &Tensor<B, 2>, grad: &mut Tensor<B, 2>) -> Tensor<B, 1> {
+        // Position is [n_chains, dim], need to compute logp for each chain
+        let pos = position.clone().detach().require_grad();
+
+        // unnorm_logp_batch returns Tensor<B, 1> of shape [n_chains]
         let logp = self.inner.unnorm_logp_batch(pos.clone());
-        let logp_scalar = logp.clone().into_scalar();
 
+        // Compute gradients via backward pass
+        // We need to sum the logp to get a scalar for backward, then extract per-chain gradients
+        let logp_sum = logp.clone().sum();
         let grads_inner = pos
-            .grad(&logp.backward())
+            .grad(&logp_sum.backward())
             .expect("grad computation to succeed");
-        let grad_tensor = Tensor::<B, 2>::from_inner(grads_inner).squeeze(0);
-        grad.inplace(|_| grad_tensor.clone());
 
-        logp_scalar
+        // Convert inner gradient to Tensor<B, 2>
+        let grad_tensor = Tensor::<B, 2>::from_inner(grads_inner);
+        grad.inplace(|_| grad_tensor);
+
+        logp.detach()
     }
 }
 
 /// A data-parallel Hamiltonian Monte Carlo (HMC) sampler using the burn backend.
+///
+/// This struct uses `BatchedGenericHMC` internally to process all chains in parallel
+/// on GPU with device-native RNG and vectorized acceptance.
 #[derive(Debug, Clone)]
 pub struct HMC<T, B, GTarget>
 where
@@ -57,9 +68,8 @@ where
     B: AutodiffBackend<FloatElem = T>,
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync + Clone,
     StandardNormal: RandDistribution<T>,
-    StandardUniform: RandDistribution<T>,
 {
-    inner: GenericHMC<Tensor<B, 1>, BurnBatchedTarget<GTarget>>,
+    inner: BatchedGenericHMC<Tensor<B, 2>, BatchedGradientTargetAdapter<GTarget>>,
     /// The target distribution which provides log probability evaluations and gradients.
     pub target: GTarget,
     /// The step size for the leapfrog integrator.
@@ -83,7 +93,6 @@ where
     B: AutodiffBackend<FloatElem = T>,
     GTarget: BatchedGradientTarget<T, B> + std::marker::Sync + Clone,
     StandardNormal: RandDistribution<T>,
-    StandardUniform: RandDistribution<T>,
 {
     pub fn new(
         target: GTarget,
@@ -91,24 +100,23 @@ where
         step_size: T,
         n_leapfrog: usize,
     ) -> Self {
-        let positions_vec: Vec<Tensor<B, 1>> = initial_positions
-            .into_iter()
-            .map(|pos| {
-                let len = pos.len();
-                let td: TensorData = TensorData::new(pos, [len]);
-                Tensor::<B, 1>::from_data(td, &B::Device::default())
-            })
-            .collect();
-        let inner = GenericHMC::new(
-            BurnBatchedTarget {
+        // Convert Vec<Vec<T>> to Tensor<B, 2> of shape [n_chains, dim]
+        let n_chains = initial_positions.len();
+        let dim = initial_positions[0].len();
+        let flat_data: Vec<T> = initial_positions.into_iter().flatten().collect();
+        let td = TensorData::new(flat_data, [n_chains, dim]);
+        let positions = Tensor::<B, 2>::from_data(td, &B::Device::default());
+
+        let inner = BatchedGenericHMC::new(
+            BatchedGradientTargetAdapter {
                 inner: target.clone(),
             },
-            positions_vec,
+            positions.clone(),
             step_size,
             n_leapfrog,
         );
-        let positions = stack_positions(inner.positions());
         let rng = inner.rng_clone();
+
         Self {
             inner,
             target,
@@ -136,8 +144,10 @@ where
         n_collect: usize,
         n_discard: usize,
     ) -> Result<(Tensor<B, 3>, RunStats), Box<dyn Error>> {
-        let (sample, stats) = self.inner.run_progress(n_collect, n_discard)?;
+        // For now, use simple run (run_progress not yet implemented in BatchedGenericHMC)
+        let sample = self.inner.run(n_collect, n_discard);
         self.refresh_positions();
+        let stats = RunStats::from(sample.view());
         Ok((array3_to_tensor(sample), stats))
     }
 
@@ -148,7 +158,7 @@ where
     }
 
     fn refresh_positions(&mut self) {
-        self.positions = stack_positions(self.inner.positions());
+        self.positions = self.inner.positions().clone();
     }
 }
 
@@ -166,14 +176,6 @@ where
     }
     let td = TensorData::new(data, [shape[0], shape[1], shape[2]]);
     Tensor::<B, 3>::from_data(td, &B::Device::default())
-}
-
-fn stack_positions<B, T>(positions: &[Tensor<B, 1>]) -> Tensor<B, 2>
-where
-    B: AutodiffBackend<FloatElem = T>,
-    T: Float + Element + ElementConversion,
-{
-    Tensor::<B, 1>::stack(positions.to_vec(), 0)
 }
 
 #[cfg(test)]
