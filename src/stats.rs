@@ -1,7 +1,6 @@
 //! Computation and tracking of MCMC statistics like acceptance probability and Potential Scale
 //! Reduction.
 
-use burn::prelude::{Backend, Tensor};
 use core::fmt;
 use ndarray::{concatenate, prelude::*, stack};
 use ndarray_stats::QuantileExt;
@@ -258,11 +257,29 @@ impl MultiChainTracker {
         Ok(())
     }
 
-    pub fn stats<B: Backend>(&self, sample: Tensor<B, 3>) -> Result<RunStats, Box<dyn Error>> {
+    #[cfg(feature = "burn")]
+    pub fn stats<B: burn::prelude::Backend>(
+        &self,
+        sample: burn::tensor::Tensor<B, 3>,
+    ) -> Result<RunStats, Box<dyn Error>>
+    where
+        B::FloatElem: num_traits::ToPrimitive,
+    {
         let sample_data = sample.to_data();
-        let sample_ndarray =
-            ArrayView3::from_shape(sample.dims(), sample_data.as_slice().unwrap())?;
-        Ok(RunStats::from_f32_view(sample_ndarray))
+        let sample_ndarray = ArrayView3::from_shape(
+            sample.dims(),
+            sample_data
+                .as_slice::<B::FloatElem>()
+                .map_err(|e| format!("{:?}", e))?,
+        )?;
+        self.stats_view(sample_ndarray)
+    }
+
+    pub fn stats_view<T>(&self, sample: ArrayView3<T>) -> Result<RunStats, Box<dyn Error>>
+    where
+        T: num_traits::ToPrimitive + Clone,
+    {
+        Ok(RunStats::from(sample))
     }
 
     /// Computes the maximum R-hat value across all parameters.
@@ -341,15 +358,6 @@ pub struct RunStats {
     pub rhat: BasicStats,
 }
 
-impl RunStats {
-    fn from_f32_view(sample: ArrayView3<f32>) -> Self {
-        let (rhat, ess) = split_rhat_mean_ess(sample);
-        let ess = basic_stats("ESS", ess);
-        let rhat = basic_stats("Split R-hat", rhat);
-        RunStats { ess, rhat }
-    }
-}
-
 impl fmt::Display for RunStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Using the Display implementation of BasicStats
@@ -413,8 +421,12 @@ fn splitcat(sample: ArrayView3<f32>) -> Array3<f32> {
 ///
 /// # References
 /// - STAN Reference Manual, Section on R-hat and Effective Sample Size
-pub fn split_rhat_mean_ess(sample: ArrayView3<f32>) -> (Array1<f32>, Array1<f32>) {
-    let splitted = splitcat(sample); // shape: (2c, n/2, p)
+pub fn split_rhat_mean_ess<T>(sample: ArrayView3<T>) -> (Array1<f32>, Array1<f32>)
+where
+    T: ToPrimitive + Clone,
+{
+    let f32_sample = sample.mapv(|x| x.to_f32().unwrap());
+    let splitted = splitcat(f32_sample.view()); // shape: (2c, n/2, p)
     let (within, var) = withinvar(splitted.view());
     (
         rhat(within.view(), var.view()),

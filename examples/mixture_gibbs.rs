@@ -10,6 +10,7 @@ use plotly::{
     Layout, Scatter,
 };
 use rand::{rng, Rng};
+use rand_distr::Normal;
 use std::error::Error;
 
 // Define a conditional distribution for a two-component Gaussian mixture.
@@ -46,11 +47,11 @@ impl Conditional<f64> for MixtureConditional {
             let z = given[1];
             if z < 0.5 {
                 // Mode 0: x ~ N(mu0, sigma0²)
-                let normal = rand_distr::Normal::new(self.mu0, self.sigma0).unwrap();
+                let normal = Normal::new(self.mu0, self.sigma0).unwrap();
                 rand::rng().sample(normal)
             } else {
                 // Mode 1: x ~ N(mu1, sigma1²)
-                let normal = rand_distr::Normal::new(self.mu1, self.sigma1).unwrap();
+                let normal = Normal::new(self.mu1, self.sigma1).unwrap();
                 rand::rng().sample(normal)
             }
         } else if i == 1 {

@@ -54,8 +54,9 @@ mod tests {
 
     impl PoissonRandomWalk {
         pub fn new() -> Self {
+            let mut rng = rand::rng();
             Self {
-                rng: SmallRng::from_os_rng(),
+                rng: SmallRng::from_rng(&mut rng),
             }
         }
     }
@@ -186,9 +187,10 @@ mod tests {
 
     impl BinomialRandomWalk {
         pub fn new(n: i32) -> Self {
+            let mut rng = rand::rng();
             Self {
                 n,
-                rng: SmallRng::from_os_rng(),
+                rng: SmallRng::from_rng(&mut rng),
             }
         }
     }
