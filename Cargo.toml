@@ -15,7 +15,7 @@ exclude = [
 ]
 
 [dependencies]
-rand = {version="0.9", features=["small_rng"]}
+rand = {version="0.9", features=["small_rng", "std"]}
 rand_distr = "0.5"
 rayon = "1.11"
 indicatif = "0.18"
@@ -29,8 +29,10 @@ ndarray-stats = "0.6"
 rustfft = "6.4"
 
 [features]
-default = []
-wgpu = ["burn/wgpu"]
+default = ["burn"]
+burn = []
+wgpu = ["burn", "burn/wgpu"]
+no_burn = []
 csv = ["dep:csv"]
 arrow = ["dep:arrow"]
 parquet = ["dep:parquet", "dep:arrow"]

@@ -45,7 +45,10 @@ See also the documentation for [`MHMarkovChain`] and the methods below.
 */
 
 use num_traits::Float;
+use rand::distr::Distribution as RandDistribution;
 use rand::prelude::*;
+// Use rand's Distribution for StandardUniform to avoid rand 0.8/0.9 conflicts.
+use rand_distr::StandardUniform;
 use std::marker::{PhantomData, Send};
 
 use crate::core::{HasChains, MarkovChain};
@@ -116,7 +119,6 @@ where
     Q: Proposal<S, T> + std::clone::Clone + Send,
     T: Float + Send,
     S: Clone + std::cmp::PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
-    rand_distr::StandardUniform: rand_distr::Distribution<T>,
 {
     /**
     Constructs a new Metropolis-Hastings sampler with a given target and proposal,
@@ -187,7 +189,9 @@ where
     pub fn seed(mut self, seed: u64) -> Self {
         for (i, chain) in self.chains.iter_mut().enumerate() {
             let chain_seed = 1 + seed + i as u64;
-            chain.rng = SmallRng::seed_from_u64(chain_seed)
+            chain.rng = SmallRng::seed_from_u64(chain_seed);
+            let proposal_seed = chain_seed.wrapping_add(0x9E3779B97F4A7C15);
+            chain.proposal = chain.proposal.clone().set_seed(proposal_seed);
         }
         self
     }
@@ -199,7 +203,7 @@ where
     Q: Proposal<S, T> + Clone + Send,
     T: Float + Send,
     S: Clone + PartialEq + Send + num_traits::Zero + std::fmt::Debug + 'static,
-    rand_distr::StandardUniform: rand_distr::Distribution<T>,
+    StandardUniform: RandDistribution<T>,
 {
     /// The concrete chain type used by the sampler.
     type Chain = MHMarkovChain<S, T, D, Q>;
@@ -219,7 +223,6 @@ where
     Q: Proposal<S, T> + Clone,
     S: Clone + std::cmp::PartialEq + num_traits::Zero,
     T: Float,
-    rand_distr::StandardUniform: rand_distr::Distribution<T>,
 {
     /**
     Creates a new Metropolis–Hastings chain.
@@ -250,7 +253,7 @@ where
             target,
             proposal,
             current_state: initial_state,
-            rng: SmallRng::from_os_rng(),
+            rng: SmallRng::seed_from_u64(rand::rng().random::<u64>()),
             phantom: PhantomData,
         }
     }
@@ -262,7 +265,7 @@ where
     Q: Proposal<T, F> + Clone,
     T: Clone + PartialEq + num_traits::Zero,
     F: Float,
-    rand_distr::StandardUniform: rand_distr::Distribution<F>,
+    StandardUniform: RandDistribution<F>,
 {
     /**
     Performs one Metropolis–Hastings update step.
@@ -329,6 +332,8 @@ mod tests {
     use approx::assert_abs_diff_eq;
     use ndarray::{arr1, arr2, Array3, Axis};
     use ndarray_stats::CorrelationExt;
+    use rand::rngs::SmallRng;
+    use rand::SeedableRng;
 
     /// Common test harness for checking that sample mean from a 2D Gaussian matches
     /// the true mean and covariance within floating-point tolerance.
@@ -427,6 +432,9 @@ mod tests {
         let mut ess_x1s = Vec::with_capacity(n_runs);
         let mut ess_x2s = Vec::with_capacity(n_runs);
 
+        // Outer RNG for reproducibility - each run gets a unique seed
+        let mut outer_rng = SmallRng::seed_from_u64(42);
+
         // For each run, we do a fresh Metropolis-Hastings
         for _ in 0..n_runs {
             // 1) Define target distribution
@@ -443,8 +451,9 @@ mod tests {
             //    deterministic initial states for each chain. Or use init(...) if you prefer random.
             let mut mh = MetropolisHastings::new(target, proposal, init_det(n_chains, 2));
 
-            // Optionally seed for reproducibility
-            mh = mh.seed(42); // or any global seed
+            // Generate a unique seed for this run (test is still reproducible overall)
+            let run_seed: u64 = outer_rng.random();
+            mh = mh.seed(run_seed);
 
             // 4) Run the sampler
             //    This depends on your actual method name.

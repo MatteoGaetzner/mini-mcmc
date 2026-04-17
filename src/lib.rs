@@ -74,6 +74,7 @@
 //! ///   f(x) = 100*(x₂ - x₁²)² + (1 - x₁)² + 100*(x₃ - x₂²)² + (1 - x₂)².
 //! ///
 //! /// This implementation generalizes to d dimensions, but here we use it for 3D.
+//! #[derive(Clone)]
 //! struct RosenbrockND {}
 //!
 //! impl<T, B> BatchedGradientTarget<T, B> for RosenbrockND
@@ -224,12 +225,26 @@
 //! - Rank-Normalized R-hat diagnostics
 //! - Ensemble Slice Sampling (ESS)
 
+pub mod batched_hmc;
 pub mod core;
 mod dev_tools;
 pub mod distributions;
+pub mod euclidean;
+pub mod generic_hmc;
+pub mod generic_nuts;
 pub mod gibbs;
+#[cfg(feature = "burn")]
 pub mod hmc;
+#[cfg(not(feature = "burn"))]
+pub mod hmc {
+    pub use crate::generic_hmc::{GenericHMC, HamiltonianTarget};
+}
 pub mod io;
 pub mod metropolis_hastings;
+#[cfg(feature = "burn")]
 pub mod nuts;
+#[cfg(not(feature = "burn"))]
+pub mod nuts {
+    pub use crate::generic_nuts::GenericNUTS;
+}
 pub mod stats;
