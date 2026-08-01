@@ -187,7 +187,11 @@ where
     pub fn seed(mut self, seed: u64) -> Self {
         for (i, chain) in self.chains.iter_mut().enumerate() {
             let chain_seed = 1 + seed + i as u64;
-            chain.rng = SmallRng::seed_from_u64(chain_seed)
+            chain.rng = SmallRng::seed_from_u64(chain_seed);
+            // Reseed the proposal too, otherwise `.seed()` doesn't make proposal draws
+            // reproducible even though it makes the accept/reject draws reproducible.
+            let proposal_seed = chain_seed.wrapping_add(0x9E3779B97F4A7C15);
+            chain.proposal = chain.proposal.clone().set_seed(proposal_seed);
         }
         self
     }
@@ -402,12 +406,14 @@ mod tests {
 
     #[test]
     #[ignore = "Slow test: run only when explicitly requested"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn test_16_chains_long() {
         run_gaussian_2d_test(80_000_000, 16, false);
     }
 
     #[test]
     #[ignore = "Slow test: run only when explicitly requested"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn test_progress_16_chains_long() {
         run_gaussian_2d_test(80_000_000, 16, true);
     }
@@ -416,6 +422,7 @@ mod tests {
     /// and collects the mean ESS for each parameter across runs, printing summary stats.
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn test_mean_ess_2d_gaussian() {
         let n_runs = 100;
         let n_chains = 3;

@@ -9,14 +9,18 @@
 //! integrator to simulate Hamiltonian dynamics, and the standard accept/reject step for proposal
 //! validation.
 
+use crate::core::{HasChains, MarkovChain};
 use crate::distributions::BatchedGradientTarget;
+use crate::distributions::ManualGradientTarget;
+use crate::leapfrog;
 use crate::stats::MultiChainTracker;
 use crate::stats::RunStats;
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::Tensor;
 use indicatif::{ProgressBar, ProgressStyle};
-use num_traits::Float;
+use ndarray::LinalgScalar;
+use num_traits::{Float, ToPrimitive};
 use rand::prelude::*;
 use rand::Rng;
 use rand_distr::{StandardNormal, StandardUniform};
@@ -431,12 +435,185 @@ where
     }
 }
 
+/// A single Markov chain for [`ManualHMC`], the burn-free Hamiltonian Monte Carlo sampler.
+///
+/// Unlike [`HMC`], which batches all chains into one `burn` tensor, each `ManualHMCChain`
+/// runs independently (chains are parallelized across threads by [`crate::core::ChainRunner`],
+/// the same way [`crate::metropolis_hastings::MHMarkovChain`] and
+/// [`crate::gibbs::GibbsMarkovChain`] are). Its position, momentum, and gradient buffers
+/// are allocated once and reused for the lifetime of the chain.
+#[derive(Debug, Clone)]
+pub struct ManualHMCChain<T, GTarget> {
+    /// The target distribution which provides log probability evaluations and gradients.
+    pub target: GTarget,
+    /// The step size for the leapfrog integrator.
+    pub step_size: T,
+    /// The number of leapfrog steps to take per HMC update.
+    pub n_leapfrog: usize,
+    /// The current position of this chain.
+    pub position: Vec<T>,
+
+    grad: Vec<T>,
+    momentum: Vec<T>,
+    proposal_position: Vec<T>,
+    proposal_momentum: Vec<T>,
+    proposal_grad: Vec<T>,
+
+    rng: SmallRng,
+}
+
+impl<T, GTarget> ManualHMCChain<T, GTarget>
+where
+    T: Float,
+    GTarget: ManualGradientTarget<T>,
+{
+    /// Creates a new chain at `initial_position`, with a fresh random seed.
+    pub fn new(target: GTarget, initial_position: Vec<T>, step_size: T, n_leapfrog: usize) -> Self {
+        let dim = initial_position.len();
+        Self {
+            target,
+            step_size,
+            n_leapfrog,
+            position: initial_position,
+            grad: vec![T::zero(); dim],
+            momentum: vec![T::zero(); dim],
+            proposal_position: vec![T::zero(); dim],
+            proposal_momentum: vec![T::zero(); dim],
+            proposal_grad: vec![T::zero(); dim],
+            rng: SmallRng::seed_from_u64(rand::rng().random::<u64>()),
+        }
+    }
+}
+
+impl<T, GTarget> MarkovChain<T> for ManualHMCChain<T, GTarget>
+where
+    T: Float + rand_distr::uniform::SampleUniform,
+    GTarget: ManualGradientTarget<T>,
+    StandardNormal: rand_distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+{
+    /// Performs one HMC update: samples fresh momentum, runs `n_leapfrog` leapfrog
+    /// steps from the current position, and accepts or rejects the proposal.
+    fn step(&mut self) -> &Vec<T> {
+        let half = T::from(0.5).unwrap();
+
+        leapfrog::fill_standard_normal(&mut self.momentum, &mut self.rng);
+        let logp_current = self
+            .target
+            .unnorm_logp_and_grad_into(&self.position, &mut self.grad);
+        let h_current = -logp_current + half * leapfrog::dot(&self.momentum, &self.momentum);
+
+        self.proposal_position.copy_from_slice(&self.position);
+        self.proposal_momentum.copy_from_slice(&self.momentum);
+        self.proposal_grad.copy_from_slice(&self.grad);
+
+        let mut logp_proposed = logp_current;
+        for _ in 0..self.n_leapfrog {
+            logp_proposed = leapfrog::leapfrog(
+                &self.target,
+                &mut self.proposal_position,
+                &mut self.proposal_momentum,
+                &mut self.proposal_grad,
+                self.step_size,
+            );
+        }
+        let h_proposed =
+            -logp_proposed + half * leapfrog::dot(&self.proposal_momentum, &self.proposal_momentum);
+
+        let accept_logp = h_current - h_proposed;
+        let u: T = self.rng.random();
+        if accept_logp >= u.ln() {
+            self.position.copy_from_slice(&self.proposal_position);
+        }
+
+        &self.position
+    }
+
+    fn current_state(&self) -> &Vec<T> {
+        &self.position
+    }
+}
+
+/// A burn-free, data-parallel Hamiltonian Monte Carlo sampler for targets that compute
+/// their own gradient (see [`ManualGradientTarget`]).
+///
+/// This is the counterpart to [`HMC`] for users who already have an analytic gradient
+/// and want to avoid `burn`'s per-step tensor allocation/autodiff overhead. Chains are
+/// run independently and in parallel via [`crate::core::ChainRunner`] (`run`/`run_progress`
+/// are provided by that trait's blanket implementation, not defined here), the same
+/// infrastructure [`crate::metropolis_hastings::MetropolisHastings`] and
+/// [`crate::gibbs::GibbsSampler`] already use.
+///
+/// # Example
+///
+/// ```rust
+/// use mini_mcmc::core::{ChainRunner, init};
+/// use mini_mcmc::distributions::Rosenbrock2D;
+/// use mini_mcmc::hmc::ManualHMC;
+///
+/// let target = Rosenbrock2D { a: 1.0_f32, b: 100.0 };
+/// let mut sampler = ManualHMC::new(target, init(4, 2), 0.01, 5).set_seed(42);
+/// let sample = sampler.run(100, 20).unwrap();
+/// assert_eq!(sample.shape(), [4, 100, 2]);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ManualHMC<T, GTarget> {
+    /// The independent chains that make up this sampler.
+    pub chains: Vec<ManualHMCChain<T, GTarget>>,
+}
+
+impl<T, GTarget> ManualHMC<T, GTarget>
+where
+    T: Float,
+    GTarget: ManualGradientTarget<T> + Clone,
+{
+    /// Creates a new sampler with one chain per entry in `initial_positions`.
+    ///
+    /// Mirrors [`HMC::new`]'s signature: `target`, `initial_positions`, `step_size`,
+    /// and `n_leapfrog` all mean the same thing here.
+    pub fn new(
+        target: GTarget,
+        initial_positions: Vec<Vec<T>>,
+        step_size: T,
+        n_leapfrog: usize,
+    ) -> Self {
+        let chains = initial_positions
+            .into_iter()
+            .map(|pos| ManualHMCChain::new(target.clone(), pos, step_size, n_leapfrog))
+            .collect();
+        Self { chains }
+    }
+
+    /// Deterministically reseeds every chain, deriving each chain's seed from `seed`
+    /// the same way [`crate::nuts::NUTS::set_seed`] does.
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        for (i, chain) in self.chains.iter_mut().enumerate() {
+            chain.rng = SmallRng::seed_from_u64(seed + i as u64 + 1);
+        }
+        self
+    }
+}
+
+impl<T, GTarget> HasChains<T> for ManualHMC<T, GTarget>
+where
+    T: Float + ToPrimitive + LinalgScalar + rand_distr::uniform::SampleUniform + Send,
+    GTarget: ManualGradientTarget<T> + Clone + Send,
+    StandardNormal: rand_distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+{
+    type Chain = ManualHMCChain<T, GTarget>;
+
+    fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
+        &mut self.chains
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::{
-        core::init,
+        core::{init, ChainRunner},
         dev_tools::Timer,
-        distributions::{DiffableGaussian2D, Rosenbrock2D, RosenbrockND},
+        distributions::{DiffableGaussian2D, Rosenbrock2D},
         stats::split_rhat_mean_ess,
     };
     use ndarray::ArrayView3;
@@ -575,6 +752,7 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn test_gaussian_2d_hmc_single_run() {
         // Each experiment uses 3 chains:
         let n_chains = 3;
@@ -631,6 +809,7 @@ mod tests {
 
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn test_gaussian_2d_hmc_ess_stats() {
         use crate::stats::basic_stats;
         use indicatif::{ProgressBar, ProgressStyle};
@@ -787,167 +966,53 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_bench_noprogress() {
-        // Use the CPU backend (NdArray) wrapped in Autodiff.
-        type BackendType = Autodiff<burn::backend::NdArray>;
-
-        // Create the Rosenbrock target (a = 1, b = 100)
+    fn manual_hmc_run_shape() {
         let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
+            a: 1.0_f64,
+            b: 100.0,
         };
+        let mut sampler = ManualHMC::new(target, init(3, 2), 0.01, 5).set_seed(42);
+        let sample = sampler.run(10, 5).unwrap();
+        assert_eq!(sample.shape(), [3, 10, 2]);
+    }
 
-        // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = init(6, 2);
-        let n_collect = 5000;
+    #[test]
+    fn manual_hmc_run_progress_shape() {
+        let target = Rosenbrock2D {
+            a: 1.0_f64,
+            b: 100.0,
+        };
+        let mut sampler = ManualHMC::new(target, init(3, 2), 0.01, 5).set_seed(42);
+        let (sample, stats) = sampler.run_progress(10, 5).unwrap();
+        assert_eq!(sample.shape(), [3, 10, 2]);
+        println!("{stats}");
+    }
+
+    #[test]
+    fn manual_hmc_gaussian_recovers_mean_and_ess() {
+        let mean = [0.0_f32, 1.0];
+        let target = DiffableGaussian2D::new(mean, [[4.0, 2.0], [2.0, 3.0]]);
+        let n_chains = 4;
+        let n_collect = 1000;
         let n_discard = 500;
 
-        // Create the data-parallel HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
-            target,
-            initial_positions,
-            0.01, // step size
-            50,   // number of leapfrog steps per update
-        )
-        .set_seed(42);
+        let mut sampler = ManualHMC::new(target, init(n_chains, 2), 0.1, 10).set_seed(7);
+        let sample = sampler.run(n_collect, n_discard).unwrap();
+        assert_eq!(sample.shape(), [n_chains, n_collect, 2]);
 
-        // Run HMC for `n_collect` steps.
-        let mut timer = Timer::new();
-        let sample = sampler.run(n_collect, n_discard);
-        timer.log(format!(
-            "HMC sampler: generated {} observations.",
-            sample.dims()[0..2].iter().product::<usize>()
-        ));
-        assert_eq!(sample.dims(), [6, 5000, 2]);
-
-        let data = sample.to_data();
-        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
-        let (split_rhat, ess) = split_rhat_mean_ess(array);
-        println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
-        println!("MIN ESS: {}", ess.min().unwrap());
-    }
-
-    #[test]
-    #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_progress_bench() {
-        // Use the CPU backend (NdArray) wrapped in Autodiff.
-        type BackendType = Autodiff<burn::backend::NdArray>;
-        BackendType::seed(42);
-
-        // Create the Rosenbrock target (a = 1, b = 100)
-        let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
-        };
-
-        // We'll define 6 chains all initialized to (1.0, 2.0).
-        let n_chains = 6;
-        let initial_positions = vec![vec![1.0_f32, 2.0_f32]; n_chains];
-        let n_collect = 1000;
-        let n_discard = 1000;
-
-        // Create the data-parallel HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, Rosenbrock2D<f32>>::new(
-            target,
-            initial_positions,
-            0.01, // step size
-            50,   // number of leapfrog steps per update
-        )
-        .set_seed(42);
-
-        // Run HMC for n_collect steps.
-        let mut timer = Timer::new();
-        let sample = sampler.run_progress(n_collect, n_discard).unwrap().0;
-        timer.log(format!(
-            "HMC sampler: generated {} observations.",
-            sample.dims()[0..2].iter().product::<usize>()
-        ));
-        println!(
-            "Chain 1, first 10: {}",
-            sample.clone().slice([0..1, 0..10, 0..1])
-        );
-        println!(
-            "Chain 2, first 10: {}",
-            sample.clone().slice([2..3, 0..10, 0..1])
+        let (_, ess) = split_rhat_mean_ess(sample.view());
+        assert!(
+            ess.min().unwrap() > &20.0,
+            "Expected min ESS > 20, got {:?}",
+            ess
         );
 
-        #[cfg(feature = "csv")]
-        crate::io::csv::save_csv_tensor(sample.clone(), "/tmp/hmc-sample.csv")
-            .expect("Expected saving to succeed");
-
-        assert_eq!(sample.dims(), [n_chains, n_collect, 2]);
-    }
-
-    #[test]
-    #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_bench_10000d() {
-        // Use the CPU backend (NdArray) wrapped in Autodiff.
-        type BackendType = Autodiff<burn::backend::NdArray>;
-
-        let seed = 42;
-        let d = 10000;
-        let n_chains = 6;
-        let n_collect = 100;
-        let n_discard = 100;
-
-        let rng = SmallRng::seed_from_u64(seed);
-        // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions: Vec<Vec<f32>> =
-            vec![rng.sample_iter(StandardNormal).take(d).collect(); n_chains];
-
-        // Create the data-parallel HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
-            RosenbrockND {},
-            initial_positions,
-            0.01, // step size
-            50,   // number of leapfrog steps per update
-        )
-        .set_seed(42);
-
-        // Run HMC for n_collect steps.
-        let mut timer = Timer::new();
-        let sample = sampler.run(n_collect, n_discard);
-        timer.log(format!(
-            "HMC sampler: generated {} observations.",
-            sample.dims()[0..2].iter().product::<usize>()
-        ));
-        assert_eq!(sample.dims(), [n_chains, n_collect, d]);
-    }
-
-    #[test]
-    #[ignore = "Benchmark test: run only when explicitly requested"]
-    #[cfg(feature = "wgpu")]
-    fn test_progress_10000d_bench() {
-        type BackendType = Autodiff<burn::backend::Wgpu>;
-
-        let seed = 42;
-        let d = 10000;
-        let n_chains = 6;
-
-        let rng = SmallRng::seed_from_u64(seed);
-        // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions: Vec<Vec<f32>> =
-            vec![rng.sample_iter(StandardNormal).take(d).collect(); n_chains];
-        let n_collect = 100;
-        let n_discard = 100;
-
-        // Create the data-parallel HMC sampler.
-        let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(
-            RosenbrockND {},
-            initial_positions,
-            0.01, // step size
-            50,   // number of leapfrog steps per update
-        )
-        .set_seed(42);
-
-        // Run HMC for n_collect steps.
-        let mut timer = Timer::new();
-        let sample = sampler.run_progress(n_collect, n_discard).unwrap().0;
-        timer.log(format!(
-            "HMC sampler: generated {} observations.",
-            sample.dims()[0..2].iter().product::<usize>()
-        ));
-        assert_eq!(sample.dims(), [n_chains, n_collect, d]);
+        for (dim, &target_mean) in mean.iter().enumerate() {
+            let observed_mean: f32 = sample.slice(ndarray::s![.., .., dim]).mean().unwrap();
+            assert!(
+                (observed_mean - target_mean).abs() < 0.5,
+                "dim {dim}: expected mean near {target_mean}, got {observed_mean}"
+            );
+        }
     }
 }

@@ -107,6 +107,15 @@ where
 
     for i in 0..total {
         let current_state = chain.step();
+        if current_state.len() != n_params {
+            let msg = format!(
+                "Chain state dimensionality changed: expected {} elements, got {}.\nAborting generation of further observations.",
+                n_params,
+                current_state.len()
+            );
+            println!("{}", msg);
+            return Err(msg);
+        }
         tracker.step(current_state).map_err(|e| {
             let msg = format!(
             "Chain statistics tracker caused error: {}.\nAborting generation of further observations.",
@@ -432,4 +441,103 @@ where
                 .collect()
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A chain whose reported state length changes after the first step, used to
+    /// check that `run_chain_progress` rejects it with a clean `Err` instead of
+    /// panicking. `first_len`/`later_len` cover both directions: a state that grows
+    /// (first call establishes a smaller `n_params` than later calls report) used to
+    /// panic with an ndarray broadcast error from the fixed-width output array,
+    /// rather than returning `Err` like the shrinking direction already did.
+    struct InconsistentDimChain {
+        step_count: usize,
+        first_len: usize,
+        later_len: usize,
+        state: Vec<f64>,
+    }
+
+    impl MarkovChain<f64> for InconsistentDimChain {
+        fn step(&mut self) -> &Vec<f64> {
+            self.step_count += 1;
+            let len = if self.step_count == 1 {
+                self.first_len
+            } else {
+                self.later_len
+            };
+            self.state = vec![0.0; len];
+            &self.state
+        }
+
+        fn current_state(&self) -> &Vec<f64> {
+            &self.state
+        }
+    }
+
+    fn assert_dim_change_is_rejected(first_len: usize, later_len: usize) {
+        let mut chain = InconsistentDimChain {
+            step_count: 0,
+            first_len,
+            later_len,
+            state: vec![0.0; first_len],
+        };
+        let (tx, _rx) = mpsc::channel();
+        let result = run_chain_progress(&mut chain, 5, 0, tx);
+        assert!(
+            result.is_err(),
+            "expected a dimension change ({first_len} -> {later_len}) to be rejected as Err, got Ok"
+        );
+    }
+
+    #[test]
+    fn run_chain_progress_rejects_growing_state() {
+        assert_dim_change_is_rejected(2, 3);
+    }
+
+    #[test]
+    fn run_chain_progress_rejects_shrinking_state() {
+        assert_dim_change_is_rejected(3, 2);
+    }
+
+    #[test]
+    fn run_chain_progress_tolerates_dropped_stats_receiver() {
+        // The stats channel is a best-effort side reporting path (used by
+        // ChainRunner::run_progress's live progress bars); losing its receiver
+        // shouldn't abort sampling, just skip reporting for that tick.
+        let mut chain = InconsistentDimChain {
+            step_count: 0,
+            first_len: 2,
+            later_len: 2,
+            state: vec![0.0, 0.0],
+        };
+        let (tx, rx) = mpsc::channel();
+        drop(rx);
+        let result = run_chain_progress(&mut chain, 5, 0, tx);
+        assert!(
+            result.is_ok(),
+            "a dropped stats receiver shouldn't stop sampling from completing"
+        );
+    }
+
+    #[test]
+    fn run_progress_rotates_progress_bars_past_five_chains() {
+        use crate::distributions::{Gaussian2D, IsotropicGaussian};
+        use crate::metropolis_hastings::MetropolisHastings;
+        use ndarray::{arr1, arr2};
+
+        let target = Gaussian2D {
+            mean: arr1(&[0.0, 0.0]),
+            cov: arr2(&[[1.0, 0.0], [0.0, 1.0]]),
+        };
+        let proposal = IsotropicGaussian::new(1.0);
+        // More than 5 chains, so ChainRunner::run_progress (which only tracks 5
+        // progress bars at once) has to retire a finished bar and activate a queued
+        // one instead of just running to completion trivially.
+        let mut mh = MetropolisHastings::new(target, proposal, init_det(7, 2)).seed(1);
+        let (sample, _stats) = mh.run_progress(20, 5).unwrap();
+        assert_eq!(sample.shape(), [7, 20, 2]);
+    }
 }
