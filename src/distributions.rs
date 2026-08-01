@@ -87,6 +87,26 @@ pub trait GradientTarget<T: Float, B: AutodiffBackend> {
     }
 }
 
+/// A target distribution that computes its own gradient directly (e.g. from a
+/// closed-form derivative), without routing through `burn`'s autodiff.
+///
+/// Unlike [`GradientTarget`], this trait needs no tensor backend: `position` and
+/// `grad` are plain slices, so callers (the gradient-based samplers) can write the
+/// gradient into a buffer they own and reuse across leapfrog steps instead of
+/// allocating a fresh tensor on every evaluation. This is the trait to implement if
+/// you already compute gradients analytically and want to avoid `burn`'s per-step
+/// tensor overhead.
+///
+/// The method is named `unnorm_logp_and_grad_into` rather than `unnorm_logp_and_grad`
+/// so that types implementing both this trait and [`GradientTarget`] (as
+/// [`Rosenbrock2D`] and [`DiffableGaussian2D`] do, for comparison) don't run into
+/// ambiguous-method-call errors when both traits are in scope.
+pub trait ManualGradientTarget<T: Float> {
+    /// Writes ∇log p(position) into `grad` and returns the unnormalized log density
+    /// at `position`. `grad` has the same length as `position`.
+    fn unnorm_logp_and_grad_into(&self, position: &[T], grad: &mut [T]) -> T;
+}
+
 /// A trait for generating proposals Metropolis–Hastings-like algorithms.
 /// The state type `T` is typically a vector of continuous values.
 pub trait Proposal<T, F: Float> {
@@ -315,6 +335,34 @@ where
     }
 }
 
+impl<T> ManualGradientTarget<T> for DiffableGaussian2D<T>
+where
+    T: Float + std::fmt::Debug,
+{
+    /// Evaluates the log density and its closed-form gradient at a single 2D position.
+    fn unnorm_logp_and_grad_into(&self, position: &[T], grad: &mut [T]) -> T {
+        assert_eq!(
+            position.len(),
+            2,
+            "DiffableGaussian2D: expected dimension=2."
+        );
+        let (d0, d1) = (position[0] - self.mean[0], position[1] - self.mean[1]);
+        let (ic00, ic01, ic10, ic11) = (
+            self.inv_cov[0][0],
+            self.inv_cov[0][1],
+            self.inv_cov[1][0],
+            self.inv_cov[1][1],
+        );
+        let half = T::from(0.5).unwrap();
+        let sym01 = ic01 + ic10;
+        grad[0] = -(ic00 * d0) - half * sym01 * d1;
+        grad[1] = -half * sym01 * d0 - (ic11 * d1);
+
+        let quad = d0 * (ic00 * d0 + ic01 * d1) + d1 * (ic10 * d0 + ic11 * d1);
+        self.norm_const - half * quad
+    }
+}
+
 /**
 An *isotropic* Gaussian distribution usable as either a target or a proposal
 in MCMC. It works for **any dimension** because it applies independent
@@ -523,8 +571,29 @@ where
     }
 }
 
+impl<T> ManualGradientTarget<T> for Rosenbrock2D<T>
+where
+    T: Float,
+{
+    /// Evaluates the log density and its closed-form gradient at a single 2D position.
+    fn unnorm_logp_and_grad_into(&self, position: &[T], grad: &mut [T]) -> T {
+        assert_eq!(position.len(), 2, "Rosenbrock2D: expected dimension=2.");
+        let (x, y) = (position[0], position[1]);
+        let two = T::from(2.0).unwrap();
+        let four = T::from(4.0).unwrap();
+        let a_minus_x = self.a - x;
+        let y_minus_x2 = y - x * x;
+
+        grad[0] = two * a_minus_x + four * self.b * x * y_minus_x2;
+        grad[1] = -two * self.b * y_minus_x2;
+
+        -(a_minus_x * a_minus_x + self.b * y_minus_x2 * y_minus_x2)
+    }
+}
+
 // Define the Rosenbrock distribution.
 // From: https://arxiv.org/pdf/1903.09556.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RosenbrockND {}
 
 // For the batched version we need to implement BatchGradientTarget.
@@ -543,6 +612,36 @@ where
             .mul_scalar(100);
         let term_2 = low.neg().add_scalar(1).powi_scalar(2);
         -(term_1 + term_2).sum_dim(1).squeeze(1)
+    }
+}
+
+impl<T> ManualGradientTarget<T> for RosenbrockND
+where
+    T: Float,
+{
+    /// Evaluates the log density and its closed-form gradient of the N-dimensional
+    /// Rosenbrock function (fixed scale `b = 100`, matching the batched `burn` impl above).
+    fn unnorm_logp_and_grad_into(&self, position: &[T], grad: &mut [T]) -> T {
+        let n = position.len();
+        assert!(n >= 2, "RosenbrockND: expected dimension >= 2.");
+        let hundred = T::from(100.0).unwrap();
+        let two = T::from(2.0).unwrap();
+        let four_hundred = T::from(400.0).unwrap();
+        let two_hundred = T::from(200.0).unwrap();
+
+        grad.iter_mut().for_each(|g| *g = T::zero());
+        let mut logp = T::zero();
+
+        for i in 0..n - 1 {
+            let (xi, xi1) = (position[i], position[i + 1]);
+            let diff = xi1 - xi * xi;
+            let one_minus_xi = T::one() - xi;
+            logp = logp - (hundred * diff * diff + one_minus_xi * one_minus_xi);
+
+            grad[i] = grad[i] + four_hundred * xi * diff + two * one_minus_xi;
+            grad[i + 1] = grad[i + 1] - two_hundred * diff;
+        }
+        logp
     }
 }
 
@@ -603,6 +702,92 @@ mod continuous_tests {
             diff < 1e-8,
             "Expected diff < 1e-8, got {diff} with p={p} (expected ~{true_p})"
         );
+    }
+
+    /// Checks a [`ManualGradientTarget`] impl's analytic gradient against a central
+    /// finite-difference approximation of its own returned log density, at each of
+    /// `positions`. Catches algebra mistakes in hand-derived closed-form gradients.
+    fn check_gradient<GTarget: ManualGradientTarget<f64>>(
+        target: &GTarget,
+        positions: &[Vec<f64>],
+    ) {
+        let h = 1e-6;
+        for position in positions {
+            let dim = position.len();
+            let mut grad = vec![0.0; dim];
+            target.unnorm_logp_and_grad_into(position, &mut grad);
+
+            let mut scratch = vec![0.0; dim];
+            for i in 0..dim {
+                let mut plus = position.clone();
+                let mut minus = position.clone();
+                plus[i] += h;
+                minus[i] -= h;
+                let f_plus = target.unnorm_logp_and_grad_into(&plus, &mut scratch);
+                let f_minus = target.unnorm_logp_and_grad_into(&minus, &mut scratch);
+                let numeric = (f_plus - f_minus) / (2.0 * h);
+                assert!(
+                    (numeric - grad[i]).abs() < 1e-6,
+                    "gradient mismatch at {position:?}, dim {i}: analytic={}, numeric={numeric}",
+                    grad[i]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn rosenbrock2d_manual_gradient_matches_finite_difference() {
+        let target = Rosenbrock2D { a: 1.0, b: 100.0 };
+        check_gradient(
+            &target,
+            &[
+                vec![0.0, 0.0],
+                vec![1.0, 1.0],
+                vec![-0.5, 2.3],
+                vec![2.0, -1.0],
+            ],
+        );
+    }
+
+    #[test]
+    fn rosenbrock_nd_manual_gradient_matches_finite_difference() {
+        let target = RosenbrockND {};
+        check_gradient(
+            &target,
+            &[
+                vec![0.0, 0.0, 0.0, 0.0],
+                vec![1.0, 1.0, 1.0, 1.0],
+                vec![-0.5, 2.3, 0.7, -1.2, 0.4],
+            ],
+        );
+    }
+
+    #[test]
+    fn diffable_gaussian2d_manual_gradient_matches_finite_difference() {
+        let target = DiffableGaussian2D::new([0.3, -0.7], [[4.0, 2.0], [2.0, 3.0]]);
+        check_gradient(&target, &[vec![0.0, 0.0], vec![1.0, -2.0], vec![0.3, -0.7]]);
+    }
+
+    #[test]
+    fn diffable_gaussian2d_manual_gradient_matches_burn_autodiff() {
+        use burn::backend::{Autodiff, NdArray};
+
+        type B = Autodiff<NdArray>;
+        let target = DiffableGaussian2D::new([0.3_f32, -0.7], [[4.0, 2.0], [2.0, 3.0]]);
+        let position = vec![1.2_f32, -0.4];
+
+        let mut manual_grad = vec![0.0_f32; 2];
+        let manual_logp =
+            ManualGradientTarget::unnorm_logp_and_grad_into(&target, &position, &mut manual_grad);
+
+        let pos_tensor = Tensor::<B, 1>::from_floats(position.as_slice(), &Default::default());
+        let (burn_logp, burn_grad) = GradientTarget::unnorm_logp_and_grad(&target, pos_tensor);
+        let burn_grad: Vec<f32> = burn_grad.to_data().to_vec().unwrap();
+
+        assert!((manual_logp - burn_logp.into_scalar()).abs() < 1e-4);
+        for (m, b) in manual_grad.iter().zip(burn_grad.iter()) {
+            assert!((m - b).abs() < 1e-4, "manual={m} burn={b}");
+        }
     }
 }
 

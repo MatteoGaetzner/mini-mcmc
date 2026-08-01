@@ -833,8 +833,54 @@ mod tests {
         assert!(run_stats.rhat.max < 1.01);
     }
 
+    /// `ess_from_chainstats` is a public entry point (used by callers who track
+    /// `ChainStats` incrementally via `ChainTracker` instead of holding the whole
+    /// sample in memory) that had no test coverage at all. This checks it against
+    /// the same near-i.i.d.-data sanity check `ess_1` uses for the sample-based path.
+    #[test]
+    fn ess_from_chainstats_matches_near_iid_expectation() {
+        let n_chains = 4;
+        let n_steps = 1000;
+        let n_params = 1;
+
+        let mut rng = SmallRng::seed_from_u64(42);
+        let mut data = Array2::<f32>::zeros((n_chains, n_steps));
+        for mut row in data.rows_mut() {
+            for elem in row.iter_mut() {
+                *elem = rng.random::<f32>();
+            }
+        }
+        let sample = data
+            .to_shape((n_chains, n_steps, n_params))
+            .unwrap()
+            .to_owned();
+
+        // Build ChainStats the way a real sampler run does: feed each chain's
+        // observations through a ChainTracker one at a time, then snapshot it.
+        let chain_stats: Vec<ChainStats> = (0..n_chains)
+            .map(|c| {
+                let mut tracker = ChainTracker::new(n_params, &[sample[[c, 0, 0]]]);
+                for t in 1..n_steps {
+                    tracker.step(&[sample[[c, t, 0]]]).unwrap();
+                }
+                tracker.stats()
+            })
+            .collect();
+        let chain_stats_refs: Vec<&ChainStats> = chain_stats.iter().collect();
+
+        let ess = ess_from_chainstats(sample.view(), &chain_stats_refs);
+        assert_eq!(ess.len(), n_params);
+        assert!(
+            ess[0] > 3800.0,
+            "expected ESS close to the {} near-i.i.d. draws, got {}",
+            n_chains * n_steps,
+            ess[0]
+        );
+    }
+
     #[test]
     #[ignore = "Benchmark test: run only when explicitly requested"]
+    #[cfg_attr(coverage_nightly, coverage(off))]
     fn test_autocov_perf_comp() {
         // Create output CSV
         let mut file =

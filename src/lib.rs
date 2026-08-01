@@ -13,9 +13,12 @@
 //!
 //! The library provides three main sampling approaches:
 //! 1. **No-U-Turn Sampler (NUTS)**: For continuous distributions with gradients. You need to provide:
-//!    - A target distribution implementing the `GradientTarget` trait
+//!    - A target distribution implementing the `GradientTarget` trait (via `burn` autodiff), or
+//!      [`distributions::ManualGradientTarget`] (analytic gradient, no `burn` tensors) for use with
+//!      [`nuts::ManualNUTS`] — see Example 5 below.
 //! 2. **Hamiltonian Monte Carlo (HMC)**: For continuous distributions with gradients. You need to provide:
-//!    - A target distribution implementing the `BatchedGradientTarget` trait
+//!    - A target distribution implementing the `BatchedGradientTarget` trait (via `burn` autodiff), or
+//!      [`distributions::ManualGradientTarget`] for use with [`hmc::ManualHMC`].
 //! 3. **Metropolis-Hastings**: For general-purpose sampling. You need to provide:
 //!    - A target distribution implementing the `Target` trait
 //!    - A proposal distribution implementing the `Proposal` trait
@@ -209,6 +212,40 @@
 //! println!("Poisson sample shape: {:?}", sample.shape());
 //! ```
 //!
+//! ## Example 5: Sampling a 2D Rosenbrock with an analytic gradient (burn-free NUTS)
+//!
+//! NUTS and HMC don't require `burn`: if you already have a closed-form gradient,
+//! implement [`distributions::ManualGradientTarget`] and use [`nuts::ManualNUTS`] (or
+//! [`hmc::ManualHMC`]) instead. No tensors, no autodiff, no per-step allocation —
+//! `unnorm_logp_and_grad_into` writes the gradient into a buffer the sampler reuses
+//! across leapfrog steps.
+//!
+//! ```rust
+//! use mini_mcmc::core::{ChainRunner, init};
+//! use mini_mcmc::distributions::ManualGradientTarget;
+//! use mini_mcmc::nuts::ManualNUTS;
+//!
+//! #[derive(Clone)]
+//! struct Rosenbrock2D { a: f64, b: f64 }
+//!
+//! impl ManualGradientTarget<f64> for Rosenbrock2D {
+//!     fn unnorm_logp_and_grad_into(&self, position: &[f64], grad: &mut [f64]) -> f64 {
+//!         let (x, y) = (position[0], position[1]);
+//!         let a_minus_x = self.a - x;
+//!         let y_minus_x2 = y - x * x;
+//!         grad[0] = 2.0 * a_minus_x + 4.0 * self.b * x * y_minus_x2;
+//!         grad[1] = -2.0 * self.b * y_minus_x2;
+//!         -(a_minus_x * a_minus_x + self.b * y_minus_x2 * y_minus_x2)
+//!     }
+//! }
+//!
+//! let target = Rosenbrock2D { a: 1.0, b: 100.0 };
+//! let n_discard = 20; // also the step-size adaptation window, see `ManualNUTS::new`
+//! let mut sampler = ManualNUTS::new(target, init(4, 2), 0.8, n_discard).set_seed(42);
+//! let sample = sampler.run(100, n_discard).unwrap();
+//! println!("Collected sample shape: {:?}", sample.shape());
+//! ```
+//!
 //! For more complete implementations (including Gibbs sampling and I/O helpers),
 //! see the `examples/` directory.
 //!
@@ -224,12 +261,18 @@
 //! - Rank-Normalized R-hat diagnostics
 //! - Ensemble Slice Sampling (ESS)
 
+// Lets `#[coverage(off)]` (below, on slow `#[ignore]`d correctness tests) compile on
+// stable as a no-op, while actually excluding those functions from coverage accounting
+// when `cargo llvm-cov` runs on nightly. See taiki-e/cargo-llvm-cov's README.
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
 pub mod core;
 mod dev_tools;
 pub mod distributions;
 pub mod gibbs;
 pub mod hmc;
 pub mod io;
+mod leapfrog;
 pub mod metropolis_hastings;
 pub mod nuts;
 pub mod stats;

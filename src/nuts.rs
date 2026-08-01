@@ -40,14 +40,17 @@ use std::sync::mpsc::{Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::core::{HasChains, MarkovChain};
 use crate::distributions::GradientTarget;
+use crate::distributions::ManualGradientTarget;
+use crate::leapfrog;
 use crate::stats::{collect_rhat, ChainStats, ChainTracker, RunStats};
 use burn::prelude::*;
 use burn::tensor::backend::AutodiffBackend;
 use burn::tensor::cast::ToElement;
 use burn::tensor::Element;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use ndarray::ArrayView3;
+use ndarray::{ArrayView3, LinalgScalar};
 use ndarray_stats::QuantileExt;
 use num_traits::{Float, FromPrimitive};
 use rand::prelude::*;
@@ -995,13 +998,544 @@ where
     (position_prime, mom_prime, grad_prime, ulogp_prime)
 }
 
+/// Single-chain state and adaptation for [`ManualNUTS`], the burn-free NUTS sampler.
+///
+/// This is a direct port of [`NUTSChain`]'s dual-averaging step-size adaptation and
+/// dynamic trajectory building (same formulas, same algorithm) from `burn` tensor
+/// arithmetic to plain `Vec<T>`/slice arithmetic, so that it can run against a
+/// [`ManualGradientTarget`] instead of a [`GradientTarget`].
+///
+/// Unlike [`NUTSChain`], which learns its warm-up length from the `n_discard`
+/// argument passed to `run`/`run_progress`, `ManualNUTSChain` gets that as an explicit
+/// `n_warmup` constructor argument: it implements [`crate::core::MarkovChain`] so that
+/// [`ManualNUTS`] can reuse [`crate::core::ChainRunner`]'s existing parallel
+/// run/progress-bar/R-hat machinery (the same infrastructure
+/// [`crate::metropolis_hastings::MetropolisHastings`] uses) instead of duplicating it,
+/// and that trait's `step` takes no arguments. Pass the same value you plan to pass as
+/// `n_discard` to `run`/`run_progress` so the step size finishes adapting exactly when
+/// warm-up ends.
+#[derive(Debug, Clone)]
+pub struct ManualNUTSChain<T, GTarget> {
+    target: GTarget,
+
+    /// Current position in parameter space.
+    pub position: Vec<T>,
+
+    /// Desired average acceptance probability.
+    target_accept_p: T,
+
+    /// Current step size (epsilon).
+    epsilon: T,
+
+    // Internal variables
+    m: usize,
+    n_warmup: usize,
+    gamma: T,
+    t_0: usize,
+    kappa: T,
+    mu: T,
+    epsilon_bar: T,
+    h_bar: T,
+
+    // Scratch buffers for `step`, reused across calls instead of reallocating.
+    mom_0: Vec<T>,
+    grad_0: Vec<T>,
+
+    rng: SmallRng,
+}
+
+impl<T, GTarget> ManualNUTSChain<T, GTarget>
+where
+    T: Float + SampleUniform,
+    GTarget: ManualGradientTarget<T>,
+    StandardNormal: rand_distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+{
+    /// Constructs a new chain, immediately running the same step-size heuristic
+    /// [`NUTSChain::new`] defers to first use (`find_reasonable_epsilon_manual`).
+    ///
+    /// # Parameters
+    /// - `target`: The target distribution implementing [`ManualGradientTarget`].
+    /// - `initial_position`: Initial position vector of length `D`.
+    /// - `target_accept_p`: Desired average acceptance probability for adaptation.
+    /// - `n_warmup`: Number of steps over which the step size adapts; pass the same
+    ///   value you'll later pass as `n_discard` to `run`/`run_progress`.
+    pub fn new(
+        target: GTarget,
+        initial_position: Vec<T>,
+        target_accept_p: T,
+        n_warmup: usize,
+    ) -> Self {
+        let dim = initial_position.len();
+        let mut rng = SmallRng::seed_from_u64(rand::rng().random::<u64>());
+        let mut mom_0 = vec![T::zero(); dim];
+        leapfrog::fill_standard_normal(&mut mom_0, &mut rng);
+        let epsilon = find_reasonable_epsilon_manual(&initial_position, &mom_0, &target);
+        let mu = (T::from(10.0).unwrap() * epsilon).ln();
+
+        Self {
+            target,
+            position: initial_position,
+            target_accept_p,
+            epsilon,
+            m: 0,
+            n_warmup,
+            gamma: T::from(0.05).unwrap(),
+            t_0: 10,
+            kappa: T::from(0.75).unwrap(),
+            mu,
+            epsilon_bar: T::one(),
+            h_bar: T::zero(),
+            mom_0,
+            grad_0: vec![T::zero(); dim],
+            rng,
+        }
+    }
+
+    /// Sets a new random seed for this chain to ensure reproducibility.
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        self.rng = SmallRng::seed_from_u64(seed);
+        self
+    }
+}
+
+impl<T, GTarget> MarkovChain<T> for ManualNUTSChain<T, GTarget>
+where
+    T: Float + SampleUniform,
+    GTarget: ManualGradientTarget<T>,
+    StandardNormal: rand_distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+    Exp1: rand_distr::Distribution<T>,
+{
+    /// Performs one NUTS update step, including tree expansion and adaptation updates.
+    fn step(&mut self) -> &Vec<T> {
+        self.m += 1;
+        let half = T::from(0.5).unwrap();
+
+        // Reuse the chain's own scratch buffers instead of allocating fresh ones on
+        // every step; `build_tree_manual`'s recursion still needs owned clones below,
+        // since it explores both trajectory directions independently.
+        leapfrog::fill_standard_normal(&mut self.mom_0, &mut self.rng);
+        let ulogp = self
+            .target
+            .unnorm_logp_and_grad_into(&self.position, &mut self.grad_0);
+        let joint = ulogp - half * leapfrog::dot(&self.mom_0, &self.mom_0);
+        let exp1_obs: T = self.rng.sample(Exp1);
+        let logu = joint - exp1_obs;
+
+        let mut position_minus = self.position.clone();
+        let mut position_plus = self.position.clone();
+        let mut mom_minus = self.mom_0.clone();
+        let mut mom_plus = self.mom_0.clone();
+        let mut grad_minus = self.grad_0.clone();
+        let mut grad_plus = self.grad_0.clone();
+        let mut j = 0;
+        let mut n = 1usize;
+        let mut s = true;
+        let mut alpha = T::zero();
+        let mut n_alpha = 0usize;
+
+        while s {
+            let u_run_1: T = self.rng.random();
+            let v: i8 = if u_run_1 < half { -1 } else { 1 };
+
+            let (position_prime, n_prime, s_prime) = if v == -1 {
+                let branch = build_tree_manual(
+                    &position_minus,
+                    &mom_minus,
+                    &grad_minus,
+                    logu,
+                    v,
+                    j,
+                    self.epsilon,
+                    &self.target,
+                    joint,
+                    &mut self.rng,
+                );
+                position_minus = branch.position_minus;
+                mom_minus = branch.mom_minus;
+                grad_minus = branch.grad_minus;
+                alpha = branch.alpha;
+                n_alpha = branch.n_alpha;
+                (branch.position_prime, branch.n_prime, branch.s_prime)
+            } else {
+                let branch = build_tree_manual(
+                    &position_plus,
+                    &mom_plus,
+                    &grad_plus,
+                    logu,
+                    v,
+                    j,
+                    self.epsilon,
+                    &self.target,
+                    joint,
+                    &mut self.rng,
+                );
+                position_plus = branch.position_plus;
+                mom_plus = branch.mom_plus;
+                grad_plus = branch.grad_plus;
+                alpha = branch.alpha;
+                n_alpha = branch.n_alpha;
+                (branch.position_prime, branch.n_prime, branch.s_prime)
+            };
+
+            let tmp = T::one().min(T::from(n_prime).unwrap() / T::from(n).unwrap());
+            let u_run_2: T = self.rng.random();
+            if s_prime && u_run_2 < tmp {
+                self.position.copy_from_slice(&position_prime);
+            }
+            n += n_prime;
+
+            s = s_prime
+                && stop_criterion_manual(&position_minus, &position_plus, &mom_minus, &mom_plus);
+            j += 1;
+        }
+
+        let mut eta = T::one() / T::from(self.m + self.t_0).unwrap();
+        self.h_bar = (T::one() - eta) * self.h_bar
+            + eta * (self.target_accept_p - alpha / T::from(n_alpha).unwrap());
+        if self.m <= self.n_warmup {
+            let m_t = T::from(self.m).unwrap();
+            self.epsilon = (self.mu - m_t.sqrt() / self.gamma * self.h_bar).exp();
+            eta = m_t.powf(-self.kappa);
+            self.epsilon_bar =
+                ((T::one() - eta) * self.epsilon_bar.ln() + eta * self.epsilon.ln()).exp();
+        } else {
+            self.epsilon = self.epsilon_bar;
+        }
+
+        &self.position
+    }
+
+    fn current_state(&self) -> &Vec<T> {
+        &self.position
+    }
+}
+
+/// Heuristic to pick an initial leapfrog step size, ported from [`find_reasonable_epsilon`].
+fn find_reasonable_epsilon_manual<T, GTarget>(position: &[T], mom: &[T], target: &GTarget) -> T
+where
+    T: Float,
+    GTarget: ManualGradientTarget<T>,
+{
+    let dim = position.len();
+    let half = T::from(0.5).unwrap();
+    let two = T::from(2.0).unwrap();
+    let mut epsilon = T::one();
+
+    let mut grad = vec![T::zero(); dim];
+    let ulogp = target.unnorm_logp_and_grad_into(position, &mut grad);
+
+    let mut pos_prime = position.to_vec();
+    let mut mom_prime = mom.to_vec();
+    let mut grad_prime = grad.clone();
+    let mut ulogp_prime = leapfrog::leapfrog(
+        target,
+        &mut pos_prime,
+        &mut mom_prime,
+        &mut grad_prime,
+        epsilon,
+    );
+    let mut k = T::one();
+
+    while !ulogp_prime.is_finite() && !grad_prime.iter().all(|g| g.is_finite()) {
+        k = k * half;
+        pos_prime.copy_from_slice(position);
+        mom_prime.copy_from_slice(mom);
+        grad_prime.copy_from_slice(&grad);
+        ulogp_prime = leapfrog::leapfrog(
+            target,
+            &mut pos_prime,
+            &mut mom_prime,
+            &mut grad_prime,
+            epsilon * k,
+        );
+    }
+
+    epsilon = half * k * epsilon;
+    let accept_prob = |ulogp_prime: T, mom_prime: &[T]| {
+        ulogp_prime - ulogp - half * (leapfrog::dot(mom_prime, mom_prime) - leapfrog::dot(mom, mom))
+    };
+    let mut log_accept_prob = accept_prob(ulogp_prime, &mom_prime);
+
+    let a = if log_accept_prob > half.ln() {
+        T::one()
+    } else {
+        -T::one()
+    };
+
+    while a * log_accept_prob > -a * two.ln() {
+        epsilon = epsilon * two.powf(a);
+        pos_prime.copy_from_slice(position);
+        mom_prime.copy_from_slice(mom);
+        grad_prime.copy_from_slice(&grad);
+        ulogp_prime = leapfrog::leapfrog(
+            target,
+            &mut pos_prime,
+            &mut mom_prime,
+            &mut grad_prime,
+            epsilon,
+        );
+        log_accept_prob = accept_prob(ulogp_prime, &mom_prime);
+    }
+
+    epsilon
+}
+
+/// The result of one [`build_tree_manual`] call.
+///
+/// `*_minus`/`*_plus` are the two ends of the (sub)trajectory explored so far;
+/// `position_prime`/`grad_prime`/`logp_prime` is the candidate sample drawn from it;
+/// `n_prime`, `s_prime`, `alpha`, `n_alpha` are bookkeeping the caller uses to combine
+/// sibling subtrees. See [`build_tree`] for what each field means — the algorithm is
+/// unchanged from that Tensor-based version, only the vector representation is.
+struct TreeResult<T> {
+    position_minus: Vec<T>,
+    mom_minus: Vec<T>,
+    grad_minus: Vec<T>,
+    position_plus: Vec<T>,
+    mom_plus: Vec<T>,
+    grad_plus: Vec<T>,
+    position_prime: Vec<T>,
+    grad_prime: Vec<T>,
+    logp_prime: T,
+    n_prime: usize,
+    s_prime: bool,
+    alpha: T,
+    n_alpha: usize,
+}
+
+/// Recursive trajectory-tree builder, ported from [`build_tree`].
+#[allow(clippy::too_many_arguments)]
+fn build_tree_manual<T, GTarget>(
+    position: &[T],
+    mom: &[T],
+    grad: &[T],
+    logu: T,
+    v: i8,
+    j: usize,
+    epsilon: T,
+    target: &GTarget,
+    joint_0: T,
+    rng: &mut SmallRng,
+) -> TreeResult<T>
+where
+    T: Float,
+    GTarget: ManualGradientTarget<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+{
+    let half = T::from(0.5).unwrap();
+    if j == 0 {
+        let mut position_prime = position.to_vec();
+        let mut mom_prime = mom.to_vec();
+        let mut grad_prime = grad.to_vec();
+        let dt = T::from(v as i32).unwrap() * epsilon;
+        let logp_prime = leapfrog::leapfrog(
+            target,
+            &mut position_prime,
+            &mut mom_prime,
+            &mut grad_prime,
+            dt,
+        );
+
+        let joint = logp_prime - half * leapfrog::dot(&mom_prime, &mom_prime);
+        let n_prime = (logu < joint) as usize;
+        let s_prime = (logu - T::from(1000.0).unwrap()) < joint;
+        let alpha = T::one().min((joint - joint_0).exp());
+        TreeResult {
+            position_minus: position_prime.clone(),
+            mom_minus: mom_prime.clone(),
+            grad_minus: grad_prime.clone(),
+            position_plus: position_prime.clone(),
+            mom_plus: mom_prime.clone(),
+            grad_plus: grad_prime.clone(),
+            position_prime,
+            grad_prime,
+            logp_prime,
+            n_prime,
+            s_prime,
+            alpha,
+            n_alpha: 1,
+        }
+    } else {
+        let mut result = build_tree_manual(
+            position,
+            mom,
+            grad,
+            logu,
+            v,
+            j - 1,
+            epsilon,
+            target,
+            joint_0,
+            rng,
+        );
+
+        if result.s_prime {
+            let sub = if v == -1 {
+                build_tree_manual(
+                    &result.position_minus,
+                    &result.mom_minus,
+                    &result.grad_minus,
+                    logu,
+                    v,
+                    j - 1,
+                    epsilon,
+                    target,
+                    joint_0,
+                    rng,
+                )
+            } else {
+                build_tree_manual(
+                    &result.position_plus,
+                    &result.mom_plus,
+                    &result.grad_plus,
+                    logu,
+                    v,
+                    j - 1,
+                    epsilon,
+                    target,
+                    joint_0,
+                    rng,
+                )
+            };
+
+            if v == -1 {
+                result.position_minus = sub.position_minus;
+                result.mom_minus = sub.mom_minus;
+                result.grad_minus = sub.grad_minus;
+            } else {
+                result.position_plus = sub.position_plus;
+                result.mom_plus = sub.mom_plus;
+                result.grad_plus = sub.grad_plus;
+            }
+
+            let u_build_tree: f64 = rng.random::<f64>();
+            if u_build_tree < (sub.n_prime as f64 / (result.n_prime + sub.n_prime).max(1) as f64) {
+                result.position_prime = sub.position_prime;
+                result.grad_prime = sub.grad_prime;
+                result.logp_prime = sub.logp_prime;
+            }
+
+            result.n_prime += sub.n_prime;
+            result.s_prime = result.s_prime
+                && sub.s_prime
+                && stop_criterion_manual(
+                    &result.position_minus,
+                    &result.position_plus,
+                    &result.mom_minus,
+                    &result.mom_plus,
+                );
+            result.alpha = result.alpha + sub.alpha;
+            result.n_alpha += sub.n_alpha;
+        }
+        result
+    }
+}
+
+/// U-turn stopping criterion, ported from [`stop_criterion`].
+///
+/// Computes both dot products in one pass over the positions/momenta instead of
+/// materializing the `position_plus - position_minus` difference as a `Vec` first.
+fn stop_criterion_manual<T: Float>(
+    position_minus: &[T],
+    position_plus: &[T],
+    mom_minus: &[T],
+    mom_plus: &[T],
+) -> bool {
+    let (mut dot_minus, mut dot_plus) = (T::zero(), T::zero());
+    for i in 0..position_minus.len() {
+        let diff = position_plus[i] - position_minus[i];
+        dot_minus = dot_minus + diff * mom_minus[i];
+        dot_plus = dot_plus + diff * mom_plus[i];
+    }
+    dot_minus >= T::zero() && dot_plus >= T::zero()
+}
+
+/// A burn-free No-U-Turn Sampler for targets that compute their own gradient
+/// (see [`ManualGradientTarget`]).
+///
+/// This is the counterpart to [`NUTS`] for users who already have an analytic
+/// gradient and want to avoid `burn`'s per-step tensor allocation/autodiff overhead.
+/// Chains are run independently and in parallel via [`crate::core::ChainRunner`]
+/// (`run`/`run_progress` are provided by that trait's blanket implementation, not
+/// defined here), the same infrastructure
+/// [`crate::metropolis_hastings::MetropolisHastings`] and
+/// [`crate::gibbs::GibbsSampler`] already use.
+///
+/// # Example
+///
+/// ```rust
+/// use mini_mcmc::core::{ChainRunner, init};
+/// use mini_mcmc::distributions::Rosenbrock2D;
+/// use mini_mcmc::nuts::ManualNUTS;
+///
+/// let target = Rosenbrock2D { a: 1.0_f32, b: 100.0 };
+/// let n_discard = 20;
+/// let mut sampler = ManualNUTS::new(target, init(4, 2), 0.8, n_discard).set_seed(42);
+/// let sample = sampler.run(100, n_discard).unwrap();
+/// assert_eq!(sample.shape(), [4, 100, 2]);
+/// ```
+#[derive(Debug, Clone)]
+pub struct ManualNUTS<T, GTarget> {
+    /// The independent chains that make up this sampler.
+    pub chains: Vec<ManualNUTSChain<T, GTarget>>,
+}
+
+impl<T, GTarget> ManualNUTS<T, GTarget>
+where
+    T: Float + SampleUniform,
+    GTarget: ManualGradientTarget<T> + Clone,
+    StandardNormal: rand_distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+{
+    /// Creates a new sampler with one chain per entry in `initial_positions`.
+    ///
+    /// Mirrors [`NUTS::new`]'s signature, plus an explicit `n_warmup` — see
+    /// [`ManualNUTSChain::new`] for why.
+    pub fn new(
+        target: GTarget,
+        initial_positions: Vec<Vec<T>>,
+        target_accept_p: T,
+        n_warmup: usize,
+    ) -> Self {
+        let chains = initial_positions
+            .into_iter()
+            .map(|pos| ManualNUTSChain::new(target.clone(), pos, target_accept_p, n_warmup))
+            .collect();
+        Self { chains }
+    }
+
+    /// Deterministically reseeds every chain, the same way [`NUTS::set_seed`] does.
+    pub fn set_seed(mut self, seed: u64) -> Self {
+        for (i, chain) in self.chains.iter_mut().enumerate() {
+            chain.rng = SmallRng::seed_from_u64(seed + i as u64 + 1);
+        }
+        self
+    }
+}
+
+impl<T, GTarget> HasChains<T> for ManualNUTS<T, GTarget>
+where
+    T: Float + num_traits::ToPrimitive + LinalgScalar + SampleUniform + Send,
+    GTarget: ManualGradientTarget<T> + Clone + Send,
+    StandardNormal: rand_distr::Distribution<T>,
+    StandardUniform: rand_distr::Distribution<T>,
+    Exp1: rand_distr::Distribution<T>,
+{
+    type Chain = ManualNUTSChain<T, GTarget>;
+
+    fn chains_mut(&mut self) -> &mut Vec<Self::Chain> {
+        &mut self.chains
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::fmt::Debug;
 
     use crate::{
-        core::init,
-        dev_tools::Timer,
+        core::{init, ChainRunner},
         distributions::{DiffableGaussian2D, Rosenbrock2D},
         stats::split_rhat_mean_ess,
     };
@@ -1014,7 +1548,6 @@ mod tests {
         backend::{Autodiff, NdArray},
         tensor::{Tensor, Tolerance},
     };
-    use ndarray::ArrayView3;
     use ndarray_stats::QuantileExt;
     use num_traits::Float;
 
@@ -1249,66 +1782,104 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_bench_noprogress_1() {
+    fn manual_nuts_run_shape() {
         let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
+            a: 1.0_f64,
+            b: 100.0,
         };
-
-        // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = init::<f32>(6, 2);
-        let n_collect = 5000;
-        let n_discard = 500;
-
-        let mut sampler = NUTS::new(target, initial_positions, 0.95).set_seed(42);
-        let mut timer = Timer::new();
-        let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
-        timer.log(format!(
-            "NUTS sampler: generated {} observations.",
-            sample.dims()[0..2].iter().product::<usize>()
-        ));
-        assert_eq!(sample.dims(), [6, 5000, 2]);
-
-        let data = sample.to_data();
-        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
-        let (split_rhat, ess) = split_rhat_mean_ess(array);
-        println!("AVG Split Rhat: {}", split_rhat.mean().unwrap());
-        println!("AVG ESS: {}", ess.mean().unwrap());
-
-        #[cfg(feature = "csv")]
-        save_csv_tensor(sample, "/tmp/nuts-sample.csv").expect("saving data should succeed")
+        let n_discard = 5;
+        let mut sampler = ManualNUTS::new(target, init(3, 2), 0.8, n_discard).set_seed(42);
+        let sample = sampler.run(10, n_discard).unwrap();
+        assert_eq!(sample.shape(), [3, 10, 2]);
     }
 
     #[test]
-    #[ignore = "Benchmark test: run only when explicitly requested"]
-    fn test_bench_noprogress_2() {
+    fn manual_nuts_run_progress_shape() {
         let target = Rosenbrock2D {
-            a: 1.0_f32,
-            b: 100.0_f32,
+            a: 1.0_f64,
+            b: 100.0,
         };
+        let n_discard = 5;
+        let mut sampler = ManualNUTS::new(target, init(3, 2), 0.8, n_discard).set_seed(42);
+        let (sample, stats) = sampler.run_progress(10, n_discard).unwrap();
+        assert_eq!(sample.shape(), [3, 10, 2]);
+        println!("{stats}");
+    }
 
-        // We'll define 6 chains all initialized to (1.0, 2.0).
-        let initial_positions = init::<f32>(6, 2);
-        let n_collect = 1000;
-        let n_discard = 1000;
+    #[test]
+    fn manual_nuts_gaussian_recovers_mean_and_ess() {
+        let mean = [0.0_f32, 1.0];
+        let target = DiffableGaussian2D::new(mean, [[4.0, 2.0], [2.0, 3.0]]);
+        let n_chains = 4;
+        let n_collect = 500;
+        let n_discard = 200;
 
-        let mut sampler = NUTS::new(target, initial_positions, 0.95).set_seed(42);
-        let mut timer = Timer::new();
-        let sample: Tensor<BackendType, 3> = sampler.run(n_collect, n_discard);
-        timer.log(format!(
-            "NUTS sampler: generated {} observations.",
-            sample.dims()[0..2].iter().product::<usize>()
-        ));
-        assert_eq!(sample.dims(), [6, 1000, 2]);
+        let mut sampler = ManualNUTS::new(target, init(n_chains, 2), 0.8, n_discard).set_seed(7);
+        let sample = sampler.run(n_collect, n_discard).unwrap();
+        assert_eq!(sample.shape(), [n_chains, n_collect, 2]);
 
-        let data = sample.to_data();
-        let array = ArrayView3::from_shape(sample.dims(), data.as_slice().unwrap()).unwrap();
-        let (split_rhat, ess) = split_rhat_mean_ess(array);
-        println!("MIN Split Rhat: {}", split_rhat.min().unwrap());
-        println!("MIN ESS: {}", ess.min().unwrap());
+        let (_, ess) = split_rhat_mean_ess(sample.view());
+        assert!(
+            ess.min().unwrap() > &20.0,
+            "Expected min ESS > 20, got {:?}",
+            ess
+        );
 
-        #[cfg(feature = "csv")]
-        save_csv_tensor(sample, "/tmp/nuts-sample.csv").expect("saving data should succeed")
+        for (dim, &target_mean) in mean.iter().enumerate() {
+            let observed_mean: f32 = sample.slice(ndarray::s![.., .., dim]).mean().unwrap();
+            assert!(
+                (observed_mean - target_mean).abs() < 0.5,
+                "dim {dim}: expected mean near {target_mean}, got {observed_mean}"
+            );
+        }
+    }
+
+    #[test]
+    fn manual_nuts_chain_set_seed_is_deterministic() {
+        // Exercises ManualNUTSChain directly (bypassing the ManualNUTS container),
+        // the same way test_chain_1/2/3 exercise NUTSChain directly.
+        let target = Rosenbrock2D {
+            a: 1.0_f64,
+            b: 100.0,
+        };
+        let mut chain_a = ManualNUTSChain::new(target, vec![0.5, -0.5], 0.8, 3).set_seed(11);
+        let mut chain_b = ManualNUTSChain::new(target, vec![0.5, -0.5], 0.8, 3).set_seed(11);
+
+        for _ in 0..5 {
+            let a = MarkovChain::step(&mut chain_a).clone();
+            let b = MarkovChain::step(&mut chain_b).clone();
+            assert_eq!(a, b, "same seed should produce identical trajectories");
+        }
+        assert_eq!(chain_a.current_state(), chain_b.current_state());
+    }
+
+    #[test]
+    fn find_reasonable_epsilon_manual_shrinks_from_diverging_start() {
+        // A target whose log-density and gradient both blow up past |x| = 4. Starting
+        // at the origin with a large momentum makes the epsilon=1 initial leapfrog
+        // guess land outside that region, forcing the epsilon-halving retry loop in
+        // find_reasonable_epsilon_manual to actually run instead of exiting on its
+        // first iteration (the case every other test in this file exercises).
+        struct Blowup;
+        impl ManualGradientTarget<f64> for Blowup {
+            fn unnorm_logp_and_grad_into(&self, position: &[f64], grad: &mut [f64]) -> f64 {
+                if position[0].abs() > 4.0 {
+                    grad[0] = f64::NAN;
+                    f64::NEG_INFINITY
+                } else {
+                    grad[0] = -position[0];
+                    -0.5 * position[0] * position[0]
+                }
+            }
+        }
+
+        let position = [0.0];
+        let mom = [10.0];
+        let epsilon = find_reasonable_epsilon_manual(&position, &mom, &Blowup);
+        assert!(epsilon.is_finite() && epsilon > 0.0);
+        assert!(
+            epsilon < 1.0,
+            "expected epsilon to shrink from the diverging initial guess, got {epsilon}"
+        );
     }
 }

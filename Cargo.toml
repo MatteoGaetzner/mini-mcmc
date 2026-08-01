@@ -40,6 +40,18 @@ approx = "0.5"
 ndarray = { version = "0.16", features = ["approx"] }
 plotly = "0.13"
 tempfile = "3.23"
+criterion = "0.8"
+
+[[bench]]
+name = "hmc_bench"
+harness = false
+
+[[bench]]
+name = "nuts_bench"
+harness = false
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(coverage_nightly)"] }
 
 [profile.dev]
 debug = true
