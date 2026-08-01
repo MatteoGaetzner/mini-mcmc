@@ -8,3 +8,4 @@ out
 *.html
 *.py
 perf.*
+.DS_Store
