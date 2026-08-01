@@ -183,10 +183,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut mh = MetropolisHastings::new(target, proposal, initial_state);
 
     // Collect 10,000 samples and use 1,000 for burn-in (not returned).
-    let samples = mh
+    let sample = mh
         .run(10_000, 1_000)
-        .expect("Expected generating samples to succeed");
-    let chain0 = samples.to_shape(10_000).unwrap();
+        .expect("Expected generating sample to succeed");
+    let chain0 = sample.to_shape(10_000).unwrap();
     println!("Elements in chain: {}", chain0.len());
 
     // Tally frequencies of each k up to some cutoff
@@ -288,8 +288,6 @@ You can also find this example at `examples/poisson_mh.rs`.
 
 With this example, you can see how to use **mini_mcmc** for **unbounded** discrete distributions via a custom random-walk proposal and a log‐PMF.
 
-Below is an additional documentation section that you can add to your README. It first gives a minimal version of the `rosenbrock3d_hmc.rs` example for sampling using HMC. (Note that the full example also plots the sampled data interactively using Plotly.)
-
 ---
 
 ## Example: Sampling from a 3D Rosenbrock Distribution Using HMC
@@ -321,8 +319,8 @@ where
 {
     fn unnorm_logp_batch(&self, positions: Tensor<B, 2>) -> Tensor<B, 1> {
         // Assume positions has shape [n_chains, d] with d = 3.
-        let k = positions.dims()[0] as i64;
-        let n = positions.dims()[1] as i64;
+        let k = positions.dims()[0];
+        let n = positions.dims()[1];
         let low = positions.clone().slice([0..k, 0..n - 1]);
         let high = positions.clone().slice([0..k, 1..n]);
         let term_1 = (high - low.clone().powi_scalar(2))
@@ -340,14 +338,14 @@ fn main() {
     // Create the 3D Rosenbrock target.
     let target = RosenbrockND {};
 
-    // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
+    // Create the HMC sampler with a step size of 0.032 and 10 leapfrog steps.
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 10);
 
-    // Run the sampler for 1000 iterations, discard 100
-    let samples = sampler.run(400, 50);
+    // Run the sampler for 450 iterations, discard 50, collect 400.
+    let sample = sampler.run(400, 50);
 
-    // Print the shape of the collected samples.
-    println!("Collected samples with shape: {:?}", samples.dims());
+    // Print the shape of the collected sample.
+    println!("Collected sample with shape: {:?}", sample.dims());
 }
 ```
 
@@ -421,7 +419,7 @@ You can find this example with some additional logging in [`examples/minimal_nut
    cargo run --release --example gauss_mh --features parquet
    ```
    Prints basic statistics of the MCMC chain (e.g., estimated mean).
-   Saves a scatter plot of sampled points in `scatter_plot.png` and a Parquet file `samples.parquet`.
+   Saves a scatter plot of sampled points in `scatter_plot.html` and a Parquet file `sample.parquet`.
 
 ## Optional Features
 

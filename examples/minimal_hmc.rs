@@ -41,10 +41,10 @@ fn main() {
     // Create the 3D Rosenbrock target.
     let target = RosenbrockND {};
 
-    // Create the HMC sampler with a step size of 0.01 and 50 leapfrog steps.
+    // Create the HMC sampler with a step size of 0.032 and 10 leapfrog steps.
     let mut sampler = HMC::<f32, BackendType, RosenbrockND>::new(target, init_det(4, 3), 0.032, 10);
 
-    // Run the sampler for 1000 iterations, discard 100
+    // Run the sampler for 450 iterations, discard 50, collect 400.
     let sample = sampler.run(400, 50);
 
     // Print the shape of the collected sample.
